@@ -26,6 +26,14 @@ Rust workspace for a hybrid search pipeline.
   - Path: [embedding_provider/README.md](embedding_provider/README.md)
   - Read this if you want to set up a local ONNX embedding model, export an ONNX from a HF model, understand pooling/dimension checks, or run the CLI/GUI with the right defaults.
 
+- Models Folder Guide
+  - Path: [embedding_provider/models/README.md](embedding_provider/models/README.md)
+  - Read this to see where model.onnx and tokenizer assets should live and why they are not committed.
+
+- Runtime Binaries Guide
+  - Path: [embedding_provider/bin/README.md](embedding_provider/bin/README.md)
+  - Read this to see where ONNX Runtime DLLs should be placed and why they are ignored by Git.
+
 - Demo Test Data
   - Path: [tools/embedder-demo/testdata/README.md](tools/embedder-demo/testdata/README.md)
   - Read this if you want to know where to place sample Excel/CSV files for the GUI demo, which files are committed (small) vs ignored (large), and where outputs are written.

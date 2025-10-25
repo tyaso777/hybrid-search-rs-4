@@ -27,6 +27,10 @@ Defaults are defined in `src/config.rs` and resolved relative to this crate, so 
 To customize paths/dimensions globally, edit:
 - `embedding_provider/src/config.rs:18` (`ONNX_STDIO_DEFAULTS`)
 
+See also:
+- [models/README.md](models/README.md) — where to place exported ONNX models and tokenizer files.
+- [bin/README.md](bin/README.md) — where to place ONNX Runtime distributions (DLLs).
+
 ---
 
 ## Creating an ONNX Model
