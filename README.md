@@ -8,7 +8,7 @@ Rust workspace for a hybrid search pipeline.
   - Utilities to split files into content chunks for downstream indexing and retrieval.
 
 - chunk-model
-  - Shared data types and traits used across the workspace (chunk metadata, content representations, etc.).
+  - Shared data types and traits used across the workspace (chunk metadata, content representations, etc.). See [chunk-model/README.md](chunk-model/README.md).
 
 - chunking-store
   - Storage layer for chunks (e.g., SQLite-backed repository) and related persistence helpers.
@@ -40,6 +40,10 @@ Rust workspace for a hybrid search pipeline.
 
 - Workspace Overview (this page)
   - Read this to understand the overall crate structure, how they relate, and quick commands to build/test/run.
+
+- Chunk Model Guide
+  - Path: [chunk-model/README.md](chunk-model/README.md)
+  - Read this to understand the shared chunk schema, versioning policy, and usage examples.
 
 ## Quick Start
 
