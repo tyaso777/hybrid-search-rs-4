@@ -3,6 +3,8 @@ members = [
     "file-chunker",
     "chunking-store",
     "chunk-model",
+    "embedding_provider",
+    "tools/embedder-demo",
 ]
 
 resolver = "2"
