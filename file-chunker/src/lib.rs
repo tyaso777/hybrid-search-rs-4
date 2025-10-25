@@ -3,7 +3,8 @@ pub mod reader_docx;
 pub mod unified_blocks;
 pub mod chunker_rules_jp;
 
-use chunk_model::{ChunkRecord, SourceMeta};
+use chunk_model::{ChunkId, ChunkRecord, DocumentId};
+use std::collections::BTreeMap;
 use unified_blocks::UnifiedBlock;
 
 /// High-level entry to chunk a file by path.
@@ -30,15 +31,23 @@ pub fn chunk_file(path: &str) -> Vec<ChunkRecord> {
     // Apply JP chunking rules (stub)
     let chunks_text = chunker_rules_jp::chunk_blocks_jp(&blocks);
 
-    // Map to ChunkRecord
-    let source = SourceMeta::new(path, content_type);
+    // Map to ChunkRecord (schema-based)
     chunks_text
         .into_iter()
         .enumerate()
         .map(|(i, text)| {
-            let mut cr = ChunkRecord::new(format!("{}#{}", path, i), source.clone(), i as u32, text);
-            cr.tokens = cr.text.chars().count(); // naive token estimate
-            cr
+            ChunkRecord {
+                schema_version: chunk_model::SCHEMA_MAJOR,
+                doc_id: DocumentId(path.to_string()),
+                chunk_id: ChunkId(format!("{}#{}", path, i)),
+                source_uri: path.to_string(),
+                source_mime: content_type.to_string(),
+                extracted_at: String::new(), // optionally fill with ISO 8601 UTC
+                text,
+                section_path: Vec::new(),
+                meta: BTreeMap::new(),
+                extra: BTreeMap::new(),
+            }
         })
         .collect()
 }
