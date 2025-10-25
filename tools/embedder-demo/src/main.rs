@@ -99,6 +99,14 @@ impl DemoApp {
         install_japanese_fallback_fonts(&cc.egui_ctx);
         let defaults = default_stdio_config();
 
+        // Default testdata paths (if present locally)
+        let td = small_testdata_dir();
+        let excel_default = td.join(DEFAULT_EXCEL_FILE).display().to_string();
+        let csv_default = td
+            .join(DEFAULT_CSV_FILE)
+            .display()
+            .to_string();
+
         Self {
             model_path: defaults.model_path.display().to_string(),
             tokenizer_path: defaults.tokenizer_path.display().to_string(),
@@ -110,10 +118,10 @@ impl DemoApp {
             preview_text: String::new(),
             full_vector_text: String::new(),
             embedder: None,
-            input_excel_path: String::new(),
+            input_excel_path: excel_default,
             output_excel_path: String::new(),
             excel_log: String::new(),
-            input_csv_path: String::new(),
+            input_csv_path: csv_default,
             output_csv_path: String::new(),
             csv_log: String::new(),
             csv_encoding: CsvEncoding::Utf8,
@@ -459,7 +467,13 @@ impl App for DemoApp {
                         ui.label("Input workbook:");
                         ui.add(TextEdit::singleline(&mut self.input_excel_path).desired_width(400.0));
                         if ui.add(Button::new("Browse")).clicked() {
-                            if let Some(path) = FileDialog::new().add_filter("Excel", &["xlsx", "xls"]).pick_file() {
+                            let td = small_testdata_dir();
+                            if let Some(path) = FileDialog::new()
+                                .add_filter("Excel", &["xlsx", "xls"])
+                                .set_directory(&td)
+                                .set_file_name(DEFAULT_EXCEL_FILE)
+                                .pick_file()
+                            {
                                 self.input_excel_path = path.display().to_string();
                             }
                         }
@@ -488,7 +502,13 @@ impl App for DemoApp {
                         ui.label("Input CSV:");
                         ui.add(TextEdit::singleline(&mut self.input_csv_path).desired_width(400.0));
                         if ui.add(Button::new("Browse")).clicked() {
-                            if let Some(path) = FileDialog::new().add_filter("CSV", &["csv"]).pick_file() {
+                            let td = small_testdata_dir();
+                            if let Some(path) = FileDialog::new()
+                                .add_filter("CSV", &["csv"])    
+                                .set_directory(&td)
+                                .set_file_name(DEFAULT_CSV_FILE)
+                                .pick_file()
+                            {
                                 self.input_csv_path = path.display().to_string();
                             }
                         }
@@ -681,6 +701,13 @@ fn excel_column_index(index: usize) -> Result<u16, String> {
 
 fn format_embedding_value(value: f32) -> String {
     format!("{value:.6}")
+}
+
+const DEFAULT_EXCEL_FILE: &str = "one_col_10_records_with_header.xlsx";
+const DEFAULT_CSV_FILE: &str = "one_col_10_records_with_header_utf8bom.csv";
+
+fn small_testdata_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata").join("small")
 }
 
 fn format_preview(vector: &[f32]) -> String {
