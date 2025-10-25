@@ -83,6 +83,8 @@ struct DemoApp {
     pending_action: Option<PendingAction>,
     // Async Excel job
     excel_job: Option<JobHandle>,
+    // Batch size for Excel embedding
+    excel_batch_size: usize,
 }
 
 struct ModelInitTask {
@@ -152,6 +154,7 @@ impl DemoApp {
             model_task: None,
             pending_action: None,
             excel_job: None,
+            excel_batch_size: 64,
         }
     }
 
@@ -303,8 +306,9 @@ impl DemoApp {
         let output_path_th = output_path.clone();
         let skip = self.has_header;
         self.status = "Running Excel embedding...".into();
+        let batch = self.excel_batch_size.max(1);
         thread::spawn(move || {
-            run_excel_embedding_job(embedder, &input_path_th, &output_path_th, skip, cancel_cl, tx);
+            run_excel_embedding_job(embedder, &input_path_th, &output_path_th, skip, cancel_cl, tx, batch);
         });
         self.excel_job = Some(JobHandle {
             rx,
@@ -512,6 +516,10 @@ impl App for DemoApp {
                                 self.output_excel_path = path.display().to_string();
                             }
                         }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Batch size:");
+                        ui.add(egui::Slider::new(&mut self.excel_batch_size, 1..=256).text("rows/batch"));
                     });
                     if ui.add(Button::new("Run Excel Embedding")).clicked() {
                         self.queue_or_run_excel();
@@ -853,6 +861,7 @@ fn run_excel_embedding_job(
     skip_first_row: bool,
     cancel: Arc<AtomicBool>,
     tx: mpsc::Sender<JobEvent>,
+    batch_size: usize,
 ) {
     // open workbook
     let mut workbook = match open_workbook_auto(input_path) {
@@ -936,7 +945,7 @@ fn run_excel_embedding_job(
         }
     }
 
-    let batch_size = 64;
+    let batch_size = batch_size.max(1);
     let mut done = 0usize;
     while done < total {
         if cancel.load(Ordering::SeqCst) {
@@ -1179,4 +1188,5 @@ fn candidate_font_paths() -> Vec<PathBuf> {
 
     paths
 }
+
 
