@@ -1,6 +1,6 @@
 # chunk-model
 
-[ↁEBack to workspace README](../README.md)
+[← Back to workspace README](../README.md)
 
 Thin, shared schema crate that defines the data contract for content chunks produced by `file-chunker` and consumed by `chunking-store` and other tools.
 
