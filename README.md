@@ -20,6 +20,19 @@ Rust workspace for a hybrid search pipeline.
 - tools/embedder-demo
   - Desktop GUI (egui/eframe) for interactive embedding. See usage in [embedding_provider/README.md](embedding_provider/README.md).
 
+## Documentation Map
+
+- Embedding Provider Guide
+  - Path: [embedding_provider/README.md](embedding_provider/README.md)
+  - Read this if you want to set up a local ONNX embedding model, export an ONNX from a HF model, understand pooling/dimension checks, or run the CLI/GUI with the right defaults.
+
+- Demo Test Data
+  - Path: [tools/embedder-demo/testdata/README.md](tools/embedder-demo/testdata/README.md)
+  - Read this if you want to know where to place sample Excel/CSV files for the GUI demo, which files are committed (small) vs ignored (large), and where outputs are written.
+
+- Workspace Overview (this page)
+  - Read this to understand the overall crate structure, how they relate, and quick commands to build/test/run.
+
 ## Quick Start
 
 - Build everything: `cargo build`
