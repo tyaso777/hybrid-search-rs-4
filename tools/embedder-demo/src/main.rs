@@ -9,14 +9,13 @@ use std::path::PathBuf;
 
 use calamine::{open_workbook_auto, Reader};
 use csv::{ReaderBuilder, WriterBuilder};
-use eframe::egui::{self, Button, CentralPanel, ComboBox, Label, Layout, ScrollArea, TextEdit, CollapsingHeader, Spinner};
+use eframe::egui::{self, Button, CentralPanel, ComboBox, ScrollArea, TextEdit, CollapsingHeader, Spinner};
 use eframe::{App, CreationContext, Frame, NativeOptions};
 use embedding_provider::config::{default_stdio_config, ONNX_STDIO_DEFAULTS};
 use embedding_provider::embedder::{Embedder, OnnxStdIoConfig, OnnxStdIoEmbedder};
 use rfd::FileDialog;
 use rust_xlsxwriter::{Workbook, XlsxError};
 use encoding_rs::{Encoding, SHIFT_JIS, UTF_8};
-use chrono::Local;
 
 fn main() -> eframe::Result<()> {
     let options = NativeOptions::default();
@@ -680,6 +679,7 @@ impl App for DemoApp {
     }
 }
 
+#[allow(dead_code)]
 struct BatchStats {
     rows: usize,
     dimension: usize,
@@ -713,6 +713,7 @@ fn derive_default_output_path(input: &PathBuf, ext: &str) -> PathBuf {
     candidate
 }
 
+#[allow(dead_code)]
 fn embed_excel_file(
     embedder: &dyn Embedder,
     input_path: &std::path::Path,
@@ -1107,6 +1108,7 @@ fn run_csv_embedding_job(
     let _ = tx.send(JobEvent::Finished { rows: rows.len(), dimension: dim, embedder });
 }
 
+#[allow(dead_code)]
 fn embed_csv_file(
     embedder: &dyn Embedder,
     input_path: &std::path::Path,
