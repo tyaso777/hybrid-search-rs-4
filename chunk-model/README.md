@@ -1,5 +1,7 @@
 # chunk-model
 
+[ↁEBack to workspace README](../README.md)
+
 Thin, shared schema crate that defines the data contract for content chunks produced by `file-chunker` and consumed by `chunking-store` and other tools.
 
 ## What it provides
@@ -80,4 +82,3 @@ Feature flags are reserved for small helpers to keep the base crate lean:
 - `time` — helpers for ISO 8601 timestamps (planned)
 - `hash` — deterministic IDs (e.g., blake3) (planned)
 - `schema` — JSON Schema export (planned)
-
