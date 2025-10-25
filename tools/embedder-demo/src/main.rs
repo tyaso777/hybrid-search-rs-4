@@ -1,6 +1,8 @@
 use std::fs;
 use std::env;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Instant;
 use std::path::PathBuf;
@@ -37,7 +39,6 @@ enum CsvEncoding {
     Utf8,
     ShiftJis,
 }
-
 impl CsvEncoding {
     fn label(self) -> &'static str {
         match self {
@@ -80,6 +81,8 @@ struct DemoApp {
     // Async model init
     model_task: Option<ModelInitTask>,
     pending_action: Option<PendingAction>,
+    // Async Excel job
+    excel_job: Option<JobHandle>,
 }
 
 struct ModelInitTask {
@@ -94,6 +97,19 @@ enum PendingAction {
     CsvEmbed,
 }
 
+struct JobHandle {
+    rx: Receiver<JobEvent>,
+    cancel: Arc<AtomicBool>,
+    output_path: String,
+    total: usize,
+    done: usize,
+}
+
+enum JobEvent {
+    Progress { done: usize, total: usize },
+    Finished { rows: usize, dimension: usize, embedder: OnnxStdIoEmbedder },
+    Failed { error: String, embedder: OnnxStdIoEmbedder },
+}
 impl DemoApp {
     fn new(cc: &CreationContext<'_>) -> Self {
         // Install CJK (Japanese) fallback fonts so that UI can render Japanese text.
@@ -135,6 +151,7 @@ impl DemoApp {
             active_tab: ActiveTab::Text,
             model_task: None,
             pending_action: None,
+            excel_job: None,
         }
     }
 
@@ -274,28 +291,28 @@ impl DemoApp {
         if !self.ensure_embedder() {
             return;
         }
-        let embedder = self.embedder.as_ref().unwrap();
-
-        match embed_excel_file(embedder, &input_path, &output_path, self.has_header) {
-            Ok(stats) => {
-                self.status = format!(
-                    "Excel embedding completed: {} rows written to `{}`",
-                    stats.rows,
-                    output_path.display()
-                );
-                self.excel_log = format!(
-                    "Input: {}\nOutput: {}\nRows processed: {}\nEmbedding dimension: {}",
-                    input_path.display(),
-                    output_path.display(),
-                    stats.rows,
-                    stats.dimension
-                );
-            }
-            Err(err) => {
-                self.status = format!("Excel embedding failed: {err}");
-                self.excel_log = err;
-            }
-        }
+        // Take ownership of the embedder for the background job
+        let embedder = match self.embedder.take() {
+            Some(e) => e,
+            None => return,
+        };
+        let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_cl = cancel.clone();
+        let input_path_th = input_path.clone();
+        let output_path_th = output_path.clone();
+        let skip = self.has_header;
+        self.status = "Running Excel embedding...".into();
+        thread::spawn(move || {
+            run_excel_embedding_job(embedder, &input_path_th, &output_path_th, skip, cancel_cl, tx);
+        });
+        self.excel_job = Some(JobHandle {
+            rx,
+            cancel,
+            output_path: output_path.display().to_string(),
+            total: 0,
+            done: 0,
+        });
     }
 
     fn embed_csv(&mut self) {
@@ -344,7 +361,6 @@ impl DemoApp {
         }
     }
 }
-
 impl App for DemoApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
         CentralPanel::default().show(ctx, |ui| {
@@ -499,6 +515,60 @@ impl App for DemoApp {
                     });
                     if ui.add(Button::new("Run Excel Embedding")).clicked() {
                         self.queue_or_run_excel();
+                    }
+                    let mut excel_end_event: Option<JobEvent> = None;
+                    let mut excel_disconnected = false;
+                    if let Some(job) = &mut self.excel_job {
+                        // Poll progress events
+                        loop {
+                            match job.rx.try_recv() {
+                                Ok(JobEvent::Progress { done, total }) => {
+                                    job.done = done;
+                                    job.total = total;
+                                    self.status = format!("Excel embedding: {}/{}", done, total);
+                                }
+                                Ok(ev @ JobEvent::Finished { .. }) | Ok(ev @ JobEvent::Failed { .. }) => { excel_end_event = Some(ev); break; }
+                                Err(TryRecvError::Empty) => { break; }
+                                Err(TryRecvError::Disconnected) => { excel_disconnected = true; break; }
+                            }
+                        }
+                        ui.separator();
+                        ui.label(format!("Progress: {}/{}", job.done, job.total));
+                        if ui.add(Button::new("Cancel Excel Job")).clicked() {
+                            job.cancel.store(true, Ordering::SeqCst);
+                            self.status = "Canceling Excel embedding...".into();
+                        }
+                    }
+                    if excel_disconnected {
+                        self.status = "Excel embedding failed (disconnected)".into();
+                        self.excel_job = None;
+                    }
+                    if let Some(ev) = excel_end_event {
+                        if let Some(job) = &self.excel_job { let _ = job; } // no-op to satisfy borrow checker logic
+                        match ev {
+                            JobEvent::Finished { rows, dimension, embedder } => {
+                                self.embedder = Some(embedder);
+                                if let Some(job) = &self.excel_job {
+                                    self.status = format!(
+                                        "Excel embedding completed: {} rows written to `{}`",
+                                        rows, job.output_path
+                                    );
+                                    self.excel_log = format!(
+                                        "Output: {}\nRows processed: {}\nEmbedding dimension: {}",
+                                        job.output_path,
+                                        rows,
+                                        dimension
+                                    );
+                                }
+                            }
+                            JobEvent::Failed { error, embedder } => {
+                                self.embedder = Some(embedder);
+                                self.status = format!("Excel embedding failed: {error}");
+                                self.excel_log = error;
+                            }
+                            _ => {}
+                        }
+                        self.excel_job = None;
                     }
                     ui.separator();
                     ui.heading("Excel Log");
@@ -776,6 +846,138 @@ fn format_full(vector: &[f32]) -> String {
         .join("\n")
 }
 
+fn run_excel_embedding_job(
+    embedder: OnnxStdIoEmbedder,
+    input_path: &std::path::Path,
+    output_path: &std::path::Path,
+    skip_first_row: bool,
+    cancel: Arc<AtomicBool>,
+    tx: mpsc::Sender<JobEvent>,
+) {
+    // open workbook
+    let mut workbook = match open_workbook_auto(input_path) {
+        Ok(wb) => wb,
+        Err(e) => {
+            let _ = tx.send(JobEvent::Failed { error: format!("failed to open `{}`: {e}", input_path.display()), embedder });
+            return;
+        }
+    };
+
+    let range = match workbook.worksheet_range_at(0) {
+        Some(Ok(r)) => r,
+        Some(Err(e)) => {
+            let _ = tx.send(JobEvent::Failed { error: format!("failed to read first worksheet: {e}"), embedder });
+            return;
+        }
+        None => {
+            let _ = tx.send(JobEvent::Failed { error: "workbook does not contain any worksheets".to_string(), embedder });
+            return;
+        }
+    };
+
+    let mut rows: Vec<String> = Vec::new();
+    let mut header_label: Option<String> = None;
+    for (i, row) in range.rows().enumerate() {
+        if i == 0 && skip_first_row {
+            header_label = row
+                .get(0)
+                .map(|cell| cell.to_string())
+                .and_then(|s| {
+                    let t = s.trim().to_string();
+                    if t.is_empty() { None } else { Some(t) }
+                });
+            continue;
+        }
+        let text = row
+            .get(0)
+            .map(|cell| cell.to_string())
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        if !text.is_empty() {
+            rows.push(text);
+        }
+    }
+
+    if rows.is_empty() {
+        let _ = tx.send(JobEvent::Failed { error: "input workbook contains no rows".into(), embedder });
+        return;
+    }
+
+    let total = rows.len();
+    let mut workbook_out = Workbook::new();
+    let worksheet = workbook_out.add_worksheet();
+    let header_title = header_label
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("text");
+    if let Err(e) = worksheet.write_string(0, 0, header_title) {
+        let _ = tx.send(JobEvent::Failed { error: map_xlsx_error("write header", e), embedder });
+        return;
+    }
+
+    // Determine dimension
+    let dim = match embedder.embed(&rows[0]) {
+        Ok(v) => v.len(),
+        Err(e) => {
+            let _ = tx.send(JobEvent::Failed { error: format!("embedding failed: {e}"), embedder });
+            return;
+        }
+    };
+    for col in 0..dim {
+        let header = format!("emb_{col}");
+        let col_index = match excel_column_index(col + 1) {
+            Ok(ix) => ix,
+            Err(e) => { let _ = tx.send(JobEvent::Failed { error: e, embedder }); return; }
+        };
+        if let Err(e) = worksheet.write_string(0, col_index, &header) {
+            let _ = tx.send(JobEvent::Failed { error: map_xlsx_error("write header", e), embedder });
+            return;
+        }
+    }
+
+    let batch_size = 64;
+    let mut done = 0usize;
+    while done < total {
+        if cancel.load(Ordering::SeqCst) {
+            let _ = tx.send(JobEvent::Failed { error: "canceled by user".into(), embedder });
+            return;
+        }
+        let end = usize::min(done + batch_size, total);
+        let batch = &rows[done..end];
+        let refs: Vec<&str> = batch.iter().map(String::as_str).collect();
+        let vectors = match embedder.embed_batch(&refs) {
+            Ok(v) => v,
+            Err(e) => { let _ = tx.send(JobEvent::Failed { error: format!("embedding failed: {e}"), embedder }); return; }
+        };
+
+        for (idx, (text, vec)) in batch.iter().zip(vectors.iter()).enumerate() {
+            let r = (done + idx + 1) as u32; // +1 for header
+            if let Err(e) = worksheet.write_string(r, 0, text) {
+                let _ = tx.send(JobEvent::Failed { error: map_xlsx_error("write text cell", e), embedder });
+                return;
+            }
+            for (col_idx, value) in vec.iter().enumerate() {
+                let col_index = match excel_column_index(col_idx + 1) { Ok(ix) => ix, Err(e) => { let _ = tx.send(JobEvent::Failed { error: e, embedder }); return; } };
+                if let Err(e) = worksheet.write_number(r, col_index, f64::from(*value)) {
+                    let _ = tx.send(JobEvent::Failed { error: map_xlsx_error("write embedding", e), embedder });
+                    return;
+                }
+            }
+        }
+
+        done = end;
+        let _ = tx.send(JobEvent::Progress { done, total });
+    }
+
+    if let Err(e) = workbook_out.save(output_path) {
+        let _ = tx.send(JobEvent::Failed { error: map_xlsx_error("save workbook", e), embedder });
+        return;
+    }
+
+    let _ = tx.send(JobEvent::Finished { rows: total, dimension: dim, embedder });
+}
+
 fn embed_csv_file(
     embedder: &dyn Embedder,
     input_path: &std::path::Path,
@@ -977,3 +1179,4 @@ fn candidate_font_paths() -> Vec<PathBuf> {
 
     paths
 }
+
