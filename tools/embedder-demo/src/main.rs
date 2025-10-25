@@ -108,6 +108,11 @@ impl DemoApp {
             .display()
             .to_string();
 
+        // Default outputs for samples: write into crate-local output/ with same filenames
+        let outdir = demo_output_dir();
+        let excel_out_default = outdir.join(DEFAULT_EXCEL_FILE).display().to_string();
+        let csv_out_default = outdir.join(DEFAULT_CSV_FILE).display().to_string();
+
         Self {
             model_path: defaults.model_path.display().to_string(),
             tokenizer_path: defaults.tokenizer_path.display().to_string(),
@@ -120,10 +125,10 @@ impl DemoApp {
             full_vector_text: String::new(),
             embedder: None,
             input_excel_path: excel_default,
-            output_excel_path: String::new(),
+            output_excel_path: excel_out_default,
             excel_log: String::new(),
             input_csv_path: csv_default,
-            output_csv_path: String::new(),
+            output_csv_path: csv_out_default,
             csv_log: String::new(),
             csv_encoding: CsvEncoding::Utf8,
             has_header: true,
@@ -720,6 +725,10 @@ const DEFAULT_CSV_FILE: &str = "one_col_10_records_with_header_utf8bom.csv";
 
 fn small_testdata_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata").join("small")
+}
+
+fn demo_output_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("output")
 }
 
 fn format_preview(vector: &[f32]) -> String {
