@@ -18,8 +18,7 @@ Rust workspace for a hybrid search pipeline.
   - Docs: see [embedding_provider/README.md](embedding_provider/README.md) for model preparation, configuration defaults, and tests.
 
 - tools/embedder-demo
-  - Desktop GUI (egui/eframe) for interactive embedding: configure model/tokenizer/DLL, initialize asynchronously, and embed Text/Excel/CSV.
-  - Quick run: `cargo run -p embedder-demo`
+  - Desktop GUI (egui/eframe) for interactive embedding. See usage in [embedding_provider/README.md](embedding_provider/README.md).
 
 ## Quick Start
 
