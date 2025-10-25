@@ -1,0 +1,12 @@
+[package]
+name = "chunking-store"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "chunking_store"
+path = "src/lib.rs"
+
+[dependencies]
+chunk-model = { path = "../chunk-model" }
+

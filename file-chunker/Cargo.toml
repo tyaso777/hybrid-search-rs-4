@@ -1,0 +1,12 @@
+[package]
+name = "file-chunker"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "file_chunker"
+path = "src/lib.rs"
+
+[dependencies]
+chunk-model = { path = "../chunk-model" }
+

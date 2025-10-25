@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "file-chunker",
+    "chunking-store",
+    "chunk-model",
+]
+
+resolver = "2"

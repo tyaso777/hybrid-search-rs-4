@@ -1,0 +1,9 @@
+[package]
+name = "chunk-model"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "chunk_model"
+path = "src/lib.rs"
+
