@@ -23,3 +23,9 @@ embedding_provider/models/**
 embedding_provider/bin/**
 !embedding_provider/bin/**/.gitkeep
 !embedding_provider/bin/README.md
+
+# Demo test data and outputs
+tools/embedder-demo/testdata/large/**
+!tools/embedder-demo/testdata/large/.gitkeep
+tools/embedder-demo/output/**
+!tools/embedder-demo/output/.gitkeep
