@@ -1,6 +1,6 @@
 Test data layout for embedder-demo
 
-[← Back to workspace README](../../README.md)
+[← Back to workspace README](../../../README.md)
 
 - small/
   - Small, redistributable samples (keep under version control).
