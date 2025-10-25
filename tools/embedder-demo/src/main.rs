@@ -448,6 +448,10 @@ impl App for DemoApp {
                 }
             }
             ui.label(format!("Status: {}", self.status));
+            // Keep UI repainting while background jobs are running so progress updates feel live.
+            if self.excel_job.is_some() || self.csv_job.is_some() {
+                ctx.request_repaint();
+            }
 
             ui.separator();
 
@@ -616,6 +620,11 @@ impl App for DemoApp {
                                 ui.selectable_value(&mut self.csv_encoding, CsvEncoding::Utf8, CsvEncoding::Utf8.label());
                                 ui.selectable_value(&mut self.csv_encoding, CsvEncoding::ShiftJis, CsvEncoding::ShiftJis.label());
                             });
+                    });
+                    // Batch size slider (CSV)
+                    ui.horizontal(|ui| {
+                        ui.label("Batch size:");
+                        ui.add(egui::Slider::new(&mut self.excel_batch_size, 1..=256).text("rows/batch"));
                     });
                     if ui.add(Button::new("Run CSV Embedding")).clicked() {
                         self.queue_or_run_csv();
@@ -957,6 +966,7 @@ fn run_excel_embedding_job(
     }
 
     let total = rows.len();
+    let _ = tx.send(JobEvent::Progress { done: 0, total });
     let mut workbook_out = Workbook::new();
     let worksheet = workbook_out.add_worksheet();
     let header_title = header_label
@@ -1078,8 +1088,9 @@ fn run_csv_embedding_job(
         for index in 0..dim { header.push(format!("emb_{index}")); }
         if let Err(e) = writer.write_record(&header) { let _ = tx.send(JobEvent::Failed { error: format!("failed to write CSV header: {e}"), embedder }); return; }
 
-        let total = rows.len();
-        let bs = batch_size.max(1);
+    let total = rows.len();
+    let _ = tx.send(JobEvent::Progress { done: 0, total });
+    let bs = batch_size.max(1);
         let mut done = 0usize;
         while done < total {
             if cancel.load(Ordering::SeqCst) { let _ = tx.send(JobEvent::Failed { error: "canceled by user".into(), embedder }); return; }
