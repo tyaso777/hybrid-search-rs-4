@@ -74,6 +74,7 @@ struct DemoApp {
     output_csv_path: String,
     csv_log: String,
     csv_encoding: CsvEncoding,
+    has_header: bool,
     // Tab
     active_tab: ActiveTab,
     // Async model init
@@ -125,6 +126,7 @@ impl DemoApp {
             output_csv_path: String::new(),
             csv_log: String::new(),
             csv_encoding: CsvEncoding::Utf8,
+            has_header: true,
             active_tab: ActiveTab::Text,
             model_task: None,
             pending_action: None,
@@ -269,7 +271,7 @@ impl DemoApp {
         }
         let embedder = self.embedder.as_ref().unwrap();
 
-        match embed_excel_file(embedder, &input_path, &output_path) {
+        match embed_excel_file(embedder, &input_path, &output_path, self.has_header) {
             Ok(stats) => {
                 self.status = format!(
                     "Excel embedding completed: {} rows written to `{}`",
@@ -314,7 +316,7 @@ impl DemoApp {
         let embedder = self.embedder.as_ref().unwrap();
 
         let enc = self.csv_encoding;
-        match embed_csv_file(embedder, &input_path, &output_path, enc) {
+        match embed_csv_file(embedder, &input_path, &output_path, enc, self.has_header) {
             Ok(stats) => {
                 self.status = format!(
                     "CSV embedding completed: {} rows written to `{}`",
@@ -479,6 +481,9 @@ impl App for DemoApp {
                         }
                     });
                     ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.has_header, "Skip first row (header)");
+                    });
+                    ui.horizontal(|ui| {
                         ui.label("Output workbook (optional):");
                         ui.add(TextEdit::singleline(&mut self.output_excel_path).desired_width(400.0));
                         if ui.add(Button::new("Save As")).clicked() {
@@ -512,6 +517,9 @@ impl App for DemoApp {
                                 self.input_csv_path = path.display().to_string();
                             }
                         }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.has_header, "Skip first row (header)");
                     });
                     ui.horizontal(|ui| {
                         ui.label("Output CSV (optional):");
@@ -584,6 +592,7 @@ fn embed_excel_file(
     embedder: &dyn Embedder,
     input_path: &std::path::Path,
     output_path: &std::path::Path,
+    skip_first_row: bool,
 ) -> Result<BatchStats, String> {
     let mut workbook = open_workbook_auto(input_path)
         .map_err(|err| format!("failed to open `{}`: {err}", input_path.display()))?;
@@ -594,7 +603,10 @@ fn embed_excel_file(
         .map_err(|err| format!("failed to read first worksheet: {err}"))?;
 
     let mut rows = Vec::new();
-    for row in range.rows() {
+    for (i, row) in range.rows().enumerate() {
+        if skip_first_row && i == 0 {
+            continue;
+        }
         let text = row
             .get(0)
             .map(|cell| cell.to_string())
@@ -745,6 +757,7 @@ fn embed_csv_file(
     input_path: &std::path::Path,
     output_path: &std::path::Path,
     encoding: CsvEncoding,
+    skip_first_row: bool,
 ) -> Result<BatchStats, String> {
     let codec = encoding.encoding();
 
@@ -770,6 +783,9 @@ fn embed_csv_file(
     let mut rows = Vec::new();
     for (index, record) in reader.records().enumerate() {
         let record = record.map_err(|err| format!("failed to read record {}: {err}", index + 1))?;
+        if skip_first_row && index == 0 {
+            continue;
+        }
         let text = record.get(0).unwrap_or("").trim().to_owned();
         rows.push(text);
     }
