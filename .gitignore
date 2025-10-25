@@ -15,3 +15,11 @@ Thumbs.db
 *.log
 .env
 
+# Embedding assets (local only; large/binary). Keep placeholders/READMEs tracked.
+embedding_provider/models/**
+!embedding_provider/models/**/.gitkeep
+!embedding_provider/models/README.md
+
+embedding_provider/bin/**
+!embedding_provider/bin/**/.gitkeep
+!embedding_provider/bin/README.md
