@@ -83,6 +83,8 @@ struct DemoApp {
     pending_action: Option<PendingAction>,
     // Async Excel job
     excel_job: Option<JobHandle>,
+    // Async CSV job
+    csv_job: Option<JobHandle>,
     // Batch size for Excel embedding
     excel_batch_size: usize,
 }
@@ -105,6 +107,7 @@ struct JobHandle {
     output_path: String,
     total: usize,
     done: usize,
+    started: Instant,
 }
 
 enum JobEvent {
@@ -154,6 +157,7 @@ impl DemoApp {
             model_task: None,
             pending_action: None,
             excel_job: None,
+            csv_job: None,
             excel_batch_size: 64,
         }
     }
@@ -316,6 +320,7 @@ impl DemoApp {
             output_path: output_path.display().to_string(),
             total: 0,
             done: 0,
+            started: Instant::now(),
         });
     }
 
@@ -336,33 +341,22 @@ impl DemoApp {
         }
         let output_path = PathBuf::from(self.output_csv_path.trim());
 
-        if !self.ensure_embedder() {
-            return;
-        }
-        let embedder = self.embedder.as_ref().unwrap();
-
+        if !self.ensure_embedder() { return; }
+        // spawn async CSV job
+        let embedder = match self.embedder.take() { Some(e) => e, None => return };
+        let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_cl = cancel.clone();
+        let input_path_th = input_path.clone();
+        let output_path_th = output_path.clone();
+        let skip = self.has_header;
         let enc = self.csv_encoding;
-        match embed_csv_file(embedder, &input_path, &output_path, enc, self.has_header) {
-            Ok(stats) => {
-                self.status = format!(
-                    "CSV embedding completed: {} rows written to `{}`",
-                    stats.rows,
-                    output_path.display()
-                );
-                self.csv_log = format!(
-                    "Input: {}\nOutput: {}\nRows processed: {}\nEmbedding dimension: {}\nEncoding: {}",
-                    input_path.display(),
-                    output_path.display(),
-                    stats.rows,
-                    stats.dimension,
-                    enc.label()
-                );
-            }
-            Err(err) => {
-                self.status = format!("CSV embedding failed: {err}");
-                self.csv_log = err;
-            }
-        }
+        let batch = self.excel_batch_size.max(1);
+        self.status = "Running CSV embedding...".into();
+        thread::spawn(move || {
+            run_csv_embedding_job(embedder, &input_path_th, &output_path_th, enc, skip, cancel_cl, tx, batch);
+        });
+        self.csv_job = Some(JobHandle { rx, cancel, output_path: output_path.display().to_string(), total: 0, done: 0, started: Instant::now() });
     }
 }
 impl App for DemoApp {
@@ -557,15 +551,17 @@ impl App for DemoApp {
                             JobEvent::Finished { rows, dimension, embedder } => {
                                 self.embedder = Some(embedder);
                                 if let Some(job) = &self.excel_job {
+                                    let elapsed = job.started.elapsed().as_secs_f32();
                                     self.status = format!(
-                                        "Excel embedding completed: {} rows written to `{}`",
-                                        rows, job.output_path
+                                        "Excel embedding completed in {:.2}s: {} rows written to `{}`",
+                                        elapsed, rows, job.output_path
                                     );
                                     self.excel_log = format!(
-                                        "Output: {}\nRows processed: {}\nEmbedding dimension: {}",
+                                        "Output: {}\nRows processed: {}\nEmbedding dimension: {}\nElapsed: {:.2}s",
                                         job.output_path,
                                         rows,
-                                        dimension
+                                        dimension,
+                                        elapsed
                                     );
                                 }
                             }
@@ -624,6 +620,52 @@ impl App for DemoApp {
                     });
                     if ui.add(Button::new("Run CSV Embedding")).clicked() {
                         self.queue_or_run_csv();
+                    }
+                    // CSV job progress
+                    let mut csv_end_event: Option<JobEvent> = None;
+                    let mut csv_disconnected = false;
+                    if let Some(job) = &mut self.csv_job {
+                        loop {
+                            match job.rx.try_recv() {
+                                Ok(JobEvent::Progress { done, total }) => {
+                                    job.done = done;
+                                    job.total = total;
+                                    self.status = format!("CSV embedding: {}/{}", done, total);
+                                }
+                                Ok(ev @ JobEvent::Finished { .. }) | Ok(ev @ JobEvent::Failed { .. }) => { csv_end_event = Some(ev); break; }
+                                Err(TryRecvError::Empty) => { break; }
+                                Err(TryRecvError::Disconnected) => { csv_disconnected = true; break; }
+                            }
+                        }
+                        ui.separator();
+                        ui.label(format!("Progress: {}/{}", job.done, job.total));
+                        if ui.add(Button::new("Cancel CSV Job")).clicked() {
+                            job.cancel.store(true, Ordering::SeqCst);
+                            self.status = "Canceling CSV embedding...".into();
+                        }
+                    }
+                    if csv_disconnected {
+                        self.status = "CSV embedding failed (disconnected)".into();
+                        self.csv_job = None;
+                    }
+                    if let Some(ev) = csv_end_event {
+                        if let Some(job) = &self.csv_job {
+                            match ev {
+                                JobEvent::Finished { rows, dimension, embedder } => {
+                                    self.embedder = Some(embedder);
+                                    let elapsed = job.started.elapsed().as_secs_f32();
+                                    self.status = format!("CSV embedding completed in {:.2}s: {} rows written to `{}`", elapsed, rows, job.output_path);
+                                    self.csv_log = format!("Output: {}\nRows processed: {}\nEmbedding dimension: {}\nElapsed: {:.2}s", job.output_path, rows, dimension, elapsed);
+                                }
+                                JobEvent::Failed { error, embedder } => {
+                                    self.embedder = Some(embedder);
+                                    self.status = format!("CSV embedding failed: {error}");
+                                    self.csv_log = error;
+                                }
+                                _ => {}
+                            }
+                        }
+                        self.csv_job = None;
                     }
                     ui.separator();
                     ui.heading("CSV Log");
@@ -984,7 +1026,85 @@ fn run_excel_embedding_job(
         return;
     }
 
-    let _ = tx.send(JobEvent::Finished { rows: total, dimension: dim, embedder });
+    let _ = tx.send(JobEvent::Finished { rows: rows.len(), dimension: dim, embedder });
+}
+
+fn run_csv_embedding_job(
+    embedder: OnnxStdIoEmbedder,
+    input_path: &std::path::Path,
+    output_path: &std::path::Path,
+    encoding: CsvEncoding,
+    skip_first_row: bool,
+    cancel: Arc<AtomicBool>,
+    tx: mpsc::Sender<JobEvent>,
+    batch_size: usize,
+) {
+    let codec = encoding.encoding();
+    // Read input file
+    let bytes = match fs::read(input_path) {
+        Ok(b) => b,
+        Err(e) => { let _ = tx.send(JobEvent::Failed { error: format!("failed to read `{}`: {e}", input_path.display()), embedder }); return; }
+    };
+    let (decoded, _, had_decode_errors) = codec.decode(&bytes);
+    if had_decode_errors { let _ = tx.send(JobEvent::Failed { error: format!("failed to decode `{}` as {}", input_path.display(), encoding.label()), embedder }); return; }
+    let mut csv_input = decoded.into_owned();
+    if csv_input.starts_with('\u{feff}') { csv_input.remove(0); }
+    let mut reader = ReaderBuilder::new().has_headers(false).from_reader(csv_input.as_bytes());
+
+    let mut rows: Vec<String> = Vec::new();
+    let mut header_label: Option<String> = None;
+    for (index, record) in reader.records().enumerate() {
+        let record = match record { Ok(r) => r, Err(e) => { let _ = tx.send(JobEvent::Failed { error: format!("failed to read record {}: {e}", index + 1), embedder }); return; } };
+        if index == 0 && skip_first_row {
+            header_label = record.get(0).map(|s| s.trim().to_owned()).and_then(|s| if s.is_empty() { None } else { Some(s) });
+            continue;
+        }
+        let text = record.get(0).unwrap_or("").trim().to_owned();
+        if !text.is_empty() { rows.push(text); }
+    }
+    if rows.is_empty() { let _ = tx.send(JobEvent::Failed { error: "input CSV contains no rows".into(), embedder }); return; }
+
+    // Probe embedding dimension
+    let dim = match embedder.embed(&rows[0]) { Ok(v) => v.len(), Err(e) => { let _ = tx.send(JobEvent::Failed { error: format!("embedding failed: {e}"), embedder }); return; } };
+
+    // Prepare CSV writer into buffer
+    let mut buffer = Vec::new();
+    {
+        let mut writer = WriterBuilder::new().has_headers(false).from_writer(&mut buffer);
+        let mut header = Vec::with_capacity(dim + 1);
+        let header_title = header_label.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or("text");
+        header.push(header_title.to_string());
+        for index in 0..dim { header.push(format!("emb_{index}")); }
+        if let Err(e) = writer.write_record(&header) { let _ = tx.send(JobEvent::Failed { error: format!("failed to write CSV header: {e}"), embedder }); return; }
+
+        let total = rows.len();
+        let bs = batch_size.max(1);
+        let mut done = 0usize;
+        while done < total {
+            if cancel.load(Ordering::SeqCst) { let _ = tx.send(JobEvent::Failed { error: "canceled by user".into(), embedder }); return; }
+            let end = usize::min(done + bs, total);
+            let batch = &rows[done..end];
+            let refs: Vec<&str> = batch.iter().map(String::as_str).collect();
+            let vectors = match embedder.embed_batch(&refs) { Ok(v) => v, Err(e) => { let _ = tx.send(JobEvent::Failed { error: format!("embedding failed: {e}"), embedder }); return; } };
+            for (text, vec) in batch.iter().zip(vectors.iter()) {
+                let mut record = Vec::with_capacity(vec.len() + 1);
+                record.push(text.to_string());
+                record.extend(vec.iter().map(|value| format_embedding_value(*value)));
+                if let Err(e) = writer.write_record(&record) { let _ = tx.send(JobEvent::Failed { error: format!("failed to write CSV row: {e}"), embedder }); return; }
+            }
+            done = end;
+            let _ = tx.send(JobEvent::Progress { done, total });
+        }
+        if let Err(e) = writer.flush() { let _ = tx.send(JobEvent::Failed { error: format!("failed to finalize CSV writer: {e}"), embedder }); return; }
+    }
+
+    // Encode to target encoding and write to disk
+    let csv_utf8 = match String::from_utf8(buffer) { Ok(s) => s, Err(e) => { let _ = tx.send(JobEvent::Failed { error: format!("invalid UTF-8 output: {e}"), embedder }); return; } };
+    let (encoded, _, had_encode_errors) = codec.encode(&csv_utf8);
+    if had_encode_errors { let _ = tx.send(JobEvent::Failed { error: format!("output contains characters not representable in {}", encoding.label()), embedder }); return; }
+    if let Err(e) = fs::write(output_path, encoded.as_ref()) { let _ = tx.send(JobEvent::Failed { error: format!("failed to write `{}`: {e}", output_path.display()), embedder }); return; }
+
+    let _ = tx.send(JobEvent::Finished { rows: rows.len(), dimension: dim, embedder });
 }
 
 fn embed_csv_file(
@@ -1188,5 +1308,6 @@ fn candidate_font_paths() -> Vec<PathBuf> {
 
     paths
 }
+
 
 
