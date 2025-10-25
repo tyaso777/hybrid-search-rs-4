@@ -5,13 +5,13 @@ Rust workspace for a hybrid search pipeline.
 ## Workspace Crates
 
 - file-chunker
-  - Utilities to split files into content chunks for downstream indexing and retrieval.
+  - Utilities to split files into content chunks for downstream indexing and retrieval. See [file-chunker/README.md](file-chunker/README.md).
 
 - chunk-model
   - Shared data types and traits used across the workspace (chunk metadata, content representations, etc.). See [chunk-model/README.md](chunk-model/README.md).
 
 - chunking-store
-  - Storage layer for chunks (e.g., SQLite-backed repository) and related persistence helpers.
+  - Storage layer for chunks (e.g., SQLite-backed repository) and related persistence helpers. See [chunking-store/README.md](chunking-store/README.md).
 
 - embedding_provider
   - Local ONNX-based embedding library (ONNX Runtime + tokenizers). Produces text embeddings via masked mean pooling.
@@ -44,6 +44,14 @@ Rust workspace for a hybrid search pipeline.
 - Chunk Model Guide
   - Path: [chunk-model/README.md](chunk-model/README.md)
   - Read this to understand the shared chunk schema, versioning policy, and usage examples.
+
+- File Chunker Guide
+  - Path: [file-chunker/README.md](file-chunker/README.md)
+  - Read this to understand the chunking pipeline, current stubs, and output shape.
+
+- Chunking Store Guide
+  - Path: [chunking-store/README.md](chunking-store/README.md)
+  - Read this to understand the store/index abstractions and current stubs.
 
 ## Quick Start
 
