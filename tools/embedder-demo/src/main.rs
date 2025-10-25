@@ -608,9 +608,20 @@ fn embed_excel_file(
         .map_err(|err| format!("failed to read first worksheet: {err}"))?;
 
     let mut rows = Vec::new();
+    let mut header_label: Option<String> = None;
     for (i, row) in range.rows().enumerate() {
-        if skip_first_row && i == 0 {
-            continue;
+        if i == 0 {
+            // Capture original header name if requested, then optionally skip
+            if skip_first_row {
+                header_label = row
+                    .get(0)
+                    .map(|cell| cell.to_string())
+                    .and_then(|s| {
+                        let t = s.trim().to_string();
+                        if t.is_empty() { None } else { Some(t) }
+                    });
+                continue;
+            }
         }
         let text = row
             .get(0)
@@ -662,8 +673,12 @@ fn embed_excel_file(
     {
         let worksheet = workbook_out.add_worksheet();
 
+        let header_title = header_label
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("text");
         worksheet
-            .write_string(0, 0, "text")
+            .write_string(0, 0, header_title)
             .map_err(|err| map_xlsx_error("write header", err))?;
 
         for col in 0..dimension {
@@ -790,9 +805,11 @@ fn embed_csv_file(
         .from_reader(csv_input.as_bytes());
 
     let mut rows = Vec::new();
+    let mut header_label: Option<String> = None;
     for (index, record) in reader.records().enumerate() {
         let record = record.map_err(|err| format!("failed to read record {}: {err}", index + 1))?;
-        if skip_first_row && index == 0 {
+        if index == 0 && skip_first_row {
+            header_label = record.get(0).map(|s| s.trim().to_owned()).and_then(|s| if s.is_empty() { None } else { Some(s) });
             continue;
         }
         let text = record.get(0).unwrap_or("").trim().to_owned();
@@ -845,7 +862,8 @@ fn embed_csv_file(
             .from_writer(&mut buffer);
 
         let mut header = Vec::with_capacity(dimension + 1);
-        header.push("text".to_string());
+        let header_title = header_label.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or("text");
+        header.push(header_title.to_string());
         for index in 0..dimension {
             header.push(format!("emb_{index}"));
         }
