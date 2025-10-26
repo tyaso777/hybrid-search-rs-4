@@ -13,6 +13,7 @@ Thumbs.db
 # Misc
 *.rs.bk
 *.log
+*.db
 .env
 
 # Embedding assets (local only; large/binary). Keep placeholders/READMEs tracked.
