@@ -4,9 +4,6 @@
 // The default build compiles a stub to keep the crate lightweight and portable.
 
 #[cfg(feature = "tantivy-impl")]
-mod real;
-
-#[cfg(feature = "tantivy-impl")]
 pub use real::TantivyIndex;
 
 #[cfg(not(feature = "tantivy-impl"))]
@@ -42,6 +39,7 @@ mod real {
     use tantivy::query::QueryParser;
     use tantivy::schema::{Schema, TEXT, STRING, STORED, NumericOptions};
     use tantivy::Index;
+    use tantivy::doc;
     use crate::{ChunkStoreRead, FilterClause, FilterOp, IndexCaps, SearchOptions, TextMatch, TextSearcher};
 
     pub struct TantivyIndex {
@@ -87,7 +85,7 @@ mod real {
                 if let Some(ts) = parse_rfc3339_to_ts(&rec.extracted_at) {
                     doc.add_i64(self.f_extracted_at_ts, ts);
                 }
-                writer.add_document(doc);
+                let _ = writer.add_document(doc);
             }
             writer.commit()?;
             self.reader.reload()?;
@@ -113,7 +111,16 @@ mod real {
             let fetch_n = (opts.top_k.saturating_mul(opts.fetch_factor)).max(opts.top_k);
             let top_docs = match searcher.search(&parsed, &TopDocs::with_limit(fetch_n)) { Ok(hits) => hits, Err(_) => return Vec::new() };
             let mut out = Vec::with_capacity(top_docs.len());
-            for (raw_score, addr) in top_docs { if let Ok(doc) = searcher.doc(addr) { if let Some(v) = doc.get_first(self.f_chunk_id) { if let Some(cid) = v.as_text() { let score = 1.0f32 / (1.0f32 + (-raw_score).exp()); out.push(TextMatch { chunk_id: chunk_model::ChunkId(cid.to_string()), score, raw_score }); } } } }
+            for (raw_score, addr) in top_docs {
+                if let Ok(doc) = searcher.doc::<tantivy::schema::document::TantivyDocument>(addr) {
+                    if let Some(v) = doc.get_first(self.f_chunk_id) {
+                        if let tantivy::schema::OwnedValue::Str(cid) = v {
+                            let score = 1.0f32 / (1.0f32 + (-raw_score).exp());
+                            out.push(TextMatch { chunk_id: chunk_model::ChunkId(cid.to_string()), score, raw_score });
+                        }
+                    }
+                }
+            }
             out
         }
     }
