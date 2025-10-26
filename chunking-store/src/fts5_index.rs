@@ -1,7 +1,7 @@
 use chunk_model::{ChunkId, ChunkRecord};
 
 use crate::sqlite_repo::SqliteRepo;
-use crate::{SearchHit, TextMatch, ChunkStoreRead, TextSearcher, FilterClause, FilterKind, FilterOp, SearchOptions, IndexCaps};
+use crate::{SearchHit, TextMatch, ChunkStoreRead, TextSearcher, FilterClause, FilterKind, FilterOp, SearchOptions, IndexCaps, TextIndexMaintainer, IndexError, ChunkPrimaryStore};
 
 /// FTS5-backed text search over the SQLite primary store.
 /// Index maintenance is handled by SQLite triggers in the store.
@@ -43,6 +43,18 @@ impl Fts5Index {
         hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         hits.truncate(opts.top_k);
         hits
+    }
+}
+
+impl TextIndexMaintainer for Fts5Index {
+    fn upsert(&self, _records: &[chunk_model::ChunkRecord]) -> Result<(), IndexError> {
+        // SQLite triggers maintain FTS5 on chunks table; nothing to do here.
+        Ok(())
+    }
+
+    fn delete_by_ids(&self, _ids: &[chunk_model::ChunkId]) -> Result<(), IndexError> {
+        // Deletion should be performed in primary store; triggers update FTS.
+        Ok(())
     }
 }
 

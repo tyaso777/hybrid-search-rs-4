@@ -4,7 +4,7 @@ use std::path::Path;
 use chunk_model::{ChunkId, ChunkRecord, DocumentId};
 use rusqlite::{params, Connection, TransactionBehavior};
 
-use crate::{ChunkPrimaryStore, ChunkStoreRead, StoreError};
+use crate::{ChunkPrimaryStore, ChunkStoreRead, StoreError, FilterClause, FilterOp};
 
 /// SQLite-backed primary store. FTS5 text search lives in `fts5_index`.
 pub struct SqliteRepo {
@@ -151,6 +151,45 @@ impl ChunkPrimaryStore for SqliteRepo {
         drop(stmt);
         tx.commit()
             .map_err(|e| StoreError::Backend(e.to_string()))
+    }
+
+    fn delete_by_ids(&mut self, ids: &[chunk_model::ChunkId]) -> Result<usize, StoreError> {
+        if ids.is_empty() { return Ok(0); }
+        let tx = self.conn.transaction().map_err(|e| StoreError::Backend(e.to_string()))?;
+        let mut placeholders = String::from("(");
+        for i in 0..ids.len() { if i > 0 { placeholders.push(','); } placeholders.push('?'); }
+        placeholders.push(')');
+        let sql = format!("DELETE FROM chunks WHERE chunk_id IN {}", placeholders);
+        let params: Vec<&str> = ids.iter().map(|c| c.0.as_str()).collect();
+        let n = tx.execute(&sql, rusqlite::params_from_iter(params.iter()))
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        tx.commit().map_err(|e| StoreError::Backend(e.to_string()))?;
+        Ok(n)
+    }
+
+    fn delete_by_filter(&mut self, filters: &[FilterClause]) -> Result<usize, StoreError> {
+        if filters.is_empty() { return Ok(0); }
+        // Support a subset: DocIdEq/In and SourceUriPrefix combined with AND
+        let mut where_sql = String::from("WHERE 1=1");
+        let mut params: Vec<rusqlite::types::Value> = Vec::new();
+        for f in filters {
+            match &f.op {
+                FilterOp::DocIdEq(v) => { where_sql.push_str(" AND doc_id = ?"); params.push(v.clone().into()); }
+                FilterOp::DocIdIn(vs) => {
+                    if !vs.is_empty() {
+                        where_sql.push_str(" AND doc_id IN (");
+                        for i in 0..vs.len() { if i>0 { where_sql.push(','); } where_sql.push('?'); params.push(vs[i].clone().into()); }
+                        where_sql.push(')');
+                    }
+                }
+                FilterOp::SourceUriPrefix(p) => { where_sql.push_str(" AND source_uri LIKE ?"); params.push(format!("{}%", p).into()); }
+                _ => {}
+            }
+        }
+        let sql = format!("DELETE FROM chunks {}", where_sql);
+        let n = self.conn.execute(&sql, rusqlite::params_from_iter(params.into_iter()))
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        Ok(n)
     }
 }
 

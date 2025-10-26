@@ -9,6 +9,10 @@ use chunk_model::ChunkRecord;
 pub trait ChunkPrimaryStore {
     /// Upsert a batch of chunks atomically within the store.
     fn upsert_chunks(&mut self, chunks: Vec<ChunkRecord>) -> Result<(), StoreError>;
+    /// Delete chunks by chunk IDs. Returns number of deleted rows.
+    fn delete_by_ids(&mut self, ids: &[chunk_model::ChunkId]) -> Result<usize, StoreError>;
+    /// Delete chunks that match filters (best-effort support depending on backend). Returns deleted rows.
+    fn delete_by_filter(&mut self, filters: &[FilterClause]) -> Result<usize, StoreError>;
 }
 
 /// Placeholder for text search engines (FTS5/Tantivy, etc.).
@@ -100,6 +104,47 @@ pub trait TextSearcher {
         filters: &[FilterClause],
         opts: &SearchOptions,
     ) -> Vec<TextMatch>;
+}
+
+// ---------------
+// Vector search
+// ---------------
+
+pub trait VectorSearcher {
+    fn name(&self) -> &'static str;
+    fn dimension(&self) -> usize;
+    /// KNN over vectors. Implementations may apply pre-filters if supported; otherwise use post-filtering.
+    fn knn_ids(
+        &self,
+        store: &dyn ChunkStoreRead,
+        query: &[f32],
+        filters: &[FilterClause],
+        opts: &SearchOptions,
+    ) -> Vec<TextMatch>;
+}
+
+// ---------------
+// Index maintenance (upsert/delete)
+// ---------------
+
+#[derive(Debug, thiserror::Error)]
+pub enum IndexError {
+    #[error("backend error: {0}")]
+    Backend(String),
+    #[error("unsupported operation: {0}")]
+    Unsupported(String),
+}
+
+pub trait TextIndexMaintainer {
+    fn upsert(&self, records: &[ChunkRecord]) -> Result<(), IndexError>;
+    fn delete_by_ids(&self, ids: &[chunk_model::ChunkId]) -> Result<(), IndexError>;
+    /// Optional helper: delete by document ids (metadata-driven)
+    fn delete_by_doc_ids(&self, doc_ids: &[String]) -> Result<(), IndexError> { let _ = doc_ids; Ok(()) }
+}
+
+pub trait VectorIndexMaintainer {
+    fn upsert_vectors(&mut self, items: &[(chunk_model::ChunkId, Vec<f32>)]) -> Result<(), IndexError>;
+    fn delete_by_ids(&mut self, ids: &[chunk_model::ChunkId]) -> Result<(), IndexError>;
 }
 
 #[derive(Debug, thiserror::Error)]
