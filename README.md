@@ -55,9 +55,16 @@ Rust workspace for a hybrid search pipeline.
 
 ## Quick Start
 
-- Build everything: `cargo build`
-- Run tests for embeddings: `cargo test -p embedding-provider`
-- CLI sanity check: `cargo run -p embedding-provider --bin embed_cli "your text"`
+0) Prepare ONNX Runtime and Model (one‑time)
+- Follow the setup guide in [embedding_provider/README.md](embedding_provider/README.md) to place the ONNX Runtime shared library and the ONNX model/tokenizer.
+- If you use non‑default locations, either edit `embedding_provider/src/config.rs` or set the paths in the GUI fields when you run the tools.
+
+1) Build everything: `cargo build`
+2) Optional tests: `cargo test -p embedding-provider`
+3) Sanity check (CLI): `cargo run -p embedding-provider --bin embed_cli "your text"`
+4) Try the Hybrid Orchestrator GUI:
+   - `cargo run -p hybrid-orchestrator-gui`
+   - Configure model/tokenizer/runtime if you didn't use the defaults above; then Insert or Excel Ingest, and Search.
 
 - file-chunker: read & chunk files (PDF/DOCX stubs)
 - chunking-store: store & search (SQLite/FTS5/Tantivy/HNSW stubs)
@@ -70,4 +77,43 @@ Scaffolded and buildable. Extend each crate with real implementations.
 ```
 cargo build
 ```
+
+## Hybrid Orchestrator GUI
+
+Interactive end-to-end tool to ingest and search with SQLite + FTS5 + Tantivy + HNSW.
+
+- Run
+  - `cargo run -p hybrid-orchestrator-gui`
+
+- Configure (top of the window)
+  - Embedding model (ONNX), tokenizer JSON, and ONNX Runtime DLL (paths default to `embedding_provider` config)
+  - SQLite DB path (default: `target/demo/chunks.db`)
+  - HNSW Dir (default: `<db>.hnsw`)
+  - Tantivy Dir (default: `<db>.tantivy`)
+
+- Tabs
+  - Insert: type text and insert a single chunk (vector is generated automatically)
+  - Excel Ingest: pick a 1-column workbook and ingest each row as a chunk (batch embedding)
+  - Search: hybrid text/vector search and result inspection
+
+- Results (columns)
+  - `#` — row number
+  - `Chunk ID` — stored chunk id (click any cell to select the row)
+  - `FTS` — SQLite FTS5 score (≈ normalized BM25)
+  - `TV` — Tantivy default (QueryParser). A single-string query may behave like a strict phrase
+  - `TV(AND)` — Lindera tokens combined with AND (all terms must match; BM25 scoring)
+  - `TV(OR)` — Lindera tokens combined with OR (any term may match; BM25 scoring)
+  - `VEC` — vector similarity from HNSW (≈ 0..1)
+  - `Comb` — ordering score = 0.1·TV(AND) + 0.2·TV(OR) + 0.7·VEC
+  - `Preview` — truncated text; click a row to see the full text below
+
+- Housekeeping
+  - Under Store/Index settings, use “Delete All (DB/HNSW/Tantivy)” (type `RESET` to enable) to reset data quickly
+  - Japanese text rendering: CJK fallback font is auto-installed; to override, set `EMBEDDER_DEMO_FONT` to a font file path
+
+- Notes
+  - Tantivy is persisted on disk; opening a new (empty) Tantivy Dir will trigger a best-effort rebuild from SQLite
+  - HNSW is persisted as a snapshot under the configured dir
+  - The GUI displays multiple scores side-by-side to help interpret hybrid behaviour; only `Comb` is used for ordering by default
+
 

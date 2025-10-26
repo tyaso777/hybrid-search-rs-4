@@ -16,11 +16,14 @@ This crate provides a local ONNX-based text embedding implementation using ONNX 
 
 Place the following under this crate directory (paths are relative to `embedding_provider/`):
 
-- Model files
+- Model files (export or obtain as described in [Creating an ONNX Model](#creating-an-onnx-model))
   - `models/ruri-v3-onnx/model.onnx`
   - `models/ruri-v3-onnx/tokenizer.json` (and optional `tokenizer.model`, `tokenizer_config.json`)
 - ONNX Runtime DLL (Windows CPU build example)
   - `bin/onnxruntime-win-x64-1.23.1/lib/onnxruntime.dll`
+  - Download from the official ONNX Runtime releases: https://github.com/microsoft/onnxruntime/releases
+    - Windows x64 (CPU): download the `onnxruntime-win-x64-<version>.zip`, then place `onnxruntime.dll` under the path above (or adjust in `src/config.rs`).
+    - Linux/macOS: use the platform package and place `libonnxruntime.so` / `libonnxruntime.dylib` under a similar `bin/<platform>/lib/` path; update the configured path if needed.
 
 Defaults are defined in `src/config.rs` and resolved relative to this crate, so both workspace-root or crate-root execution works.
 
