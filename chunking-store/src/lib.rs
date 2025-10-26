@@ -23,7 +23,10 @@ pub struct SearchHit {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextMatch {
     pub chunk_id: chunk_model::ChunkId,
+    /// Normalized score (larger is better, preferably in 0..1).
     pub score: f32,
+    /// Backend-native raw score (for diagnostics/fusion).
+    pub raw_score: f32,
 }
 
 /// Optional read-side abstraction so indexes can fetch full records in a store-agnostic way.

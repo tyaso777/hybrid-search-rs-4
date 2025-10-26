@@ -118,7 +118,7 @@ impl TextSearcher for Fts5Index {
             let rank: f64 = row.get(1)?; // smaller is better
             // normalize so larger is better
             let score = 1.0f32 / (1.0f32 + (rank as f32));
-            Ok(TextMatch { chunk_id: ChunkId(chunk_id), score })
+            Ok(TextMatch { chunk_id: ChunkId(chunk_id), score, raw_score: rank as f32 })
         }) { Ok(r) => r, Err(_) => return Vec::new() };
 
         let mut out = Vec::new();
