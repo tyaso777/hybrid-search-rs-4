@@ -55,6 +55,8 @@ impl TextSearcher for Fts5Index {
             can_prefilter_doc_id_in: true,
             can_prefilter_source_prefix: true,
             can_prefilter_meta: false,
+            can_prefilter_range_numeric: false,
+            can_prefilter_range_date: false,
         }
     }
 
@@ -135,6 +137,8 @@ fn plan_filters<'a>(idx: &impl TextSearcher, filters: &'a [FilterClause]) -> (Ve
             FilterOp::DocIdIn(_) => caps.can_prefilter_doc_id_in,
             FilterOp::SourceUriPrefix(_) => caps.can_prefilter_source_prefix,
             FilterOp::MetaEq { .. } | FilterOp::MetaIn { .. } => caps.can_prefilter_meta,
+            FilterOp::RangeNumeric { .. } => caps.can_prefilter_range_numeric,
+            FilterOp::RangeIsoDate { .. } => caps.can_prefilter_range_date,
         };
         if supported && f.kind != FilterKind::PostOnly {
             pre.push(f.clone());
@@ -157,9 +161,40 @@ fn matches_filters(rec: &ChunkRecord, post: &[FilterClause]) -> bool {
             FilterOp::MetaIn { key, values } => {
                 match rec.meta.get(key) { Some(v) if values.iter().any(|x| x == v) => {}, _ => continue 'outer }
             }
+            FilterOp::RangeNumeric { key, min, max, min_incl, max_incl } => {
+                // value can be in a reserved field or meta
+                let val_str = value_for_key(rec, key);
+                let Some(num) = val_str.and_then(|s| s.parse::<f64>().ok()) else { continue 'outer };
+                if let Some(lo) = min {
+                    if *min_incl { if num < *lo { continue 'outer; } } else { if num <= *lo { continue 'outer; } }
+                }
+                if let Some(hi) = max {
+                    if *max_incl { if num > *hi { continue 'outer; } } else { if num >= *hi { continue 'outer; } }
+                }
+            }
+            FilterOp::RangeIsoDate { key, start, end, start_incl, end_incl } => {
+                let Some(val) = value_for_key(rec, key) else { continue 'outer };
+                if let Some(s) = start {
+                    if *start_incl { if val < *s { continue 'outer; } } else { if val <= *s { continue 'outer; } }
+                }
+                if let Some(e) = end {
+                    if *end_incl { if val > *e { continue 'outer; } } else { if val >= *e { continue 'outer; } }
+                }
+            }
         }
     }
     true
+}
+
+fn value_for_key(rec: &ChunkRecord, key: &str) -> Option<String> {
+    match key {
+        "doc_id" => Some(rec.doc_id.0.clone()),
+        "chunk_id" => Some(rec.chunk_id.0.clone()),
+        "source_uri" => Some(rec.source_uri.clone()),
+        "source_mime" => Some(rec.source_mime.clone()),
+        "extracted_at" => Some(rec.extracted_at.clone()),
+        _ => rec.meta.get(key).cloned(),
+    }
 }
 
 fn any_as_sqlite(store: &dyn ChunkStoreRead) -> Option<&SqliteRepo> {

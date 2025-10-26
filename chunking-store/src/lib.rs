@@ -46,6 +46,10 @@ pub enum FilterOp {
     SourceUriPrefix(String),
     MetaEq { key: String, value: String },
     MetaIn { key: String, values: Vec<String> },
+    /// Numeric range on a field (e.g., meta value). Missing/parse-failed values do not match.
+    RangeNumeric { key: String, min: Option<f64>, max: Option<f64>, min_incl: bool, max_incl: bool },
+    /// ISO 8601 string range (lexicographic compare). Works for fields like `extracted_at` or ISO dates in meta.
+    RangeIsoDate { key: String, start: Option<String>, end: Option<String>, start_incl: bool, end_incl: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +71,8 @@ pub struct IndexCaps {
     pub can_prefilter_doc_id_in: bool,
     pub can_prefilter_source_prefix: bool,
     pub can_prefilter_meta: bool,
+    pub can_prefilter_range_numeric: bool,
+    pub can_prefilter_range_date: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
