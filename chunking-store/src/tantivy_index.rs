@@ -37,12 +37,13 @@ mod real {
     use chrono::DateTime;
     use tantivy::collector::TopDocs;
     use tantivy::query::{BooleanQuery, Occur, QueryParser, RangeQuery, TermQuery};
-    use tantivy::schema::{IndexRecordOption, NumericOptions, Schema, TEXT, STRING, STORED, TextFieldIndexing, TextOptions};
+    use tantivy::schema::{IndexRecordOption, NumericOptions, Schema, STRING, STORED, TextFieldIndexing, TextOptions};
     use tantivy::schema::Value as _;
     use tantivy::{Index, Term};
     use tantivy::doc;
     use crate::{ChunkStoreRead, FilterClause, FilterOp, IndexCaps, SearchOptions, TextMatch, TextSearcher};
-    use std::ops::Range;
+    // use std::ops::Range;
+    use std::path::Path;
 
     pub struct TantivyIndex {
         schema: Schema,
@@ -58,9 +59,8 @@ mod real {
     }
 
     impl TantivyIndex {
-        pub fn new_ram() -> tantivy::Result<Self> {
+        fn build_schema() -> (Schema, tantivy::schema::Field, tantivy::schema::Field, tantivy::schema::Field, tantivy::schema::Field, tantivy::schema::Field, tantivy::schema::Field) {
             let mut schema_builder = Schema::builder();
-            // text field with Japanese tokenizer
             let mut text_indexing = TextFieldIndexing::default();
             text_indexing = text_indexing.set_tokenizer("ja");
             text_indexing = text_indexing.set_index_option(IndexRecordOption::WithFreqsAndPositions);
@@ -69,33 +69,67 @@ mod real {
             let chunk_id = schema_builder.add_text_field("chunk_id", STRING | STORED);
             let doc_id = schema_builder.add_text_field("doc_id", STRING);
             let source_uri = schema_builder.add_text_field("source_uri", STRING);
-            // Store as ISO-8601 string and prepare numeric epoch field for ranges
             let extracted_at = schema_builder.add_text_field("extracted_at", STRING);
             let num_opts = NumericOptions::default().set_fast().set_indexed();
             let extracted_at_ts = schema_builder.add_i64_field("extracted_at_ts", num_opts);
             let schema = schema_builder.build();
-            let index = Index::create_in_ram(schema.clone());
-            // Register Lindera Japanese tokenizer under key "ja"
-            {
-                use lindera::dictionary::load_dictionary;
-                use lindera::mode::Mode;
-                use lindera::segmenter::Segmenter;
-                use lindera_tantivy::tokenizer::LinderaTokenizer;
+            (schema, text, chunk_id, doc_id, source_uri, extracted_at, extracted_at_ts)
+        }
 
-                // Use embedded ipadic dictionary from lindera-tantivy features
-                let dictionary = load_dictionary("embedded://ipadic").expect("load embedded ipadic");
-                let user_dictionary = None;
-                let segmenter = Segmenter::new(Mode::Normal, dictionary, user_dictionary);
-                let tokenizer = LinderaTokenizer::from_segmenter(segmenter);
-                index.tokenizers().register("ja", tokenizer);
-            }
+        fn register_ja_tokenizer(index: &Index) {
+            use lindera::dictionary::load_dictionary;
+            use lindera::mode::Mode;
+            use lindera::segmenter::Segmenter;
+            use lindera_tantivy::tokenizer::LinderaTokenizer;
+            let dictionary = load_dictionary("embedded://ipadic").expect("load embedded ipadic");
+            let user_dictionary = None;
+            let segmenter = Segmenter::new(Mode::Normal, dictionary, user_dictionary);
+            let tokenizer = LinderaTokenizer::from_segmenter(segmenter);
+            index.tokenizers().register("ja", tokenizer);
+        }
+
+        pub fn new_ram() -> tantivy::Result<Self> {
+            let (schema, text, chunk_id, doc_id, source_uri, extracted_at, extracted_at_ts) = Self::build_schema();
+            let index = Index::create_in_ram(schema.clone());
+            Self::register_ja_tokenizer(&index);
             let reader = index.reader()?;
             Ok(Self { schema, index, reader, f_text: text, f_chunk_id: chunk_id, f_doc_id: doc_id, f_source_uri: source_uri, f_extracted_at: extracted_at, f_extracted_at_ts: extracted_at_ts })
+        }
+
+        /// Open an existing on-disk index at `path`, or create a new one if absent.
+        pub fn open_or_create_dir<P: AsRef<Path>>(path: P) -> tantivy::Result<Self> {
+            let dir = path.as_ref();
+            std::fs::create_dir_all(dir).map_err(|e| tantivy::TantivyError::IoError(e.into()))?;
+            let index = match Index::open_in_dir(dir) {
+                Ok(idx) => idx,
+                Err(_) => {
+                    let (schema, text, chunk_id, doc_id, source_uri, extracted_at, extracted_at_ts) = Self::build_schema();
+                    let idx = Index::create_in_dir(dir, schema.clone())?;
+                    Self::register_ja_tokenizer(&idx);
+                    let reader = idx.reader()?;
+                    return Ok(Self { schema, index: idx, reader, f_text: text, f_chunk_id: chunk_id, f_doc_id: doc_id, f_source_uri: source_uri, f_extracted_at: extracted_at, f_extracted_at_ts: extracted_at_ts });
+                }
+            };
+            // existing index: derive fields by name
+            let schema = index.schema();
+            let f_text = schema.get_field("text")?;
+            let f_chunk_id = schema.get_field("chunk_id")?;
+            let f_doc_id = schema.get_field("doc_id")?;
+            let f_source_uri = schema.get_field("source_uri")?;
+            let f_extracted_at = schema.get_field("extracted_at")?;
+            let f_extracted_at_ts = schema.get_field("extracted_at_ts")?;
+            Self::register_ja_tokenizer(&index);
+            let reader = index.reader()?;
+            Ok(Self { schema, index, reader, f_text, f_chunk_id, f_doc_id, f_source_uri, f_extracted_at, f_extracted_at_ts })
         }
 
         pub fn upsert_records(&self, records: &[ChunkRecord]) -> tantivy::Result<()> {
             let mut writer = self.index.writer(50_000_000)?;
             for rec in records {
+                // emulate UPSERT: delete existing doc by chunk_id then add
+                let term = Term::from_field_text(self.f_chunk_id, &rec.chunk_id.0);
+                writer.delete_term(term);
+
                 let mut doc = tantivy::doc! {
                     self.f_chunk_id => rec.chunk_id.0.clone(),
                     self.f_doc_id => rec.doc_id.0.clone(),
@@ -209,7 +243,8 @@ mod real {
         }
 
         fn delete_by_ids(&self, ids: &[chunk_model::ChunkId]) -> Result<(), crate::IndexError> {
-            let mut writer = self.index.writer(50_000_000).map_err(|e| crate::IndexError::Backend(e.to_string()))?;
+            let mut writer = self.index.writer::<tantivy::schema::document::TantivyDocument>(50_000_000)
+                .map_err(|e| crate::IndexError::Backend(e.to_string()))?;
             for cid in ids { let term = tantivy::Term::from_field_text(self.f_chunk_id, &cid.0); writer.delete_term(term); }
             writer.commit().map_err(|e| crate::IndexError::Backend(e.to_string()))?;
             self.reader.reload().map_err(|e| crate::IndexError::Backend(e.to_string()))?;
@@ -217,7 +252,8 @@ mod real {
         }
 
         fn delete_by_doc_ids(&self, doc_ids: &[String]) -> Result<(), crate::IndexError> {
-            let mut writer = self.index.writer(50_000_000).map_err(|e| crate::IndexError::Backend(e.to_string()))?;
+            let mut writer = self.index.writer::<tantivy::schema::document::TantivyDocument>(50_000_000)
+                .map_err(|e| crate::IndexError::Backend(e.to_string()))?;
             for did in doc_ids { let term = tantivy::Term::from_field_text(self.f_doc_id, did); writer.delete_term(term); }
             writer.commit().map_err(|e| crate::IndexError::Backend(e.to_string()))?;
             self.reader.reload().map_err(|e| crate::IndexError::Backend(e.to_string()))?;

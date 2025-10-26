@@ -1,0 +1,12 @@
+[package]
+name = "tokenize-lab"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = { version = "0.27", default-features = true, features = ["wgpu"] }
+egui_extras = "0.27"
+tantivy = "0.25"
+lindera = "1.4"
+lindera-tantivy = { version = "1", features = ["embedded-ipadic"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }

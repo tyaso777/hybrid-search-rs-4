@@ -1,0 +1,18 @@
+[package]
+name = "hybrid-orchestrator"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chunk-model = { path = "../../chunk-model" }
+chunking-store = { path = "../../chunking-store" }
+embedding-provider = { path = "../../embedding_provider" }
+chrono = { version = "0.4" }
+serde_json = "1"
+thiserror = "1.0"
+
+[features]
+# Enable Tantivy by default so --features tantivy is not required
+default = ["tantivy"]
+# Forwarder: enable real Tantivy implementation inside chunking-store
+tantivy = ["chunking-store/tantivy-impl"]

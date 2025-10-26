@@ -5,6 +5,9 @@ members = [
     "chunk-model",
     "embedding_provider",
     "tools/embedder-demo",
+    "tools/hybrid-orchestrator",
+    "tools/hybrid-orchestrator-gui",
+    "tools/tokenize-lab",
 ]
 
 resolver = "2"

@@ -1,0 +1,20 @@
+[package]
+name = "hybrid-orchestrator-gui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = { version = "0.27", default-features = true, features = ["wgpu"] }
+rfd = "0.14"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+embedding-provider = { path = "../../embedding_provider" }
+chunking-store = { path = "../../chunking-store" }
+chunk-model = { path = "../../chunk-model" }
+calamine = "0.31"
+egui_extras = "0.27"
+
+[features]
+# Enable Tantivy by default so --features tantivy is not required
+default = ["tantivy"]
+# Forwarder: enable real Tantivy implementation inside chunking-store
+tantivy = ["chunking-store/tantivy-impl"]
