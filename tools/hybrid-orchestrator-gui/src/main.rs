@@ -82,9 +82,7 @@ struct AppState {
     input_excel_path: String,
     excel_skip_header: bool,
     excel_batch_size: usize,
-    // Danger zone per resource
-    reset_db_input: String,
-    reset_hnsw_input: String,
+    // (old) per-resource reset inputs removed
     #[cfg(feature = "tantivy")]
     reset_tantivy_input: String,
 
@@ -129,8 +127,6 @@ impl AppState {
             input_excel_path: String::new(),
             excel_skip_header: true,
             excel_batch_size: 128,
-            reset_db_input: String::new(),
-            reset_hnsw_input: String::new(),
             #[cfg(feature = "tantivy")]
             reset_tantivy_input: String::new(),
 
@@ -308,20 +304,16 @@ impl AppState {
         #[cfg(not(feature = "tantivy"))]
         let (mut tv_matches, mut tv_and_matches, mut tv_or_matches): (Vec<chunking_store::TextMatch>, Vec<chunking_store::TextMatch>, Vec<chunking_store::TextMatch>) = (Vec::new(), Vec::new(), Vec::new());
 
-        // Combine (ranking): keep FTS + Vector fused score as before; show all scores separately.
-        let w_text = 0.5f32;
-        let w_vec = 0.5f32;
+        // Collect scores per id; compute combined ranking after gathering
         use std::collections::HashMap;
         let mut rows: HashMap<String, HitRow> = HashMap::new();
         for m in fts_matches.drain(..) {
             let entry = rows.entry(m.chunk_id.0).or_insert_with(HitRow::empty);
             entry.fts = Some(m.score);
-            entry.combined += w_text * m.score;
         }
         for m in vec_matches.drain(..) {
             let entry = rows.entry(m.chunk_id.0).or_insert_with(HitRow::empty);
             entry.vec = Some(m.score);
-            entry.combined += w_vec * m.score;
         }
         for m in tv_matches.drain(..) {
             let entry = rows.entry(m.chunk_id.0).or_insert_with(HitRow::empty);
@@ -335,6 +327,14 @@ impl AppState {
         for m in tv_or_matches.drain(..) {
             let entry = rows.entry(m.chunk_id.0).or_insert_with(HitRow::empty);
             entry.tv_or = Some(m.score);
+        }
+
+        // Compute combined = 0.1*TV(AND) + 0.2*TV(OR) + 0.7*VEC
+        for v in rows.values_mut() {
+            let tv_and = v.tv_and.unwrap_or(0.0);
+            let tv_or = v.tv_or.unwrap_or(0.0);
+            let vecs = v.vec.unwrap_or(0.0);
+            v.combined = 0.1*tv_and + 0.2*tv_or + 0.7*vecs;
         }
 
         let mut pairs: Vec<(String, HitRow)> = rows.into_iter().collect();
@@ -649,7 +649,7 @@ impl App for AppState {
                             ui.label("TV(AND) — Lindera tokens combined with AND. All terms must match (BM25 scoring)");
                             ui.label("TV(OR) — Lindera tokens combined with OR. Any term may match (BM25 scoring)");
                             ui.label("VEC — Vector similarity from HNSW (≈ 0..1). Higher is more similar");
-                            ui.label("Comb — FTS and VEC weighted sum (0.5/0.5) used for ordering");
+                            ui.label("Comb — TV(AND), TV(OR) and VEC weighted sum (0.1, 0.2, 0.7) used for ordering");
                             ui.label("Preview — Truncated text. Click a row to view full text below; selected row is bold");
                         });
                         ui.add_space(6.0);
