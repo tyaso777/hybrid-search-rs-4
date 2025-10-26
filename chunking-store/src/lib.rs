@@ -2,6 +2,7 @@ pub mod sqlite_repo;
 pub mod fts5_index;
 pub mod tantivy_index;
 pub mod hnsw_index;
+pub mod orchestrator;
 
 use chunk_model::ChunkRecord;
 

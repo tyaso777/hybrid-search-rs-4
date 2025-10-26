@@ -61,7 +61,8 @@ impl SqliteRepo {
             CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
                 text,
                 content='chunks',
-                content_rowid='rowid'
+                content_rowid='rowid',
+                tokenize = 'unicode61'
             );
 
             -- Triggers to keep FTS index consistent
@@ -80,6 +81,34 @@ impl SqliteRepo {
             "#,
         )?;
         Ok(())
+    }
+
+    /// Ensure FTS content table is populated; rebuild if empty while chunks has rows.
+    pub fn maybe_rebuild_fts(&self) -> rusqlite::Result<()> {
+        let chunks_cnt: i64 = self.conn.query_row("SELECT count(*) FROM chunks", [], |r| r.get(0))?;
+        if chunks_cnt == 0 { return Ok(()); }
+        let fts_cnt: i64 = self.conn.query_row("SELECT count(*) FROM chunks_fts", [], |r| r.get(0)).unwrap_or(0);
+        if fts_cnt == 0 {
+            // Rebuild FTS index from content table
+            let _ = self.conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')", []);
+        }
+        Ok(())
+    }
+
+    /// Return (chunks_count, chunks_fts_count) for debugging.
+    pub fn counts(&self) -> rusqlite::Result<(i64, i64)> {
+        let chunks_cnt: i64 = self.conn.query_row("SELECT count(*) FROM chunks", [], |r| r.get(0))?;
+        let fts_cnt: i64 = self.conn.query_row("SELECT count(*) FROM chunks_fts", [], |r| r.get(0)).unwrap_or(0);
+        Ok((chunks_cnt, fts_cnt))
+    }
+
+    /// Return count of rows matching an FTS5 MATCH query (for debugging).
+    pub fn fts_match_count(&self, query: &str) -> rusqlite::Result<i64> {
+        self.conn.query_row(
+            "SELECT count(*) FROM chunks_fts WHERE chunks_fts MATCH ?1",
+            [query],
+            |r| r.get(0),
+        )
     }
 
     /// List chunk IDs matching filters with pagination.
@@ -172,8 +201,6 @@ impl SqliteRepo {
                         params.push((*hi as f64).into());
                     }
                 }
-                // Other filters (MetaEq/In, RangeNumeric) are not pre-applied here.
-                _ => {}
             }
         }
 
@@ -328,7 +355,6 @@ impl ChunkPrimaryStore for SqliteRepo {
                     if let Some(lo) = min { where_sql.push_str(" AND CAST(json_extract(meta_json, ?) AS REAL) "); where_sql.push_str(if *min_incl { ">= ?" } else { "> ?" }); let path = format!("$.\"{}\"", key.replace('"', "\"")); params.push(path.into()); params.push((*lo as f64).into()); }
                     if let Some(hi) = max { where_sql.push_str(" AND CAST(json_extract(meta_json, ?) AS REAL) "); where_sql.push_str(if *max_incl { "<= ?" } else { "< ?" }); let path = format!("$.\"{}\"", key.replace('"', "\"")); params.push(path.into()); params.push((*hi as f64).into()); }
                 }
-                _ => {}
             }
         }
         let sql = format!("DELETE FROM chunks {}", where_sql);

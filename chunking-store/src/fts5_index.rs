@@ -1,7 +1,7 @@
 use chunk_model::{ChunkId, ChunkRecord};
 
 use crate::sqlite_repo::SqliteRepo;
-use crate::{SearchHit, TextMatch, ChunkStoreRead, TextSearcher, FilterClause, FilterKind, FilterOp, SearchOptions, IndexCaps, TextIndexMaintainer, IndexError, ChunkPrimaryStore};
+use crate::{SearchHit, TextMatch, ChunkStoreRead, TextSearcher, FilterClause, FilterKind, FilterOp, SearchOptions, IndexCaps, TextIndexMaintainer, IndexError};
 
 /// FTS5-backed text search over the SQLite primary store.
 /// Index maintenance is handled by SQLite triggers in the store.
@@ -85,54 +85,83 @@ impl TextSearcher for Fts5Index {
         let (pre, _post) = plan_filters(self, filters);
 
         // Build SQL dynamically with pre-filters
-        let mut sql = String::from(
+        let match_literal = {
+            let q = query.replace("'", "''");
+            format!("'{}'", q)
+        };
+        let mut sql_with_rank = format!(
             "SELECT c.chunk_id, bm25(f) as rank \n\
              FROM chunks_fts f \n\
              JOIN chunks c ON c.rowid = f.rowid \n\
-             WHERE f MATCH ?1",
+             WHERE f MATCH {}",
+            match_literal
         );
-        let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::from(query.to_string())];
+        let mut sql_fallback = format!(
+            "SELECT c.chunk_id \n\
+             FROM chunks_fts f \n\
+             JOIN chunks c ON c.rowid = f.rowid \n\
+             WHERE f MATCH {}",
+            match_literal
+        );
+        let mut params: Vec<rusqlite::types::Value> = Vec::new();
 
         // doc_id = ? or IN (...)
         for fc in &pre {
             match &fc.op {
                 FilterOp::DocIdEq(v) => {
-                    sql.push_str(" AND c.doc_id = ?");
+                    sql_with_rank.push_str(" AND c.doc_id = ?");
+                    sql_fallback.push_str(" AND c.doc_id = ?");
                     params.push(v.clone().into());
                 }
                 FilterOp::DocIdIn(vs) => {
                     if !vs.is_empty() {
-                        sql.push_str(" AND c.doc_id IN (");
+                        sql_with_rank.push_str(" AND c.doc_id IN (");
+                        sql_fallback.push_str(" AND c.doc_id IN (");
                         for i in 0..vs.len() {
-                            if i > 0 { sql.push(','); }
-                            sql.push('?');
+                            if i > 0 { sql_with_rank.push(','); sql_fallback.push(','); }
+                            sql_with_rank.push('?');
+                            sql_fallback.push('?');
                             params.push(vs[i].clone().into());
                         }
-                        sql.push(')');
+                        sql_with_rank.push(')');
+                        sql_fallback.push(')');
                     }
                 }
                 FilterOp::SourceUriPrefix(prefix) => {
-                    sql.push_str(" AND c.source_uri LIKE ?");
+                    sql_with_rank.push_str(" AND c.source_uri LIKE ?");
+                    sql_fallback.push_str(" AND c.source_uri LIKE ?");
                     params.push(format!("{}%", prefix).into());
                 }
                 _ => {}
             }
         }
 
-        sql.push_str(" ORDER BY rank LIMIT ?");
+        sql_with_rank.push_str(" ORDER BY rank LIMIT ?");
+        sql_fallback.push_str(" LIMIT ?");
         let fetch_n = (opts.top_k.saturating_mul(opts.fetch_factor)).max(opts.top_k);
         params.push((fetch_n as i64).into());
 
         let conn = sqlite.conn();
-        let mut stmt = match conn.prepare(&sql) { Ok(s) => s, Err(_) => return Vec::new() };
-        let rows = match stmt.query_map(rusqlite::params_from_iter(params.into_iter()), |row| {
-            let chunk_id: String = row.get(0)?;
-            let rank: f64 = row.get(1)?; // smaller is better
-            // normalize so larger is better
-            let score = 1.0f32 / (1.0f32 + (rank as f32));
-            Ok(TextMatch { chunk_id: ChunkId(chunk_id), score, raw_score: rank as f32 })
-        }) { Ok(r) => r, Err(_) => return Vec::new() };
+        // Try with bm25; on error (e.g., bm25 not available), fallback without ranking
+        // Try with bm25 first; if zero results or error, fallback to LIKE
+        if let Ok(mut stmt) = conn.prepare(&sql_with_rank) {
+            let rows = match stmt.query_map(rusqlite::params_from_iter(params.clone().into_iter()), |row| {
+                let chunk_id: String = row.get(0)?;
+                let rank: f64 = row.get(1)?; // smaller is better
+                let score = 1.0f32 / (1.0f32 + (rank as f32));
+                Ok(TextMatch { chunk_id: ChunkId(chunk_id), score, raw_score: rank as f32 })
+            }) { Ok(r) => r, Err(_) => return Vec::new() };
+            let mut out = Vec::new();
+            for r in rows { if let Ok(m) = r { out.push(m); } }
+            if !out.is_empty() { return out; }
+        }
 
+        let mut stmt = match conn.prepare(&sql_fallback) { Ok(s) => s, Err(_) => return Vec::new() };
+        let rows = match stmt.query_map(rusqlite::params![query, fetch_n as i64], |row| {
+            let chunk_id: String = row.get(0)?;
+            // No bm25 available; give neutral score and raw_score 0
+            Ok(TextMatch { chunk_id: ChunkId(chunk_id), score: 1.0, raw_score: 0.0 })
+        }) { Ok(r) => r, Err(_) => return Vec::new() };
         let mut out = Vec::new();
         for r in rows { if let Ok(m) = r { out.push(m); } }
         out

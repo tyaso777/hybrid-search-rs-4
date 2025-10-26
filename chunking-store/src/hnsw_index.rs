@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use chunk_model::ChunkId;
 use hnsw_rs::prelude::*;
 
-use crate::{ChunkStoreRead, FilterClause, FilterOp, SearchOptions, TextMatch, VectorSearcher};
+use crate::{ChunkStoreRead, FilterClause, SearchOptions, TextMatch, VectorSearcher};
 
 /// HNSW-based vector index (Cosine distance). Persists by snapshotting vectors + id map.
 pub struct HnswIndex {
@@ -101,7 +101,7 @@ impl HnswIndex {
             vectors.push(vf32);
         }
         let expected = vectors.len().max(1000);
-        let mut hnsw = Hnsw::<f32, DistCosine>::new(16, expected, 16, 200, DistCosine {});
+        let hnsw = Hnsw::<f32, DistCosine>::new(16, expected, 16, 200, DistCosine {});
         let mut id_map = HashMap::new();
         for (i, v) in vectors.iter().enumerate() {
             id_map.insert(rev_map[i].clone(), i);
@@ -120,7 +120,7 @@ impl VectorSearcher for HnswIndex {
         &self,
         _store: &dyn ChunkStoreRead,
         query: &[f32],
-        filters: &[FilterClause],
+        _filters: &[FilterClause],
         opts: &SearchOptions,
     ) -> Vec<TextMatch> {
         if query.len() != self.dim || opts.top_k == 0 { return Vec::new(); }
