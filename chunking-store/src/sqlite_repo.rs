@@ -81,6 +81,126 @@ impl SqliteRepo {
         )?;
         Ok(())
     }
+
+    /// List chunk IDs matching filters with pagination.
+    pub fn list_chunk_ids_by_filter(
+        &self,
+        filters: &[crate::FilterClause],
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<ChunkId>, StoreError> {
+        let mut where_sql = String::from("WHERE 1=1");
+        let mut params: Vec<rusqlite::types::Value> = Vec::new();
+
+        for f in filters {
+            match &f.op {
+                crate::FilterOp::DocIdEq(v) => {
+                    where_sql.push_str(" AND doc_id = ?");
+                    params.push(v.clone().into());
+                }
+                crate::FilterOp::DocIdIn(vs) => {
+                    if !vs.is_empty() {
+                        where_sql.push_str(" AND doc_id IN (");
+                        for i in 0..vs.len() {
+                            if i > 0 { where_sql.push(','); }
+                            where_sql.push('?');
+                            params.push(vs[i].clone().into());
+                        }
+                        where_sql.push(')');
+                    }
+                }
+                crate::FilterOp::SourceUriPrefix(p) => {
+                    where_sql.push_str(" AND source_uri LIKE ?");
+                    params.push(format!("{}%", p).into());
+                }
+                // Range on extracted_at (ISO 8601 strings) using lexicographic compare
+                crate::FilterOp::RangeIsoDate { key, start, end, start_incl, end_incl } => {
+                    if key == "extracted_at" {
+                        if let Some(s) = start {
+                            if *start_incl {
+                                where_sql.push_str(" AND extracted_at >= ?");
+                            } else {
+                                where_sql.push_str(" AND extracted_at > ?");
+                            }
+                            params.push(s.clone().into());
+                        }
+                        if let Some(e) = end {
+                            if *end_incl {
+                                where_sql.push_str(" AND extracted_at <= ?");
+                            } else {
+                                where_sql.push_str(" AND extracted_at < ?");
+                            }
+                            params.push(e.clone().into());
+                        }
+                    }
+                }
+                // Meta equality via JSON1
+                crate::FilterOp::MetaEq { key, value } => {
+                    where_sql.push_str(" AND json_extract(meta_json, ?) = ?");
+                    let path = format!("$.\"{}\"", key.replace('"', "\""));
+                    params.push(path.into());
+                    params.push(value.clone().into());
+                }
+                // Meta IN via JSON1
+                crate::FilterOp::MetaIn { key, values } => {
+                    if !values.is_empty() {
+                        where_sql.push_str(" AND json_extract(meta_json, ?) IN (");
+                        let path = format!("$.\"{}\"", key.replace('"', "\""));
+                        params.push(path.into());
+                        for i in 0..values.len() {
+                            if i > 0 { where_sql.push(','); }
+                            where_sql.push('?');
+                            params.push(values[i].clone().into());
+                        }
+                        where_sql.push(')');
+                    }
+                }
+                // Numeric range on meta via JSON1 + CAST
+                crate::FilterOp::RangeNumeric { key, min, max, min_incl, max_incl } => {
+                    if let Some(lo) = min {
+                        where_sql.push_str(" AND CAST(json_extract(meta_json, ?) AS REAL) ");
+                        if *min_incl { where_sql.push_str(">= ?"); } else { where_sql.push_str("> ?"); }
+                        let path = format!("$.\"{}\"", key.replace('"', "\""));
+                        params.push(path.into());
+                        params.push((*lo as f64).into());
+                    }
+                    if let Some(hi) = max {
+                        where_sql.push_str(" AND CAST(json_extract(meta_json, ?) AS REAL) ");
+                        if *max_incl { where_sql.push_str("<= ?"); } else { where_sql.push_str("< ?"); }
+                        let path = format!("$.\"{}\"", key.replace('"', "\""));
+                        params.push(path.into());
+                        params.push((*hi as f64).into());
+                    }
+                }
+                // Other filters (MetaEq/In, RangeNumeric) are not pre-applied here.
+                _ => {}
+            }
+        }
+
+        let sql = format!(
+            "SELECT chunk_id FROM chunks {} ORDER BY rowid LIMIT ? OFFSET ?",
+            where_sql
+        );
+        params.push((limit as i64).into());
+        params.push((offset as i64).into());
+
+        let mut stmt = self.conn
+            .prepare(&sql)
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(params.into_iter()), |row| {
+                let cid: String = row.get(0)?;
+                Ok(ChunkId(cid))
+            })
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| StoreError::Backend(e.to_string()))?);
+        }
+        Ok(out)
+    }
 }
 
 impl ChunkPrimaryStore for SqliteRepo {
@@ -169,7 +289,7 @@ impl ChunkPrimaryStore for SqliteRepo {
 
     fn delete_by_filter(&mut self, filters: &[FilterClause]) -> Result<usize, StoreError> {
         if filters.is_empty() { return Ok(0); }
-        // Support a subset: DocIdEq/In and SourceUriPrefix combined with AND
+        // Support a subset: DocIdEq/In, SourceUriPrefix, and some meta/date-range combined with AND
         let mut where_sql = String::from("WHERE 1=1");
         let mut params: Vec<rusqlite::types::Value> = Vec::new();
         for f in filters {
@@ -183,6 +303,31 @@ impl ChunkPrimaryStore for SqliteRepo {
                     }
                 }
                 FilterOp::SourceUriPrefix(p) => { where_sql.push_str(" AND source_uri LIKE ?"); params.push(format!("{}%", p).into()); }
+                FilterOp::MetaEq { key, value } => {
+                    where_sql.push_str(" AND json_extract(meta_json, ?) = ?");
+                    let path = format!("$.\"{}\"", key.replace('"', "\""));
+                    params.push(path.into());
+                    params.push(value.clone().into());
+                }
+                FilterOp::MetaIn { key, values } => {
+                    if !values.is_empty() {
+                        where_sql.push_str(" AND json_extract(meta_json, ?) IN (");
+                        let path = format!("$.\"{}\"", key.replace('"', "\""));
+                        params.push(path.into());
+                        for i in 0..values.len() { if i>0 { where_sql.push(','); } where_sql.push('?'); params.push(values[i].clone().into()); }
+                        where_sql.push(')');
+                    }
+                }
+                FilterOp::RangeIsoDate { key, start, end, start_incl, end_incl } => {
+                    if key == "extracted_at" {
+                        if let Some(s) = start { where_sql.push_str(if *start_incl {" AND extracted_at >= ?"} else {" AND extracted_at > ?"}); params.push(s.clone().into()); }
+                        if let Some(e) = end { where_sql.push_str(if *end_incl {" AND extracted_at <= ?"} else {" AND extracted_at < ?"}); params.push(e.clone().into()); }
+                    }
+                }
+                FilterOp::RangeNumeric { key, min, max, min_incl, max_incl } => {
+                    if let Some(lo) = min { where_sql.push_str(" AND CAST(json_extract(meta_json, ?) AS REAL) "); where_sql.push_str(if *min_incl { ">= ?" } else { "> ?" }); let path = format!("$.\"{}\"", key.replace('"', "\"")); params.push(path.into()); params.push((*lo as f64).into()); }
+                    if let Some(hi) = max { where_sql.push_str(" AND CAST(json_extract(meta_json, ?) AS REAL) "); where_sql.push_str(if *max_incl { "<= ?" } else { "< ?" }); let path = format!("$.\"{}\"", key.replace('"', "\"")); params.push(path.into()); params.push((*hi as f64).into()); }
+                }
                 _ => {}
             }
         }
