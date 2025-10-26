@@ -8,12 +8,12 @@ use chrono::Utc;
 use chunk_model::{ChunkId, ChunkRecord, DocumentId, SCHEMA_MAJOR};
 use chunking_store::fts5_index::Fts5Index;
 #[cfg(feature = "tantivy")]
-use chunking_store::tantivy_index::TantivyIndex;
+use chunking_store::tantivy_index::{TantivyIndex, TokenCombine};
 use chunking_store::hnsw_index::HnswIndex;
 use chunking_store::orchestrator::ingest_chunks_orchestrated;
 use chunking_store::sqlite_repo::SqliteRepo;
 use chunking_store::{SearchOptions, VectorSearcher, ChunkStoreRead};
-use eframe::egui::{self, Button, CentralPanel, ScrollArea, Spinner, TextEdit};
+use eframe::egui::{self, Button, CentralPanel, ScrollArea, Spinner, TextEdit, CollapsingHeader};
 use egui_extras::{Column, TableBuilder};
 use eframe::{App, CreationContext, Frame, NativeOptions};
 use embedding_provider::config::{default_stdio_config, ONNX_STDIO_DEFAULTS};
@@ -281,7 +281,7 @@ impl AppState {
 
         // Tantivy
         #[cfg(feature = "tantivy")]
-        let mut tv_matches = {
+        let (mut tv_matches, mut tv_and_matches, mut tv_or_matches) = {
             if self.tantivy.is_none() {
                 let tdir = if self.tantivy_dir.trim().is_empty() { derive_tantivy_dir(db) } else { self.tantivy_dir.trim().to_string() };
                 if let Ok(tv) = TantivyIndex::open_or_create_dir(&tdir) {
@@ -298,10 +298,15 @@ impl AppState {
                     self.tantivy = Some(tv);
                 }
             }
-            if let Some(tv) = &self.tantivy { chunking_store::TextSearcher::search_ids(tv, &repo, q, &[], &opts) } else { Vec::new() }
+            if let Some(tv) = &self.tantivy {
+                let tv_p = chunking_store::TextSearcher::search_ids(tv, &repo, q, &[], &opts);
+                let tv_and = tv.search_ids_tokenized(&repo, q, &[], &opts, TokenCombine::AND);
+                let tv_or = tv.search_ids_tokenized(&repo, q, &[], &opts, TokenCombine::OR);
+                (tv_p, tv_and, tv_or)
+            } else { (Vec::new(), Vec::new(), Vec::new()) }
         };
         #[cfg(not(feature = "tantivy"))]
-        let mut tv_matches: Vec<chunking_store::TextMatch> = Vec::new();
+        let (mut tv_matches, mut tv_and_matches, mut tv_or_matches): (Vec<chunking_store::TextMatch>, Vec<chunking_store::TextMatch>, Vec<chunking_store::TextMatch>) = (Vec::new(), Vec::new(), Vec::new());
 
         // Combine (ranking): keep FTS + Vector fused score as before; show all scores separately.
         let w_text = 0.5f32;
@@ -322,6 +327,14 @@ impl AppState {
             let entry = rows.entry(m.chunk_id.0).or_insert_with(HitRow::empty);
             entry.tv = Some(m.score);
             // Not included in combined ordering (can change if desired)
+        }
+        for m in tv_and_matches.drain(..) {
+            let entry = rows.entry(m.chunk_id.0).or_insert_with(HitRow::empty);
+            entry.tv_and = Some(m.score);
+        }
+        for m in tv_or_matches.drain(..) {
+            let entry = rows.entry(m.chunk_id.0).or_insert_with(HitRow::empty);
+            entry.tv_or = Some(m.score);
         }
 
         let mut pairs: Vec<(String, HitRow)> = rows.into_iter().collect();
@@ -627,6 +640,19 @@ impl App for AppState {
                         });
                         ui.separator();
                         ui.heading("Results");
+                        ui.add_space(4.0);
+                        CollapsingHeader::new("Results legend").default_open(false).show(ui, |ui| {
+                            ui.label("#  — Row number (for reference)");
+                            ui.label("Chunk ID — Stored chunk identifier (click any cell to select)");
+                            ui.label("FTS — SQLite FTS5 text score (≈ normalized BM25). Higher is better");
+                            ui.label("TV — Tantivy default (QueryParser). Single-string input may act like a strict phrase");
+                            ui.label("TV(AND) — Lindera tokens combined with AND. All terms must match (BM25 scoring)");
+                            ui.label("TV(OR) — Lindera tokens combined with OR. Any term may match (BM25 scoring)");
+                            ui.label("VEC — Vector similarity from HNSW (≈ 0..1). Higher is more similar");
+                            ui.label("Comb — FTS and VEC weighted sum (0.5/0.5) used for ordering");
+                            ui.label("Preview — Truncated text. Click a row to view full text below; selected row is bold");
+                        });
+                        ui.add_space(6.0);
                         let header_height = 24.0;
                         let row_height = 24.0;
                         ScrollArea::vertical().id_source("results_scroll").max_height(320.0).show(ui, |ui| {
@@ -637,6 +663,9 @@ impl App for AppState {
                                 .column(Column::exact(70.0))
                                 .column(Column::exact(70.0))
                                 .column(Column::exact(70.0))
+                                .column(Column::exact(70.0))
+                                .column(Column::exact(70.0))
+                                .column(Column::exact(70.0))
                                 .column(Column::exact(80.0))
                                 .column(Column::remainder())
                                 .header(header_height, |mut header| {
@@ -644,6 +673,8 @@ impl App for AppState {
                                     header.col(|ui| { ui.label("Chunk ID"); });
                                     header.col(|ui| { ui.label("FTS"); });
                                     header.col(|ui| { ui.label("TV"); });
+                                    header.col(|ui| { ui.label("TV(AND)"); });
+                                    header.col(|ui| { ui.label("TV(OR)"); });
                                     header.col(|ui| { ui.label("VEC"); });
                                     header.col(|ui| { ui.label("Comb"); });
                                     header.col(|ui| { ui.label("Preview"); });
@@ -683,6 +714,24 @@ impl App for AppState {
                                         });
                                         trow.col(|ui| {
                                             let mut rt = egui::RichText::new(opt_fmt(row.tv)).monospace();
+                                            if selected { rt = rt.strong(); }
+                                            let mut lbl = egui::Label::new(rt).sense(egui::Sense::click());
+                                            lbl = lbl.wrap(false).truncate(true);
+                                            let r = ui.add(lbl);
+                                            if r.clicked() { self.selected_cid = Some(row.cid.clone()); self.selected_text = row.full.clone(); }
+                                            row_rect = Some(row_rect.map_or(r.rect, |rr| rr.union(r.rect)));
+                                        });
+                                        trow.col(|ui| {
+                                            let mut rt = egui::RichText::new(opt_fmt(row.tv_and)).monospace();
+                                            if selected { rt = rt.strong(); }
+                                            let mut lbl = egui::Label::new(rt).sense(egui::Sense::click());
+                                            lbl = lbl.wrap(false).truncate(true);
+                                            let r = ui.add(lbl);
+                                            if r.clicked() { self.selected_cid = Some(row.cid.clone()); self.selected_text = row.full.clone(); }
+                                            row_rect = Some(row_rect.map_or(r.rect, |rr| rr.union(r.rect)));
+                                        });
+                                        trow.col(|ui| {
+                                            let mut rt = egui::RichText::new(opt_fmt(row.tv_or)).monospace();
                                             if selected { rt = rt.strong(); }
                                             let mut lbl = egui::Label::new(rt).sense(egui::Sense::click());
                                             lbl = lbl.wrap(false).truncate(true);
@@ -864,6 +913,8 @@ struct HitRow {
     cid: String,
     fts: Option<f32>,
     tv: Option<f32>,
+    tv_and: Option<f32>,
+    tv_or: Option<f32>,
     vec: Option<f32>,
     combined: f32,
     preview: String,

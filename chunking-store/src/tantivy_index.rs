@@ -4,7 +4,7 @@
 // The default build compiles a stub to keep the crate lightweight and portable.
 
 #[cfg(feature = "tantivy-impl")]
-pub use real::TantivyIndex;
+pub use real::{TantivyIndex, TokenCombine};
 
 #[cfg(not(feature = "tantivy-impl"))]
 pub struct TantivyIndex;
@@ -41,6 +41,7 @@ mod real {
     use tantivy::schema::Value as _;
     use tantivy::{Index, Term};
     use tantivy::doc;
+    use tantivy::tokenizer::TokenStream;
     use crate::{ChunkStoreRead, FilterClause, FilterOp, IndexCaps, SearchOptions, TextMatch, TextSearcher};
     // use std::ops::Range;
     use std::path::Path;
@@ -57,6 +58,9 @@ mod real {
         f_extracted_at: tantivy::schema::Field,
         f_extracted_at_ts: tantivy::schema::Field,
     }
+
+    #[derive(Debug, Clone, Copy)]
+    pub enum TokenCombine { AND, OR }
 
     impl TantivyIndex {
         fn build_schema() -> (Schema, tantivy::schema::Field, tantivy::schema::Field, tantivy::schema::Field, tantivy::schema::Field, tantivy::schema::Field, tantivy::schema::Field) {
@@ -145,6 +149,104 @@ mod real {
             writer.commit()?;
             self.reader.reload()?;
             Ok(())
+        }
+
+        /// Build a query by tokenizing the input with the field analyzer and
+        /// combining terms via AND/OR (avoids overly strict phrase matching).
+        pub fn search_ids_tokenized(
+            &self,
+            _store: &dyn ChunkStoreRead,
+            query: &str,
+            filters: &[FilterClause],
+            opts: &SearchOptions,
+            combine: TokenCombine,
+        ) -> Vec<TextMatch> {
+            if query.trim().is_empty() || opts.top_k == 0 { return Vec::new(); }
+
+            // 1) Tokenize the query using the field analyzer for `text`.
+            let mut toks: Vec<String> = Vec::new();
+            if let Ok(mut analyzer) = self.index.tokenizer_for_field(self.f_text) {
+                let mut ts = analyzer.token_stream(query);
+                while ts.advance() {
+                    let t = ts.token();
+                    if !t.text.is_empty() { toks.push(t.text.clone()); }
+                }
+            }
+            if toks.is_empty() { return Vec::new(); }
+
+            // 2) Build boolean of terms.
+            let mut clauses: Vec<(Occur, Box<dyn tantivy::query::Query>)> = Vec::new();
+            for tk in &toks {
+                let term = Term::from_field_text(self.f_text, tk);
+                let tq = TermQuery::new(term, IndexRecordOption::Basic);
+                clauses.push((match combine { TokenCombine::AND => Occur::Must, TokenCombine::OR => Occur::Should }, Box::new(tq)));
+            }
+
+            // 3) Append filters (same as default implementation)
+            // doc_id eq/in
+            let mut doc_terms: Vec<(Occur, Box<dyn tantivy::query::Query>)> = Vec::new();
+            for fc in filters {
+                match &fc.op {
+                    FilterOp::DocIdEq(v) => {
+                        let term = Term::from_field_text(self.f_doc_id, v);
+                        doc_terms.push((Occur::Should, Box::new(TermQuery::new(term, IndexRecordOption::Basic))));
+                    }
+                    FilterOp::DocIdIn(vs) => {
+                        for v in vs {
+                            let term = Term::from_field_text(self.f_doc_id, v);
+                            doc_terms.push((Occur::Should, Box::new(TermQuery::new(term, IndexRecordOption::Basic))));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if !doc_terms.is_empty() {
+                clauses.push((Occur::Must, Box::new(BooleanQuery::from(doc_terms))));
+            }
+
+            // source_uri prefix
+            for fc in filters {
+                if let FilterOp::SourceUriPrefix(p) = &fc.op {
+                    let uri_parser = QueryParser::for_index(&self.index, vec![self.f_source_uri]);
+                    let qstr = format!("{}*", escape_term(p));
+                    if let Ok(q) = uri_parser.parse_query(&qstr) { clauses.push((Occur::Must, q)); }
+                }
+            }
+            // extracted_at range
+            for fc in filters {
+                if let FilterOp::RangeIsoDate { key, start, end, start_incl, end_incl } = &fc.op {
+                    if key == "extracted_at" {
+                        use std::ops::Bound;
+                        let lower = match start.as_deref().and_then(parse_rfc3339_to_ts) {
+                            Some(s) => Bound::Included(Term::from_field_i64(self.f_extracted_at_ts, if *start_incl { s } else { s.saturating_add(1) })),
+                            None => Bound::Unbounded,
+                        };
+                        let upper = match end.as_deref().and_then(parse_rfc3339_to_ts) {
+                            Some(e) => Bound::Included(Term::from_field_i64(self.f_extracted_at_ts, if *end_incl { e } else { e.saturating_sub(1) })),
+                            None => Bound::Unbounded,
+                        };
+                        clauses.push((Occur::Must, Box::new(RangeQuery::new(lower, upper))));
+                    }
+                }
+            }
+
+            // 4) Execute
+            let combined = BooleanQuery::from(clauses);
+            let searcher = self.reader.searcher();
+            let fetch_n = (opts.top_k.saturating_mul(opts.fetch_factor)).max(opts.top_k);
+            let top_docs = match searcher.search(&combined, &TopDocs::with_limit(fetch_n)) { Ok(hits) => hits, Err(_) => return Vec::new() };
+            let mut out = Vec::with_capacity(top_docs.len());
+            for (raw_score, addr) in top_docs {
+                if let Ok(doc) = searcher.doc::<tantivy::schema::document::TantivyDocument>(addr) {
+                    if let Some(v) = doc.get_first(self.f_chunk_id) {
+                        if let Some(cid) = v.as_str() {
+                            let score = 1.0f32 / (1.0f32 + (-raw_score).exp());
+                            out.push(TextMatch { chunk_id: chunk_model::ChunkId(cid.to_string()), score, raw_score });
+                        }
+                    }
+                }
+            }
+            out
         }
     }
 
