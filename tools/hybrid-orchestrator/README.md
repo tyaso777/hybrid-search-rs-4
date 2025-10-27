@@ -1,5 +1,7 @@
 ## Hybrid Orchestrator (SQLite + FTS5 + HNSW)
 
+[← Back to workspace README](../../README.md)
+
 Command-line tool to ingest plain text and search over a hybrid index:
 - Primary store: SQLite (`chunks` table) via `chunking-store::sqlite_repo::SqliteRepo`
 - Text search: SQLite FTS5 (BM25 if available)
@@ -53,4 +55,3 @@ cargo run -p hybrid-orchestrator -- insert ./my.db --text "custom paths" \
 - FTS5 is maintained via SQLite triggers; BM25 ordering depends on the SQLite build.
 - HNSW snapshot is stored under `--hnsw` (default: `<db_path>.hnsw`). It is loaded on `insert` and `search --hybrid`.
 - Embedding requires the ONNX model, tokenizer, and ONNX Runtime DLL. Defaults come from `embedding_provider/src/config.rs` and resolve relative to that crate.
-

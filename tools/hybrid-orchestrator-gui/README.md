@@ -1,5 +1,7 @@
 ## Hybrid Orchestrator GUI
 
+[← Back to workspace README](../../README.md)
+
 Simple desktop GUI to ingest plain text into SQLite + FTS5 + HNSW and run text or hybrid search.
 
 ### Build/Run
@@ -17,4 +19,3 @@ cargo run -p hybrid-orchestrator-gui
 Notes
 - Embedding defaults are resolved relative to `embedding_provider`; adjust in the UI or via `embedding_provider/src/config.rs`.
 - FTS5 ranking via `bm25()` depends on your SQLite build.
-
