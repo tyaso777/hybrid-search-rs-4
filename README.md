@@ -16,9 +16,23 @@ Rust workspace for a hybrid search pipeline.
 - embedding_provider
   - Local ONNX-based embedding library (ONNX Runtime + tokenizers). Produces text embeddings via masked mean pooling.
   - Docs: see [embedding_provider/README.md](embedding_provider/README.md) for model preparation, configuration defaults, and tests.
+  - Model loading modes: direct-from-file (default) or preload-to-memory via `OnnxStdIoConfig { preload_model_to_memory: true }` for slow network shares.
 
 - tools/embedder-demo
   - Desktop GUI (egui/eframe) for interactive embedding. See usage in [embedding_provider/README.md](embedding_provider/README.md).
+  - Includes a checkbox to preload the model into memory when initializing.
+
+- tools/hybrid-orchestrator
+  - CLI for ingest/search with SQLite + FTS5 + HNSW. See [tools/hybrid-orchestrator/README.md](tools/hybrid-orchestrator/README.md).
+
+- tools/hybrid-orchestrator-gui
+  - Desktop GUI for end-to-end ingest/search (SQLite + FTS5 + Tantivy + HNSW). Also supports the model preload option in the UI.
+
+- tools/pdf-block-viewer
+  - GUI to inspect PDF extraction results (UnifiedBlocks) from `file-chunker` with multiple backends (stub/pure-rust/pdfium).
+
+- tools/tokenize-lab
+  - GUI sandbox for tokenization experiments (Lindera, Tantivy QueryParser analyzer, N-gram).
 
 ## Documentation Map
 
