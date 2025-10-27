@@ -50,3 +50,36 @@ Notes:
 
 - Some upstream crates may be flagged as unmaintained (no safe upgrade available). We track such advisories in `deny.toml` under `advisories.ignore` with reasons and review them periodically.
 - Font license references (e.g., `LicenseRef-UFL-1.0`) are handled via exceptions in `deny.toml` where necessary.
+
+## Release Procedure
+
+Follow this procedure when preparing a distributable (ZIP/installer/binary):
+
+1) Generate fresh reports
+   - Windows: `powershell -ExecutionPolicy Bypass -File scripts/generate_reports.ps1`
+   - Bash: `bash scripts/generate_reports.sh`
+   - Verify outputs under `reports/` are up to date.
+
+2) Run policy checks locally
+   - `cargo deny check`
+   - Address issues or document temporary exceptions in `deny.toml` with a reason.
+
+3) Prepare distribution payload
+   - Include files:
+     - `LICENSE` (project license: MIT)
+     - `reports/THIRD-PARTY-NOTICES.txt` (third‑party summary)
+     - `reports/THIRD-PARTY-LICENSES.txt` (full license texts)
+   - If bundling ONNX Runtime (ORT):
+     - Include ORT’s MIT license file (typically `LICENSE` in the ORT archive)
+     - Include ORT’s `ThirdPartyNotices` if provided in the ORT archive
+   - If bundling other runtime/providers (CUDA, TensorRT, DirectML, OpenVINO, etc.):
+     - Verify and include each vendor’s required license/notice files.
+
+4) Non‑code assets (must review and include licenses as applicable)
+   - Model files (ONNX): ensure the model’s own license permits redistribution; include its license text
+   - Dictionaries (e.g., Lindera embedded IPADIC): include the relevant license(s) (e.g., BSD‑3‑Clause) if redistributed
+   - Fonts: include font licenses (e.g., OFL‑1.1, UFL) and follow name change/notice requirements when applicable
+
+5) Release notes and artifacts
+   - Summarize notable dependency/license changes
+   - Attach the built artifacts and ensure required license/notice files are present
