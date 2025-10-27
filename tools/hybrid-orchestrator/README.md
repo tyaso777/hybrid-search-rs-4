@@ -2,6 +2,9 @@
 
 [← Back to workspace README](../../README.md)
 
+> Note
+> This CLI is kept for reference and basic testing. For most workflows, prefer the desktop GUI: `tools/hybrid-orchestrator-gui`. You likely don't need to use this CLI in day-to-day work.
+
 Command-line tool to ingest plain text and search over a hybrid index:
 - Primary store: SQLite (`chunks` table) via `chunking-store::sqlite_repo::SqliteRepo`
 - Text search: SQLite FTS5 (BM25 if available)

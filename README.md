@@ -23,7 +23,9 @@ Rust workspace for a hybrid search pipeline.
   - Includes a checkbox to preload the model into memory when initializing.
 
 - tools/hybrid-orchestrator
-  - CLI for ingest/search with SQLite + FTS5 + HNSW. See [tools/hybrid-orchestrator/README.md](tools/hybrid-orchestrator/README.md).
+  - CLI for ingest/search with SQLite + FTS5 + HNSW.
+  - Status: legacy/optional. For most workflows, prefer the GUI at `tools/hybrid-orchestrator-gui`. You likely don't need this CLI.
+  - Docs: see [tools/hybrid-orchestrator/README.md](tools/hybrid-orchestrator/README.md).
 
 - tools/hybrid-orchestrator-gui
   - Desktop GUI for end-to-end ingest/search (SQLite + FTS5 + Tantivy + HNSW). Also supports the model preload option in the UI.
