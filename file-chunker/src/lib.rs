@@ -2,13 +2,15 @@ pub mod reader_pdf;
 pub mod reader_docx;
 pub mod unified_blocks;
 pub mod chunker_rules_jp;
+#[cfg(feature = "pdfium")] pub mod reader_pdf_pdfium;
+#[cfg(feature = "pure-pdf")] pub mod reader_pdf_pure;
 
 use chunk_model::{ChunkId, ChunkRecord, DocumentId};
 use std::collections::BTreeMap;
-use unified_blocks::UnifiedBlock;
+use unified_blocks::{UnifiedBlock, BlockKind};
 
 /// High-level entry to chunk a file by path.
-/// This is a stubbed pipeline that returns a single trivial chunk for now.
+/// This is a stubbed pipeline that returns a simple chunking for now.
 pub fn chunk_file(path: &str) -> Vec<ChunkRecord> {
     // Simple content-type inference by extension (stub)
     let content_type = if path.ends_with(".pdf") {
@@ -25,7 +27,7 @@ pub fn chunk_file(path: &str) -> Vec<ChunkRecord> {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
             reader_docx::read_docx_to_blocks(path)
         }
-        _ => vec![UnifiedBlock::new("(stub) read file content here")],
+        _ => vec![UnifiedBlock::new(BlockKind::Paragraph, "(stub) read file content here", 0, path, "stub.plain")],
     };
 
     // Apply JP chunking rules (stub)
