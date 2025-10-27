@@ -82,6 +82,14 @@ References
 - Implementation: `embedding_provider/src/embedder/mod.rs`
 - Defaults: `embedding_provider/src/config.rs`
 
+### Model loading modes
+
+- `OnnxStdIoConfig { preload_model_to_memory: false }` (default)
+  - Session initializes by opening the ONNX file (`commit_from_file`).
+- `preload_model_to_memory: true`
+  - Reads the model file fully into memory first and initializes from memory (`commit_from_memory`).
+  - Useful when the model resides on a slow/latent network share; increases peak memory by roughly the model size during initialization.
+
 ---
 
 ## CLI Usage

@@ -56,6 +56,12 @@ pub struct OnnxStdIoConfig {
     pub max_input_length: usize,
     pub embedding_model_id: String,
     pub text_repr_version: String,
+    /// When true, read the ONNX model file into memory first and initialize
+    /// the session from memory instead of opening the file directly. This can
+    /// significantly reduce startup time when the model resides on a slow
+    /// network share. Increases peak memory usage by roughly the model size
+    /// during initialization.
+    pub preload_model_to_memory: bool,
 }
 
 /// ONNX-based embedder that executes models through the ONNX Runtime shared library.
@@ -99,10 +105,20 @@ impl OnnxStdIoEmbedder {
         let model_path = resolve_existing_path(&config.model_path, "ONNX model")?;
         let tokenizer_path = resolve_existing_path(&config.tokenizer_path, "tokenizer config")?;
 
-        let session = Session::builder()
-            .map_err(|err| map_ort_error("create session builder", err))?
-            .commit_from_file(&model_path)
-            .map_err(|err| map_ort_error("load ONNX model", err))?;
+        let session = if config.preload_model_to_memory {
+            let bytes = std::fs::read(&model_path).map_err(|e| EmbedderError::ProviderFailure {
+                message: format!("failed to read model `{}`: {e}", model_path.display()),
+            })?;
+            Session::builder()
+                .map_err(|err| map_ort_error("create session builder", err))?
+                .commit_from_memory(&bytes)
+                .map_err(|err| map_ort_error("load ONNX model from memory", err))?
+        } else {
+            Session::builder()
+                .map_err(|err| map_ort_error("create session builder", err))?
+                .commit_from_file(&model_path)
+                .map_err(|err| map_ort_error("load ONNX model", err))?
+        };
 
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|err| map_tokenizer_error("load tokenizer", err))?;

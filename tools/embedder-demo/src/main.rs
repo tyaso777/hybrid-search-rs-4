@@ -60,6 +60,7 @@ struct DemoApp {
     runtime_path: String,
     embedding_dimension: String,
     max_tokens: String,
+    preload_model_to_memory: bool,
     status: String,
     input_text: String,
     preview_text: String,
@@ -139,6 +140,7 @@ impl DemoApp {
             runtime_path: defaults.runtime_library_path.display().to_string(),
             embedding_dimension: ONNX_STDIO_DEFAULTS.embedding_dimension.to_string(),
             max_tokens: ONNX_STDIO_DEFAULTS.max_input_tokens.to_string(),
+            preload_model_to_memory: false,
             status: "Ready".into(),
             input_text: "sample text for embedding".into(),
             preview_text: String::new(),
@@ -181,6 +183,7 @@ impl DemoApp {
             max_input_length: max_len,
             embedding_model_id: ONNX_STDIO_DEFAULTS.embedding_model_id.into(),
             text_repr_version: ONNX_STDIO_DEFAULTS.text_repr_version.into(),
+            preload_model_to_memory: self.preload_model_to_memory,
         })
     }
 
@@ -400,6 +403,7 @@ impl App for DemoApp {
                 ui.add(TextEdit::singleline(&mut self.embedding_dimension).desired_width(100.0));
                 ui.label("Max tokens:");
                 ui.add(TextEdit::singleline(&mut self.max_tokens).desired_width(100.0));
+                ui.checkbox(&mut self.preload_model_to_memory, "モデルをメモリに先読み");
                 let init_btn = ui.add_enabled(self.model_task.is_none(), Button::new("Initialize Model"));
                 if init_btn.clicked() {
                     self.start_model_init("");

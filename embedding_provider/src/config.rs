@@ -39,5 +39,6 @@ pub fn default_stdio_config() -> OnnxStdIoConfig {
         max_input_length: ONNX_STDIO_DEFAULTS.max_input_tokens,
         embedding_model_id: ONNX_STDIO_DEFAULTS.embedding_model_id.into(),
         text_repr_version: ONNX_STDIO_DEFAULTS.text_repr_version.into(),
+        preload_model_to_memory: false,
     }
 }
