@@ -16,9 +16,10 @@ fn main() {
         "ChatGPTを使っています",
     ];
 
-    // Only embedded IPADIC
-    println!("-- embedded://ipadic --");
-    let dictionary = load_dictionary("embedded://ipadic").expect("load embedded ipadic");
+    // Allow override via LINDERA_DICT_URI or LINDERA_DICT_DIR; fallback to embedded
+    let dict_uri = dict_uri_from_env();
+    println!("-- {} --", dict_uri);
+    let dictionary = load_dictionary(&dict_uri).expect("load lindera dictionary");
     let user_dictionary = None;
     let mode = Mode::Normal;
     let segmenter = Segmenter::new(mode, dictionary, user_dictionary);
@@ -32,4 +33,17 @@ fn main() {
         }
         println!("{} => {}", s, toks.join(" | "));
     }
+}
+
+fn dict_uri_from_env() -> String {
+    if let Ok(uri) = std::env::var("LINDERA_DICT_URI") { return uri; }
+    if let Ok(dir) = std::env::var("LINDERA_DICT_DIR") {
+        let p = std::path::PathBuf::from(dir);
+        let abs = if p.is_absolute() { p } else { std::env::current_dir().unwrap().join(p) };
+        let mut s = abs.to_string_lossy().replace('\\', "/");
+        if !s.starts_with('/') { s = format!("/{s}"); }
+        return format!("file://{s}");
+    }
+    // Default to embedded when available
+    "embedded://ipadic".to_string()
 }

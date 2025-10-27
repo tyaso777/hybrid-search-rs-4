@@ -85,7 +85,26 @@ mod real {
             use lindera::mode::Mode;
             use lindera::segmenter::Segmenter;
             use lindera_tantivy::tokenizer::LinderaTokenizer;
-            let dictionary = load_dictionary("embedded://ipadic").expect("load embedded ipadic");
+            fn dict_uri_from_env_or_vendor() -> String {
+                if let Ok(uri) = std::env::var("LINDERA_DICT_URI") { return uri; }
+                if let Ok(dir) = std::env::var("LINDERA_DICT_DIR") {
+                    let p = std::path::PathBuf::from(dir);
+                    let abs = if p.is_absolute() { p } else { std::env::current_dir().unwrap().join(p) };
+                    let mut s = abs.to_string_lossy().replace('\\', "/");
+                    if !s.starts_with('/') { s = format!("/{s}"); }
+                    return format!("file://{s}");
+                }
+                // Default to embedded when available (features enabled)
+                "embedded://ipadic".to_string()
+            }
+            let dict_uri = dict_uri_from_env_or_vendor();
+            eprintln!("[lindera] using dictionary: {}", &dict_uri);
+            let dictionary = load_dictionary(&dict_uri).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to load Lindera dictionary from {}. Set LINDERA_DICT_DIR or place built dictionary under vendor/lindera-ipadic. Error: {}",
+                    dict_uri, e
+                )
+            });
             let user_dictionary = None;
             let segmenter = Segmenter::new(Mode::Normal, dictionary, user_dictionary);
             let tokenizer = LinderaTokenizer::from_segmenter(segmenter);

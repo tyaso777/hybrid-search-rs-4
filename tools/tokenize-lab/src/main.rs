@@ -76,7 +76,8 @@ impl LabApp {
         let index = Index::create_in_ram(schema.clone());
 
         // Register Lindera tokenizer with selected mode
-        let dictionary = load_dictionary("embedded://ipadic").expect("load embedded ipadic");
+        let dict_uri = dict_uri_from_env();
+        let dictionary = load_dictionary(&dict_uri).expect("load lindera dictionary");
         let user_dictionary = None;
         let mode = match self.lindera_mode { LinderaModeSel::Normal => Mode::Normal /*, _ => Mode::Decompose*/ };
         let segmenter = Segmenter::new(mode, dictionary, user_dictionary);
@@ -93,7 +94,8 @@ impl LabApp {
         let Some(ctx) = &self.index else { return; };
 
         // 1) Lindera tokens via tokenizer directly
-        let dictionary = load_dictionary("embedded://ipadic").expect("load embedded ipadic");
+        let dict_uri = dict_uri_from_env();
+        let dictionary = load_dictionary(&dict_uri).expect("load lindera dictionary");
         let user_dictionary = None;
         let mode = match self.lindera_mode { LinderaModeSel::Normal => Mode::Normal };
         let segmenter = Segmenter::new(mode, dictionary, user_dictionary);
@@ -132,6 +134,19 @@ impl LabApp {
             self.ng_toks.push(ngs.token().text.clone());
         }
     }
+}
+
+fn dict_uri_from_env() -> String {
+    if let Ok(uri) = std::env::var("LINDERA_DICT_URI") { return uri; }
+    if let Ok(dir) = std::env::var("LINDERA_DICT_DIR") {
+        let p = std::path::PathBuf::from(dir);
+        let abs = if p.is_absolute() { p } else { std::env::current_dir().unwrap().join(p) };
+        let mut s = abs.to_string_lossy().replace('\\', "/");
+        if !s.starts_with('/') { s = format!("/{s}"); }
+        return format!("file://{s}");
+    }
+    // Default to embedded dictionary when features are enabled
+    "embedded://ipadic".to_string()
 }
 
 impl App for LabApp {

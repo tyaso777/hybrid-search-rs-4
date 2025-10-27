@@ -35,3 +35,8 @@ tools/embedder-demo/testdata/large/**
 !tools/embedder-demo/testdata/large/.gitkeep
 tools/embedder-demo/output/**
 !tools/embedder-demo/output/.gitkeep
+
+# Lindera cache (keep folders, ignore payloads)
+vendor/lindera-cache/**
+!vendor/lindera-cache/
+!vendor/lindera-cache/**/.gitkeep

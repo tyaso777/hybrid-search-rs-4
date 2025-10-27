@@ -16,6 +16,7 @@
     │   │               └── egui-winit 0.27.2
     │   │                   └── eframe 0.27.2
     │   │                       ├── tokenize-lab 0.1.0
+    │   │                       ├── pdf-block-viewer 0.1.0
     │   │                       ├── hybrid-orchestrator-gui 0.1.0
     │   │                       └── embedder-demo 0.1.0
     │   └── atspi 0.19.0
@@ -73,6 +74,7 @@
         │               └── egui-winit 0.27.2
         │                   └── eframe 0.27.2
         │                       ├── tokenize-lab 0.1.0
+        │                       ├── pdf-block-viewer 0.1.0
         │                       ├── hybrid-orchestrator-gui 0.1.0
         │                       └── embedder-demo 0.1.0
         ├── async-process 1.8.1
@@ -114,6 +116,7 @@
 │       │       ├── egui-wgpu 0.27.2
 │       │       │   └── eframe 0.27.2
 │       │       │       ├── tokenize-lab 0.1.0
+│       │       │       ├── pdf-block-viewer 0.1.0
 │       │       │       ├── hybrid-orchestrator-gui 0.1.0
 │       │       │       └── embedder-demo 0.1.0
 │       │       └── eframe 0.27.2

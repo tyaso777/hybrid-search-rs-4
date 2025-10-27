@@ -1,6 +1,6 @@
 ﻿THIRD-PARTY LICENSES (cargo-about)
 
-Generated: 2025-10-27 01:12:26 UTC
+Generated: 2025-10-27 14:46:30 UTC
 This file contains license texts for third-party crates used by this project.
 Workspace/local crates are excluded.
 
@@ -292,6 +292,7 @@ Used by:
 - lindera-dictionary 1.4.1  https://github.com/lindera/lindera
 - lindera-ipadic 1.4.1  https://github.com/lindera/lindera
 - lindera-tantivy 1.1.0  https://github.com/lindera/lindera-tantivy
+- lopdf 0.32.0  https://github.com/J-F-Liu/lopdf.git
 - lru 0.12.5  https://github.com/jeromefroe/lru-rs.git
 - lz4_flex 0.11.5  https://github.com/pseitz/lz4_flex
 - malloc_buf 0.0.6  https://github.com/SSheldon/malloc_buf
@@ -324,6 +325,7 @@ Used by:
 - ownedbytes 0.9.0  https://github.com/quickwit-oss/tantivy
 - phf 0.11.3  https://github.com/rust-phf/rust-phf
 - phf_shared 0.11.3  https://github.com/rust-phf/rust-phf
+- piston-float 1.0.1  https://github.com/pistondevelopers/float.git
 - quick-xml 0.37.5  https://github.com/tafia/quick-xml
 - quick-xml 0.38.3  https://github.com/tafia/quick-xml
 - redox_syscall 0.3.5  https://gitlab.redox-os.org/redox-os/syscall
@@ -364,6 +366,7 @@ Used by:
 - unicode-blocks 0.1.9  https://github.com/magiclen/unicode-blocks
 - unsafe-libyaml 0.2.11  https://github.com/dtolnay/unsafe-libyaml
 - urlencoding 2.1.3  https://github.com/kornelski/rust_urlencoding
+- vecmath 1.0.0  https://github.com/pistondevelopers/vecmath.git
 - virtue 0.0.18  https://github.com/bincode-org/virtue
 - want 0.3.1  https://github.com/seanmonstar/want
 - wayland-backend 0.3.11  https://github.com/smithay/wayland-rs
