@@ -72,6 +72,33 @@ Rust workspace for a hybrid search pipeline.
 
 Scaffolded and buildable. Extend each crate with real implementations.
 
+## Compliance / Security
+
+- Project license
+  - MIT. See [LICENSE](LICENSE).
+
+- Security policy
+  - See [SECURITY.md](SECURITY.md) for reporting guidance and monitoring tools.
+
+- Third‑party licenses (for distribution)
+  - Summary: `reports/THIRD-PARTY-NOTICES.txt`
+  - Full texts: `reports/THIRD-PARTY-LICENSES.txt` (generated via cargo-about)
+  - Include these files with distributable artifacts when you ship binaries.
+  - Details and checklist: see [docs/compliance.md](docs/compliance.md)
+
+- Regenerate license and vulnerability reports
+  - Windows (PowerShell): `powershell -ExecutionPolicy Bypass -File scripts/generate_reports.ps1`
+  - Bash: `bash scripts/generate_reports.sh`
+  - Outputs: `reports/cargo-audit.*`, `reports/license.*`, `reports/THIRD-PARTY-*`
+
+- Continuous checks (CI)
+  - GitHub Actions workflow runs `cargo deny check` on push/PR to `main`.
+  - Config: `.github/workflows/cargo-deny.yml`, policy: `deny.toml`
+
+- Local checks
+  - `cargo deny check`
+  - Optional: `cargo audit` for a RustSec scan, `cargo about generate` for license data
+
 ## Build
 
 ```

@@ -2,6 +2,7 @@
 name = "embedding-provider"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [lib]
 name = "embedding_provider"
@@ -15,4 +16,3 @@ ndarray = "0.16"
 
 [dev-dependencies]
 tempfile = "3.10"
-
