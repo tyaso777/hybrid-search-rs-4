@@ -27,6 +27,7 @@ Rust workspace for a hybrid search pipeline.
 
 - tools/hybrid-orchestrator-gui
   - Desktop GUI for end-to-end ingest/search (SQLite + FTS5 + Tantivy + HNSW). Also supports the model preload option in the UI.
+  - Docs: see [tools/hybrid-orchestrator-gui/README.md](tools/hybrid-orchestrator-gui/README.md).
 
 - tools/pdf-block-viewer
   - GUI to inspect PDF extraction results (UnifiedBlocks) from `file-chunker` with multiple backends (stub/pure-rust/pdfium).
