@@ -25,9 +25,11 @@ tantivy-impl = ["dep:lindera-tantivy", "dep:lindera"]
 [dependencies.lindera-tantivy]
 version = "1"
 optional = true
+default-features = false
 features = ["embedded-ipadic"]
 
 [dependencies.lindera]
 version = "1.4"
 optional = true
-
+default-features = false
+features = ["embedded-ipadic"]

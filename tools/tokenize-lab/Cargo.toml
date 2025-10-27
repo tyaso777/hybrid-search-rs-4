@@ -8,6 +8,6 @@ license = "MIT"
 eframe = { version = "0.27", default-features = true, features = ["wgpu"] }
 egui_extras = "0.27"
 tantivy = "0.25"
-lindera = "1.4"
-lindera-tantivy = { version = "1", features = ["embedded-ipadic"] }
+lindera = { version = "1.4", default-features = false, features = ["embedded-ipadic"] }
+lindera-tantivy = { version = "1", default-features = false, features = ["embedded-ipadic"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
