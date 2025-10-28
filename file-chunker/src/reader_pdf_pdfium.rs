@@ -42,7 +42,21 @@ fn bind_pdfium_from_bundle() -> Option<Box<dyn PdfiumLibraryBindings>> {
     None
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PdfStructureMode {
+    /// Return a single paragraph block per page after normalization.
+    Plain,
+    /// Heuristic segmentation into headings / list items / paragraphs from normalized text.
+    Heuristic,
+    /// Try Heuristic, but fall back to Plain if no signal is detected.
+    Auto,
+}
+
 pub fn read_pdf_to_blocks_pdfium(path: &str) -> Vec<UnifiedBlock> {
+    read_pdf_to_blocks_pdfium_with_mode(path, PdfStructureMode::Auto)
+}
+
+pub fn read_pdf_to_blocks_pdfium_with_mode(path: &str, mode: PdfStructureMode) -> Vec<UnifiedBlock> {
     // Try env override → bundled under file-chunker/bin → system library
     let bindings = if let Some(b) = bind_pdfium_from_env() {
         b
@@ -86,25 +100,64 @@ pub fn read_pdf_to_blocks_pdfium(path: &str) -> Vec<UnifiedBlock> {
             Err(_) => String::new(),
         };
         let text = normalize_pdfium_text(&text);
-        if text.trim().is_empty() {
-            continue;
-        }
+        if text.trim().is_empty() { continue; }
 
-        let mut block = UnifiedBlock::new(
-            BlockKind::Paragraph,
-            text,
-            order,
-            path,
-            "pdfium",
-        );
-        order += 1;
-        block.page_start = Some(page_num);
-        block.page_end = Some(page_num);
-        // Page dimensions (optional): can be filled if numeric conversion is desired
-        // let w = page.width();
-        // let h = page.height();
-        // block.bbox = Some(BBox { x: 0.0, y: 0.0, w: w.0, h: h.0, unit: BBoxUnit::Pt });
-        out.push(block);
+        match mode {
+            PdfStructureMode::Plain => {
+                let mut block = UnifiedBlock::new(
+                    BlockKind::Paragraph,
+                    text,
+                    order,
+                    path,
+                    "pdfium",
+                );
+                order += 1;
+                block.page_start = Some(page_num);
+                block.page_end = Some(page_num);
+                out.push(block);
+            }
+            PdfStructureMode::Heuristic => {
+                let created = push_heuristic_blocks(&mut out, &text, path, page_num, &mut order);
+                if created == 0 {
+                    // Fallback safety: ensure at least one block per page
+                    let mut block = UnifiedBlock::new(
+                        BlockKind::Paragraph,
+                        text,
+                        order,
+                        path,
+                        "pdfium",
+                    );
+                    order += 1;
+                    block.page_start = Some(page_num);
+                    block.page_end = Some(page_num);
+                    out.push(block);
+                }
+            }
+            PdfStructureMode::Auto => {
+                // Perform heuristic segmentation but decide whether to keep it.
+                let _created = push_heuristic_blocks(&mut out, &text, path, page_num, &mut order);
+                // If segmentation produced only a single long paragraph and no headings/lists,
+                // consider it "unknown structure" and collapse into one block.
+                let page_blocks = out.iter().rev().take_while(|b| b.page_start == Some(page_num)).count();
+                let has_structure = out.iter().rev().take(page_blocks)
+                    .any(|b| matches!(b.kind, BlockKind::Heading | BlockKind::ListItem));
+                if !has_structure {
+                    // Remove the blocks we just added for this page and add a plain block instead.
+                    for _ in 0..page_blocks { let _ = out.pop(); }
+                    let mut block = UnifiedBlock::new(
+                        BlockKind::Paragraph,
+                        text,
+                        order,
+                        path,
+                        "pdfium",
+                    );
+                    order += 1;
+                    block.page_start = Some(page_num);
+                    block.page_end = Some(page_num);
+                    out.push(block);
+                }
+            }
+        }
     }
 
     out
@@ -209,6 +262,105 @@ fn normalize_pdfium_text(raw: &str) -> String {
     }
 
     out
+}
+
+// --- Heuristic segmentation --------------------------------------------------
+
+fn push_heuristic_blocks(out: &mut Vec<UnifiedBlock>, text: &str, origin: &str, page_num: u32, order: &mut u32) -> usize {
+    let base_len = out.len();
+    let mut para_buf = String::new();
+
+    let mut flush_para = |buf: &mut String, out: &mut Vec<UnifiedBlock>, order: &mut u32| {
+        if buf.trim().is_empty() { return; }
+        let mut b = UnifiedBlock::new(BlockKind::Paragraph, buf.trim(), *order, origin, "pdfium");
+        *order += 1;
+        b.page_start = Some(page_num);
+        b.page_end = Some(page_num);
+        out.push(b);
+        buf.clear();
+    };
+
+    for line in text.split('\n') {
+        let l = line.trim_end();
+        if l.trim().is_empty() {
+            flush_para(&mut para_buf, out, order);
+            continue;
+        }
+
+        if let Some(level) = heading_level_guess(l) {
+            flush_para(&mut para_buf, out, order);
+            let mut b = UnifiedBlock::new(BlockKind::Heading, l.trim(), *order, origin, "pdfium");
+            *order += 1;
+            b.page_start = Some(page_num);
+            b.page_end = Some(page_num);
+            b.heading_level = Some(level);
+            b.section_hint = Some(crate::unified_blocks::SectionHint { level, title: l.trim().to_string(), numbering: None });
+            out.push(b);
+            continue;
+        }
+
+        if let Some(list_info) = list_info_guess(l) {
+            flush_para(&mut para_buf, out, order);
+            let mut b = UnifiedBlock::new(BlockKind::ListItem, l.trim(), *order, origin, "pdfium");
+            *order += 1;
+            b.page_start = Some(page_num);
+            b.page_end = Some(page_num);
+            b.list = Some(list_info);
+            out.push(b);
+            continue;
+        }
+
+        // Accumulate into current paragraph
+        if !para_buf.is_empty() && last_non_ws_is_ascii_alnum(&para_buf) && first_non_ws_is_ascii_alnum(l) {
+            para_buf.push(' ');
+        }
+        para_buf.push_str(l.trim_start());
+    }
+
+    flush_para(&mut para_buf, out, order);
+    out.len().saturating_sub(base_len)
+}
+
+fn heading_level_guess(line: &str) -> Option<u8> {
+    let s = line.trim_start();
+    // 第n章 → level 1
+    if s.starts_with('第') && s.contains('章') {
+        return Some(1);
+    }
+    // n.  / n)  / n.n  patterns → level by dot count (capped)
+    let mut digits = 0usize;
+    let mut dots = 0usize;
+    for ch in s.chars().take(12) {
+        if ch.is_ascii_digit() { digits += 1; continue; }
+        if ch == '.' { dots += 1; continue; }
+        if ch == ')' && digits > 0 { break; }
+        if ch.is_whitespace() { break; }
+        // Non-matching char early
+        break;
+    }
+    if digits > 0 {
+        let level = (dots as u8).saturating_add(1).min(6);
+        return Some(level);
+    }
+    None
+}
+
+fn list_info_guess(line: &str) -> Option<crate::unified_blocks::ListInfo> {
+    let s = line.trim_start();
+    // Bulleted
+    if s.starts_with('・') || s.starts_with('•') || s.starts_with("-") {
+        return Some(crate::unified_blocks::ListInfo { ordered: false, level: 1, marker: s.chars().next().map(|c| c.to_string()) });
+    }
+    // Ordered: 1. foo  or  1) foo
+    let mut i = 0usize;
+    let chars: Vec<char> = s.chars().collect();
+    while i < chars.len() && chars[i].is_ascii_digit() { i += 1; }
+    if i > 0 && i < chars.len() {
+        if chars[i] == '.' || chars[i] == ')' {
+            return Some(crate::unified_blocks::ListInfo { ordered: true, level: 1, marker: Some(chars[i].to_string()) });
+        }
+    }
+    None
 }
 
 fn visual_len(s: &str) -> f32 {
