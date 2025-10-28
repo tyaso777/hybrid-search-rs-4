@@ -116,15 +116,41 @@ fn normalize_pdfium_text(raw: &str) -> String {
     // 1) Normalize CRLF to LF
     let raw = raw.replace('\r', "");
 
-    // 2) Pre-scan lines to compute a per-page maximum "end position" proxy (visual width).
+    // 2) Split to lines and prune page header/footer like "- 12 -" at the very top/bottom.
     let lines: Vec<&str> = raw.split('\n').collect();
+    let header_idx = first_nonblank_index(&lines).and_then(|i|
+        if is_decorated_page_number_line(lines[i])
+            || is_page_label_line(lines[i])
+            || is_number_pair_line(lines[i])
+            || is_digits_of_digits_line(lines[i]) {
+            Some(i)
+        } else { None }
+    );
+    let footer_idx = last_nonblank_index(&lines).and_then(|i|
+        if is_decorated_page_number_line(lines[i])
+            || is_page_label_line(lines[i])
+            || is_number_pair_line(lines[i])
+            || is_digits_of_digits_line(lines[i]) {
+            Some(i)
+        } else { None }
+    );
+
+    // 2b) Pre-scan visual widths, excluding detected header/footer for max length estimation.
     let lens: Vec<f32> = lines.iter().map(|l| visual_len(l.trim_end())).collect();
-    let max_len = lens.iter().copied().fold(0.0f32, f32::max);
+    let mut max_len = 0.0f32;
+    for (i, w) in lens.iter().enumerate() {
+        let is_pruned = Some(i) == header_idx || Some(i) == footer_idx;
+        if !is_pruned { max_len = max_len.max(*w); }
+    }
+    // "Two characters" threshold in visual units, adapted to script mix (ASCII vs CJK).
+    // This makes us conservative: we only keep an explicit line break when the previous
+    // line ends at least ~2 characters left of the common right edge. Otherwise, we join.
+    let char_gap_threshold = 2.0 * avg_char_unit(&raw);
 
     // 3) Build output with heuristics:
     //    - Blank line => paragraph separator (\n\n)
-    //    - If previous non-blank line nearly reached the page right edge (width ~= max), treat as soft-wrap (join)
-    //      otherwise, keep a visible line break (single \n)
+    //    - Join by default; only keep a visible line break when the previous line ends
+    //      >= ~2 characters left of the common right edge (conservative break detection)
     //    - Hyphenation join: remove trailing hyphen when next starts with ASCII alpha
     //    - ASCII<->ASCII joins insert a single space; CJK joins insert none
 
@@ -134,8 +160,10 @@ fn normalize_pdfium_text(raw: &str) -> String {
     let mut prev_ended_with_hyphen = false;
 
     for (i, raw_line) in lines.iter().enumerate() {
+        let is_pruned_hf = Some(i) == header_idx || Some(i) == footer_idx;
         let l = raw_line.trim_end();
         let is_blank = l.trim().is_empty();
+        if is_pruned_hf { continue; }
         let w = lens.get(i).copied().unwrap_or(0.0);
 
         if is_blank {
@@ -156,12 +184,15 @@ fn normalize_pdfium_text(raw: &str) -> String {
         }
 
         if started && !out.ends_with("\n\n") {
-            let near_max = prev_w >= (max_len * 0.97);
+            // How far the previous line's end is from the estimated right edge.
+            let short_by = (max_len - prev_w).max(0.0);
+            // Join unless the previous line is clearly short (>= ~2 chars left).
+            let should_join_by_width = short_by < char_gap_threshold;
 
             if prev_ended_with_hyphen && first_non_ws_is_ascii_alpha(l) {
                 pop_trailing_hyphen(&mut out);
                 out.push_str(l.trim_start());
-            } else if near_max {
+            } else if should_join_by_width {
                 if last_non_ws_is_ascii_alnum(&out) && first_non_ws_is_ascii_alnum(l) { out.push(' '); }
                 out.push_str(l.trim_start());
             } else {
@@ -187,6 +218,180 @@ fn visual_len(s: &str) -> f32 {
         if ch.is_ascii() { w += 0.55; } else { w += 1.0; }
     }
     w
+}
+
+// Average visual width per non-whitespace character across the whole text.
+// ASCII letters count narrower (~0.55), CJK as 1.0. Used to scale the
+// "two characters" threshold to the script mix of the page.
+fn avg_char_unit(s: &str) -> f32 {
+    let mut units = 0.0f32;
+    let mut count = 0u32;
+    for ch in s.chars() {
+        if ch.is_whitespace() { continue; }
+        units += if ch.is_ascii() { 0.55 } else { 1.0 };
+        count += 1;
+    }
+    if count == 0 { 1.0 } else { units / (count as f32) }
+}
+
+// Identify first/last non-blank line indices.
+fn first_nonblank_index(lines: &[&str]) -> Option<usize> {
+    for (i, l) in lines.iter().enumerate() {
+        if !l.trim().is_empty() { return Some(i); }
+    }
+    None
+}
+
+fn last_nonblank_index(lines: &[&str]) -> Option<usize> {
+    for (i, l) in lines.iter().enumerate().rev() {
+        if !l.trim().is_empty() { return Some(i); }
+    }
+    None
+}
+
+// Detect page number lines like "- 12 -", "(3)", "★5☆" with any number of ornaments on each side.
+fn is_decorated_page_number_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() { return false; }
+    // Remove all whitespace to tolerate spaces like "- 1 -"
+    let compact: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+    if compact.is_empty() { return false; }
+
+    let chars: Vec<char> = compact.chars().collect();
+    let n = chars.len();
+    let mut i = 0usize;
+
+    // Zero or more leading ornaments
+    while i < n && is_ornament_char(chars[i]) { i += 1; }
+
+    // One or more digits (ASCII or full-width)
+    let mut digits = 0usize;
+    while i < n && is_ascii_or_fullwidth_digit(chars[i]) { i += 1; digits += 1; }
+    if digits == 0 { return false; }
+
+    // Zero or more trailing ornaments and nothing else
+    while i < n && is_ornament_char(chars[i]) { i += 1; }
+
+    i == n
+}
+
+// Detect page header/footer lines containing page labels like "Page 3", "p. 12",
+// "pp. 12–14", "3ページ", "第5頁". Requires that the line contains a page keyword and a digit
+// (ASCII or full-width). Whitespace is tolerated; only evaluated for first/last lines.
+fn is_page_label_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.is_empty() { return false; }
+    let ascii_lower = t.to_lowercase();
+    let has_digit = t.chars().any(is_ascii_or_fullwidth_digit);
+    if !has_digit { return false; }
+
+    if ascii_lower.contains("page") { return true; }
+    if ascii_lower.contains("p.") || ascii_lower.contains("p．") { return true; }
+    if contains_pp_label(&ascii_lower) { return true; }
+    if t.contains("ページ") || t.contains("頁") { return true; }
+    false
+}
+
+// Rough detection for plural page label "pp".
+// Matches: "pp.", "pp ", "pp12", "pp-12", "pp/12", "pp〜12" etc.
+fn contains_pp_label(s_lower: &str) -> bool {
+    let chars: Vec<char> = s_lower.chars().collect();
+    let n = chars.len();
+    let is_follow_ok = |c: char| -> bool {
+        c.is_ascii_digit() || c.is_whitespace() || c == '.' || c == '．' || is_pair_sep_char(c)
+    };
+    let mut i = 0usize;
+    while i + 1 < n {
+        if chars[i] == 'p' && chars[i + 1] == 'p' {
+            if i + 2 >= n { return true; }
+            let c = chars[i + 2];
+            if is_follow_ok(c) { return true; }
+        }
+        i += 1;
+    }
+    false
+}
+
+// Detect compact numeric pair like "12/34", "3-4", allowing any number of
+// ornaments on both sides. The entire line must be composed of ornaments,
+// digits, and a separator ('/' or '-' family), no other letters.
+fn is_number_pair_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() { return false; }
+    let compact: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+    if compact.is_empty() { return false; }
+    let chars: Vec<char> = compact.chars().collect();
+    let n = chars.len();
+    let mut i = 0usize;
+
+    // leading ornaments
+    while i < n && is_ornament_char(chars[i]) { i += 1; }
+
+    // first number
+    let mut d1 = 0usize;
+    while i < n && is_ascii_or_fullwidth_digit(chars[i]) { i += 1; d1 += 1; }
+    if d1 == 0 { return false; }
+
+    // one or more separators
+    let mut sep = 0usize;
+    while i < n && is_pair_sep_char(chars[i]) { i += 1; sep += 1; }
+    if sep == 0 { return false; }
+
+    // second number
+    let mut d2 = 0usize;
+    while i < n && is_ascii_or_fullwidth_digit(chars[i]) { i += 1; d2 += 1; }
+    if d2 == 0 { return false; }
+
+    // trailing ornaments
+    while i < n && is_ornament_char(chars[i]) { i += 1; }
+
+    i == n
+}
+
+// Detect lines like "1 of 12" (case-insensitive), allowing spaces and ornaments around.
+fn is_digits_of_digits_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.is_empty() { return false; }
+    // Strip ornaments at both ends and collapse spaces to simplify matching
+    let s: String = t.chars().filter(|c| !is_ornament_char(*c)).collect();
+    let s = s.trim();
+    // Normalize internal whitespace
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let s_lower = s.to_lowercase();
+
+    // Fast path: must contain " of "
+    if !s_lower.contains(" of ") { return false; }
+
+    // Check digits on both sides (accept full-width digits too)
+    let parts: Vec<&str> = s_lower.split(" of ").collect();
+    if parts.len() != 2 { return false; }
+    let left_has_digit = parts[0].chars().any(is_ascii_or_fullwidth_digit) && parts[0].chars().all(|c| c.is_whitespace() || is_ascii_or_fullwidth_digit(c));
+    let right_has_digit = parts[1].chars().any(is_ascii_or_fullwidth_digit) && parts[1].chars().all(|c| c.is_whitespace() || is_ascii_or_fullwidth_digit(c));
+    left_has_digit && right_has_digit
+}
+
+fn is_pair_sep_char(c: char) -> bool {
+    matches!(c, '/' | '／' | '-' | '‐' | '‑' | '‒' | '–' | '—' | '−' | '~' | '〜' | '～')
+}
+
+fn is_ascii_or_fullwidth_digit(c: char) -> bool {
+    c.is_ascii_digit() || ('０'..='９').contains(&c)
+}
+
+fn is_ornament_char(c: char) -> bool {
+    match c {
+        // dashes/lines
+        '-' | '‐' | '‑' | '‒' | '–' | '—' | '―' | '−' | '─' | '━' | '_'
+        // bullets/stars/shapes
+        | '*' | '•' | '·' | '・' | '●' | '○' | '◇' | '◆' | '☆' | '★'
+        // brackets/angles/quotes
+        | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | '‹' | '›' | '«' | '»'
+        | '「' | '」' | '『' | '』' | '【' | '】' | '〈' | '〉' | '《' | '》'
+        // misc decorations
+        | '|' | '｜' | '=' | '~' | '〜' | '～' | '†' | '‡' | '§' | '¶' | '※'
+            => true,
+        _ => false,
+    }
 }
 
 fn ends_with_hyphen_like(s: &str) -> bool {
