@@ -2,6 +2,7 @@
 name = "pdf-block-viewer"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 eframe = { version = "0.27", default-features = true, features = ["wgpu"] }
