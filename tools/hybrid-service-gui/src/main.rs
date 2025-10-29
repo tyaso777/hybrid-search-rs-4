@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::{mpsc::{self, Receiver, TryRecvError}, Arc};
 use std::time::Instant;
 
-use eframe::egui::{self, Button, CentralPanel, ScrollArea, Spinner, TextEdit, CollapsingHeader};
+use eframe::egui::{self, Button, CentralPanel, ScrollArea, Spinner, TextEdit};
 use eframe::egui::ProgressBar;
 use egui_extras::{Column, TableBuilder};
 use eframe::{App, CreationContext, Frame, NativeOptions};
@@ -31,6 +31,7 @@ fn main() -> eframe::Result<()> {
 enum ActiveTab {
     Insert,
     Search,
+    Config,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +117,50 @@ struct AppState {
 }
 
 impl AppState {
+    fn ui_config(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Model / Store Config");
+        ui.add_enabled_ui(!self.ingest_running, |ui| {
+            let mut root_changed = false;
+            ui.horizontal(|ui| {
+                ui.label("Store Root");
+                if ui.add(TextEdit::singleline(&mut self.store_root).desired_width(400.0)).changed() { root_changed = true; }
+                if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().pick_folder() { self.store_root = p.display().to_string(); root_changed = true; } }
+                if ui.button("Reset").clicked() { self.store_root = "target/demo/store".into(); root_changed = true; }
+            });
+            if root_changed { self.refresh_store_paths(); }
+            ui.horizontal(|ui| { ui.label("DB"); ui.label(&self.db_path); });
+            ui.horizontal(|ui| { ui.label("HNSW"); ui.label(&self.hnsw_dir); });
+            #[cfg(feature = "tantivy")]
+            ui.horizontal(|ui| { ui.label("Tantivy"); ui.label(&self.tantivy_dir); });
+            ui.separator();
+            ui.collapsing("Danger zone", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Deletes DB and indexes (HNSW/Tantivy)").color(egui::Color32::LIGHT_RED));
+                    let btn = egui::RichText::new("Delete DB & Indexes").color(egui::Color32::RED);
+                    if ui.button(btn).clicked() { self.delete_store_files(); }
+                });
+            });
+            ui.separator();
+            ui.horizontal(|ui| { ui.label("Model"); ui.add(TextEdit::singleline(&mut self.model_path).desired_width(400.0)); if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().add_filter("ONNX", &["onnx"]).pick_file() { self.model_path = p.display().to_string(); } } });
+            ui.horizontal(|ui| { ui.label("Tokenizer"); ui.add(TextEdit::singleline(&mut self.tokenizer_path).desired_width(400.0)); if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().add_filter("JSON", &["json"]).pick_file() { self.tokenizer_path = p.display().to_string(); } } });
+            ui.horizontal(|ui| { ui.label("Runtime DLL"); ui.add(TextEdit::singleline(&mut self.runtime_path).desired_width(400.0)); if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().pick_file() { self.runtime_path = p.display().to_string(); } } });
+            ui.horizontal(|ui| {
+                ui.label("Dim"); ui.add(TextEdit::singleline(&mut self.embedding_dimension).desired_width(80.0));
+                ui.label("MaxTokens"); ui.add(TextEdit::singleline(&mut self.max_tokens).desired_width(80.0));
+                ui.label("Batch"); ui.add(TextEdit::singleline(&mut self.embed_batch_size).desired_width(60.0));
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.preload_model_to_memory, "Preload model into memory");
+                ui.checkbox(&mut self.embed_auto, "Auto batch");
+            });
+            ui.collapsing("Auto batch settings", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Initial"); ui.add(TextEdit::singleline(&mut self.embed_initial_batch).desired_width(60.0));
+                    ui.label("Min"); ui.add(TextEdit::singleline(&mut self.embed_min_batch).desired_width(60.0));
+                });
+            });
+        });
+    }
     fn refresh_store_paths(&mut self) {
         let root = self.store_root.trim();
         self.db_path = derive_db_path(root);
@@ -304,6 +349,7 @@ impl App for AppState {
                 ui.add_enabled_ui(!self.ingest_running, |ui| {
                     ui.selectable_value(&mut self.tab, ActiveTab::Insert, "Insert");
                     ui.selectable_value(&mut self.tab, ActiveTab::Search, "Search");
+                    ui.selectable_value(&mut self.tab, ActiveTab::Config, "Config");
                     ui.separator();
                     if self.model_not_initialized() {
                         if ui.button("Init Model").clicked() {
@@ -324,55 +370,11 @@ impl App for AppState {
                 }
             });
 
-            CollapsingHeader::new("Model/Store Config").default_open(true).show(ui, |ui| {
-                ui.add_enabled_ui(!self.ingest_running, |ui| {
-                    let mut root_changed = false;
-                    ui.horizontal(|ui| {
-                        ui.label("Store Root");
-                        if ui.add(TextEdit::singleline(&mut self.store_root).desired_width(400.0)).changed() { root_changed = true; }
-                    if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().pick_folder() { self.store_root = p.display().to_string(); root_changed = true; } }
-                        if ui.button("Reset").clicked() { self.store_root = "target/demo/store".into(); root_changed = true; }
-                    });
-                    if root_changed { self.refresh_store_paths(); }
-                    ui.horizontal(|ui| { ui.label("DB"); ui.label(&self.db_path); });
-                    ui.horizontal(|ui| { ui.label("HNSW"); ui.label(&self.hnsw_dir); });
-                    #[cfg(feature = "tantivy")]
-                    ui.horizontal(|ui| { ui.label("Tantivy"); ui.label(&self.tantivy_dir); });
-                    ui.separator();
-                    ui.collapsing("Danger zone", |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("Deletes DB and indexes (HNSW/Tantivy)").color(egui::Color32::LIGHT_RED));
-                            if ui.button(egui::RichText::new("Delete DB & Indexes").color(egui::Color32::RED)).clicked() {
-                                self.delete_store_files();
-                            }
-                        });
-                    });
-                    ui.separator();
-                ui.horizontal(|ui| { ui.label("Model"); ui.add(TextEdit::singleline(&mut self.model_path).desired_width(400.0)); if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().add_filter("ONNX", &["onnx"]).pick_file() { self.model_path = p.display().to_string(); } } });
-                ui.horizontal(|ui| { ui.label("Tokenizer"); ui.add(TextEdit::singleline(&mut self.tokenizer_path).desired_width(400.0)); if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().add_filter("JSON", &["json"]).pick_file() { self.tokenizer_path = p.display().to_string(); } } });
-                ui.horizontal(|ui| { ui.label("Runtime DLL"); ui.add(TextEdit::singleline(&mut self.runtime_path).desired_width(400.0)); if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().pick_file() { self.runtime_path = p.display().to_string(); } } });
-                    ui.horizontal(|ui| {
-                        ui.label("Dim"); ui.add(TextEdit::singleline(&mut self.embedding_dimension).desired_width(80.0));
-                        ui.label("MaxTokens"); ui.add(TextEdit::singleline(&mut self.max_tokens).desired_width(80.0));
-                        ui.label("Batch"); ui.add(TextEdit::singleline(&mut self.embed_batch_size).desired_width(60.0));
-                    });
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.preload_model_to_memory, "Preload model into memory");
-                        ui.checkbox(&mut self.embed_auto, "Auto batch");
-                    });
-                    ui.collapsing("Auto batch settings", |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label("Initial"); ui.add(TextEdit::singleline(&mut self.embed_initial_batch).desired_width(60.0));
-                            ui.label("Min"); ui.add(TextEdit::singleline(&mut self.embed_min_batch).desired_width(60.0));
-                        });
-                    });
-                });
-            });
-
             ui.separator();
             match self.tab {
                 ActiveTab::Insert => self.ui_insert(ui),
                 ActiveTab::Search => self.ui_search(ui),
+                ActiveTab::Config => self.ui_config(ui),
             }
 
             ui.separator();
