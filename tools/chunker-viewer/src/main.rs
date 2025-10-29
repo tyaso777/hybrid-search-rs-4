@@ -157,6 +157,65 @@ fn chunk_file_auto(path: &str, params: PdfChunkParams) -> Result<(FileRecord, Ve
     let lower = path.to_lowercase();
     if lower.ends_with(".pdf") {
         Ok(file_chunker::pdf_chunker::chunk_pdf_file_with_file_record(path, &params))
+    } else if lower.ends_with(".docx") {
+        // Use same segmentation parameters for DOCX via text_segmenter
+        let blocks = file_chunker::reader_docx::read_docx_to_blocks(path);
+        let tparams = file_chunker::text_segmenter::TextChunkParams {
+            min_chars: params.min_chars,
+            max_chars: params.max_chars,
+            cap_chars: params.cap_chars,
+            penalize_short_line: true,
+            penalize_page_boundary_no_newline: true,
+        };
+        let segs = file_chunker::text_segmenter::chunk_blocks_to_segments(&blocks, &tparams);
+
+        let file = FileRecord {
+            schema_version: SCHEMA_MAJOR,
+            doc_id: DocumentId(path.to_string()),
+            doc_revision: Some(1),
+            source_uri: path.to_string(),
+            source_mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
+            file_size_bytes: None,
+            content_sha256: None,
+            page_count: None,
+            extracted_at: String::new(),
+            created_at_meta: None,
+            updated_at_meta: None,
+            title_guess: None,
+            author_guess: None,
+            dominant_lang: None,
+            tags: Vec::new(),
+            ingest_tool: Some("docx-chunker".into()),
+            ingest_tool_version: Some(env!("CARGO_PKG_VERSION").into()),
+            reader_backend: Some("docx".into()),
+            ocr_used: None,
+            ocr_langs: Vec::new(),
+            chunk_count: Some(segs.len() as u32),
+            total_tokens: None,
+            meta: std::collections::BTreeMap::new(),
+            extra: std::collections::BTreeMap::new(),
+        };
+
+        let chunks: Vec<ChunkRecord> = segs
+            .into_iter()
+            .enumerate()
+            .map(|(i, (text, _ps, _pe))| ChunkRecord {
+                schema_version: SCHEMA_MAJOR,
+                doc_id: DocumentId(path.to_string()),
+                chunk_id: ChunkId(format!("{}#{}", path, i)),
+                source_uri: path.to_string(),
+                source_mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
+                extracted_at: String::new(),
+                page_start: None,
+                page_end: None,
+                text,
+                section_path: None,
+                meta: std::collections::BTreeMap::new(),
+                extra: std::collections::BTreeMap::new(),
+            })
+            .collect();
+
+        Ok((file, chunks))
     } else if lower.ends_with(".txt") {
         // Use the same segmentation parameters for TXT via text_segmenter
         let blocks = file_chunker::reader_txt::read_txt_to_blocks(path);
