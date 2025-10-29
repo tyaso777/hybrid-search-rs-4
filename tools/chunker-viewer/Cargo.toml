@@ -10,6 +10,7 @@ rfd = "0.14"
 serde_json = "1"
 file-chunker = { path = "../../file-chunker" }
 chunk-model = { path = "../../chunk-model" }
+egui_extras = "0.27"
 
 [features]
 # Enable both PDF backends by default so the PDF path works out-of-the-box.
