@@ -40,3 +40,7 @@ tools/embedder-demo/output/**
 vendor/lindera-cache/**
 !vendor/lindera-cache/
 !vendor/lindera-cache/**/.gitkeep
+
+# Centralized test data
+testdata/no-redistribute/*
+!testdata/no-redistribute/.gitkeep
