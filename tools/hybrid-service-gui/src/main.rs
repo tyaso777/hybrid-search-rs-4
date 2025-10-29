@@ -374,16 +374,14 @@ impl App for AppState {
                     ui.selectable_value(&mut self.tab, ActiveTab::Insert, "Insert");
                     ui.selectable_value(&mut self.tab, ActiveTab::Search, "Search");
                     ui.selectable_value(&mut self.tab, ActiveTab::Config, "Config");
-                    // stronger visual divider (double vertical separator)
-                    ui.separator();
-                    ui.separator();
+                    // divider removed for compactness
                     let (model_status, index_status) = if self.svc.is_none() {
                         if self.svc_task.is_some() { ("loading", "loading") } else { ("released", "released") }
                     } else {
                         let idx_ready = self.svc.as_ref().map(|s| s.hnsw_ready()).unwrap_or(false);
                         ("ready", if idx_ready { "ready" } else { "loading" })
                     };
-                    let status_text = format!("Model: {} | Index: {}", model_status, index_status);
+                    let status_text = format!("Model: {}, Index: {}", model_status, index_status);
                     ui.label(status_text);
                     // compact controls with a clear right-side divider as well
                     ui.add_space(8.0);
@@ -394,8 +392,7 @@ impl App for AppState {
                     if ui.button("Release").clicked() {
                         self.release_model_and_indexes();
                     }
-                    ui.separator();
-                    ui.separator();
+                    // trailing divider removed for compactness
                 });
                 if self.ingest_running {
                     ui.add(Spinner::new());
