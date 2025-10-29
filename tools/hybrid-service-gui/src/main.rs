@@ -132,6 +132,21 @@ impl AppState {
             ui.horizontal(|ui| { ui.label("HNSW"); ui.label(&self.hnsw_dir); });
             #[cfg(feature = "tantivy")]
             ui.horizontal(|ui| { ui.label("Tantivy"); ui.label(&self.tantivy_dir); });
+
+            ui.separator();
+            // Memory-only release: drop service (model + resident HNSW) and Tantivy handle (if any)
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Release in-memory model and indexes (no file deletion)").color(egui::Color32::LIGHT_BLUE));
+                if ui.button("Release Model & Indexes").clicked() {
+                    // Drop service to release ONNX session + resident HNSW
+                    self.svc = None;
+                    // Also drop Tantivy handle if opened; files remain intact
+                    #[cfg(feature = "tantivy")] {
+                        self.tantivy = None;
+                    }
+                    self.status = "Released model and resident indexes".into();
+                }
+            });
             ui.separator();
             ui.collapsing("Danger zone", |ui| {
                 ui.horizontal(|ui| {
