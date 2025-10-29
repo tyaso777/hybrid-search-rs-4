@@ -4,6 +4,7 @@ pub mod unified_blocks;
 pub mod chunker_rules_jp;
 #[cfg(feature = "pdfium")] pub mod reader_pdf_pdfium;
 #[cfg(feature = "pure-pdf")] pub mod reader_pdf_pure;
+pub mod pdf_chunker;
 
 use chunk_model::{ChunkId, ChunkRecord, DocumentId, FileRecord};
 use std::collections::BTreeMap;
@@ -28,17 +29,22 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
         "text/plain"
     };
 
-    // Read into unified blocks (stubbed per type)
-    let blocks: Vec<UnifiedBlock> = match content_type {
-        "application/pdf" => reader_pdf::read_pdf_to_blocks(path),
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
-            reader_docx::read_docx_to_blocks(path)
+    // Read and chunk by type (PDF uses dedicated chunker with heuristics)
+    let chunks_text: Vec<String> = match content_type {
+        "application/pdf" => {
+            let params = pdf_chunker::PdfChunkParams::default();
+            let (_file, chunks) = pdf_chunker::chunk_pdf_file_with_file_record(path, &params);
+            chunks.into_iter().map(|c| c.text).collect()
         }
-        _ => vec![UnifiedBlock::new(BlockKind::Paragraph, "(stub) read file content here", 0, path, "stub.plain")],
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
+            let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
+            chunker_rules_jp::chunk_blocks_jp(&blocks)
+        }
+        _ => {
+            let blocks: Vec<UnifiedBlock> = vec![UnifiedBlock::new(BlockKind::Paragraph, "(stub) read file content here", 0, path, "stub.plain")];
+            chunker_rules_jp::chunk_blocks_jp(&blocks)
+        }
     };
-
-    // Apply JP chunking rules (stub)
-    let chunks_text = chunker_rules_jp::chunk_blocks_jp(&blocks);
 
     // Build ChunkRecord list (schema-based)
     let chunks: Vec<ChunkRecord> = chunks_text

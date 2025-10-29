@@ -1,0 +1,235 @@
+use crate::reader_pdf::{read_pdf_to_blocks, default_backend, PdfBackend};
+use crate::unified_blocks::UnifiedBlock;
+use chunk_model::{ChunkRecord, DocumentId, ChunkId, FileRecord, SCHEMA_MAJOR};
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Copy)]
+pub struct PdfChunkParams {
+    pub min_planned_chunks: usize,
+    pub max_planned_chunks: usize,
+    pub max_chunks: usize,
+}
+
+impl Default for PdfChunkParams {
+    fn default() -> Self {
+        Self { min_planned_chunks: 4, max_planned_chunks: 16, max_chunks: 64 }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundaryKind { BlockEnd, DoubleNewline, SingleNewline, SentenceEnd, Fallback }
+
+#[derive(Debug, Clone)]
+struct Boundary { idx: usize, kind: BoundaryKind, base_score: f32 }
+
+fn collect_text_and_boundaries(blocks: &[UnifiedBlock]) -> (String, Vec<Boundary>) {
+    let mut text = String::new();
+    let mut boundaries: Vec<Boundary> = Vec::new();
+
+    let mut cursor = 0usize;
+    for (i, b) in blocks.iter().enumerate() {
+        // Normalize newlines
+        let t = b.text.replace('\r', "");
+        text.push_str(&t);
+        cursor += t.len();
+        // Prefer block boundaries
+        if i + 1 < blocks.len() {
+            boundaries.push(Boundary { idx: cursor, kind: BoundaryKind::BlockEnd, base_score: 1.0 });
+            // Add a single newline between blocks to avoid accidental merges
+            text.push('\n');
+            cursor += 1;
+        }
+    }
+
+    // Scan for newline and sentence boundaries
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\n' => {
+                // Double newline?
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+                    boundaries.push(Boundary { idx: i + 2, kind: BoundaryKind::DoubleNewline, base_score: 0.95 });
+                    i += 2;
+                    continue;
+                } else {
+                    boundaries.push(Boundary { idx: i + 1, kind: BoundaryKind::SingleNewline, base_score: 0.8 });
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    // Sentence ends (basic ASCII and common JP full stops)
+    for (idx, ch) in text.char_indices() {
+        if matches!(ch, '.' | '!' | '?' | '。' | '！' | '？' | '．') {
+            boundaries.push(Boundary { idx: idx + ch.len_utf8(), kind: BoundaryKind::SentenceEnd, base_score: 0.6 });
+        }
+    }
+
+    // Sort and dedup boundary indices, keep best base_score per idx
+    boundaries.sort_by_key(|b| b.idx);
+    boundaries.dedup_by(|a, b| {
+        if a.idx == b.idx {
+            // Keep the one with higher base score
+            if a.base_score < b.base_score { a.base_score = b.base_score; }
+            true
+        } else { false }
+    });
+
+    (text, boundaries)
+}
+
+fn penalize_after_short_line(text: &str, b: &Boundary) -> f32 {
+    // Avoid splitting immediately after a very short line (heuristic)
+    let mut j = if b.idx > 0 { b.idx - 1 } else { 0 };
+    // Find start of current line
+    while j > 0 && text.as_bytes()[j] != b'\n' { j -= 1; }
+    let line_start = if text.as_bytes()[j] == b'\n' { j + 1 } else { j };
+    let line_len = b.idx.saturating_sub(line_start);
+    let penalty = if line_len < 10 { 0.35 } else { 0.0 };
+    b.base_score - penalty
+}
+
+fn choose_cut_indices(text: &str, mut boundaries: Vec<Boundary>, target_chunks: usize) -> Vec<usize> {
+    if target_chunks <= 1 { return Vec::new(); }
+    let total_len = text.len();
+    let cuts_needed = target_chunks - 1;
+    let mut cuts: Vec<usize> = Vec::with_capacity(cuts_needed);
+
+    // Precompute effective scores
+    let mut scored: Vec<(usize, f32)> = boundaries
+        .iter()
+        .map(|b| (b.idx, penalize_after_short_line(text, b)))
+        .collect();
+
+    // Helper to find best boundary near a target position
+    let find_near = |pos: usize, used: &Vec<usize>| -> Option<usize> {
+        let window = (total_len / (target_chunks.max(2))).max(200); // search window
+        let lo = pos.saturating_sub(window);
+        let hi = (pos + window).min(total_len);
+        let mut best: Option<(usize, f32)> = None;
+        for (idx, score) in &scored {
+            if *idx <= lo || *idx >= hi { continue; }
+            if used.binary_search(idx).is_ok() { continue; }
+            // distance penalty to prefer closer boundaries
+            let dist = if pos > *idx { pos - *idx } else { *idx - pos };
+            let eff = *score - (dist as f32) / (window as f32);
+            if let Some((_, bscore)) = best {
+                if eff > bscore { best = Some((*idx, eff)); }
+            } else {
+                best = Some((*idx, eff));
+            }
+        }
+        best.map(|(i, _)| i)
+    };
+
+    for i in 1..=cuts_needed {
+        let pos = (total_len as f32 * (i as f32) / (target_chunks as f32)).round() as usize;
+        if let Some(c) = find_near(pos, &cuts) { cuts.push(c); }
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
+    cuts
+}
+
+fn decide_target_chunks(total_len: usize, params: &PdfChunkParams) -> usize {
+    let suggested = ((total_len as f32) / 1000.0).round() as usize;
+    let mut target = suggested.clamp(params.min_planned_chunks.max(1), params.max_planned_chunks.max(1));
+    target = target.min(params.max_chunks.max(1));
+    target.max(1)
+}
+
+/// Produce ChunkRecord texts from UnifiedBlocks with heuristics.
+pub fn chunk_pdf_blocks_to_text(blocks: &[UnifiedBlock], params: &PdfChunkParams) -> Vec<String> {
+    let (text, boundaries) = collect_text_and_boundaries(blocks);
+    if text.trim().is_empty() { return vec![String::new()]; }
+    let target = decide_target_chunks(text.len(), params);
+    let mut cuts = choose_cut_indices(&text, boundaries, target);
+
+    // If we couldn’t find enough cuts, fallback to greedy split by length
+    let needed = target.saturating_sub(1);
+    if cuts.len() < needed && text.len() > 0 {
+        let mut i = cuts.len();
+        let mut pos = *cuts.last().unwrap_or(&0);
+        while i < needed {
+            pos = ((i + 1) * text.len()) / target;
+            cuts.push(pos);
+            i += 1;
+        }
+        cuts.sort_unstable(); cuts.dedup();
+    }
+
+    // Build segments
+    let mut out: Vec<String> = Vec::with_capacity(target);
+    let mut start = 0usize;
+    for c in cuts {
+        if c <= start || c > text.len() { continue; }
+        let seg = text[start..c].trim();
+        if !seg.is_empty() { out.push(seg.to_string()); }
+        start = c;
+    }
+    let tail = text[start..].trim();
+    if !tail.is_empty() { out.push(tail.to_string()); }
+
+    // Respect max_chunks hard cap
+    out.truncate(params.max_chunks.max(1));
+    if out.is_empty() { out.push(String::new()); }
+    out
+}
+
+/// High-level: read PDF -> chunk -> return FileRecord and ChunkRecords
+pub fn chunk_pdf_file_with_file_record(path: &str, params: &PdfChunkParams) -> (FileRecord, Vec<ChunkRecord>) {
+    let blocks = read_pdf_to_blocks(path);
+    let texts = chunk_pdf_blocks_to_text(&blocks, params);
+
+    let backend = match default_backend() { PdfBackend::Pdfium => "pdfium", PdfBackend::PureRust => "pure-pdf", PdfBackend::Stub => "stub.pdf" };
+
+    let file = FileRecord {
+        schema_version: SCHEMA_MAJOR,
+        doc_id: DocumentId(path.to_string()),
+        doc_revision: Some(1),
+        source_uri: path.to_string(),
+        source_mime: "application/pdf".into(),
+        file_size_bytes: None,
+        content_sha256: None,
+        page_count: None,
+        extracted_at: String::new(),
+        created_at_meta: None,
+        updated_at_meta: None,
+        title_guess: None,
+        author_guess: None,
+        dominant_lang: None,
+        tags: Vec::new(),
+        ingest_tool: Some("pdf-chunker".into()),
+        ingest_tool_version: Some(env!("CARGO_PKG_VERSION").into()),
+        reader_backend: Some(backend.into()),
+        ocr_used: None,
+        ocr_langs: Vec::new(),
+        chunk_count: Some(texts.len() as u32),
+        total_tokens: None,
+        meta: BTreeMap::new(),
+        extra: BTreeMap::new(),
+    };
+
+    let chunks: Vec<ChunkRecord> = texts
+        .into_iter()
+        .enumerate()
+        .map(|(i, text)| ChunkRecord {
+            schema_version: SCHEMA_MAJOR,
+            doc_id: DocumentId(path.to_string()),
+            chunk_id: ChunkId(format!("{}#{}", path, i)),
+            source_uri: path.to_string(),
+            source_mime: "application/pdf".into(),
+            extracted_at: String::new(),
+            text,
+            section_path: None,
+            meta: BTreeMap::new(),
+            extra: BTreeMap::new(),
+        })
+        .collect();
+
+    (file, chunks)
+}
+
