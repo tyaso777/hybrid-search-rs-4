@@ -873,7 +873,14 @@ const DEFAULT_EXCEL_FILE: &str = "one_col_10_records_with_header.xlsx";
 const DEFAULT_CSV_FILE: &str = "one_col_10_records_with_header_utf8bom.csv";
 
 fn small_testdata_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata").join("small")
+    // Prefer centralized workspace testdata/public
+    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for anc in here.ancestors() {
+        let p = anc.join("testdata").join("public");
+        if p.exists() { return p; }
+    }
+    // Fallback to legacy crate-local path
+    here.join("testdata").join("small")
 }
 
 fn demo_output_dir() -> PathBuf {

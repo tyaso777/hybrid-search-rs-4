@@ -30,9 +30,7 @@ file-chunker/bin/**
 !file-chunker/bin/**/.gitkeep
 !file-chunker/bin/README.md
 
-# Demo test data and outputs
-tools/embedder-demo/testdata/large/**
-!tools/embedder-demo/testdata/large/.gitkeep
+# Demo outputs
 tools/embedder-demo/output/**
 !tools/embedder-demo/output/.gitkeep
 
