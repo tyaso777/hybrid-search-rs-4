@@ -1,4 +1,4 @@
-//! PDFium-backed PDF reader. Behind feature `pdfium`.
+﻿//! PDFium-backed PDF reader. Behind feature `pdfium`.
 
 #![cfg(feature = "pdfium")]
 
@@ -16,17 +16,7 @@ static LINE_GAP_CHARS: AtomicUsize = AtomicUsize::new(3);
 pub fn set_line_gap_chars(chars: usize) { LINE_GAP_CHARS.store(chars.max(1), Ordering::Relaxed); }
 
 // Geometry-based line reconstruction parameters (scaled by 1000 for atomic storage).
-static GEOM_Y_SIZE_FACTOR_MILLIS: AtomicUsize = AtomicUsize::new(1200);   // 1.2x
-static GEOM_Y_BASELINE_FACTOR_MILLIS: AtomicUsize = AtomicUsize::new(500); // 0.5x of height
-static GEOM_OVERLAP_MIN_MILLIS: AtomicUsize = AtomicUsize::new(600);       // 0.6 overlap
-static GEOM_X_RESET_CHARS_MILLIS: AtomicUsize = AtomicUsize::new(1000);    // 1.0 avg char width
-
-pub fn set_geometry_params(y_size_factor: f32, y_baseline_factor: f32, overlap_min: f32, x_reset_chars: f32) {
-    GEOM_Y_SIZE_FACTOR_MILLIS.store(((y_size_factor.max(1.0)) * 1000.0) as usize, Ordering::Relaxed);
-    GEOM_Y_BASELINE_FACTOR_MILLIS.store(((y_baseline_factor.max(0.0)) * 1000.0) as usize, Ordering::Relaxed);
-    GEOM_OVERLAP_MIN_MILLIS.store(((overlap_min.clamp(0.0, 1.0)) * 1000.0) as usize, Ordering::Relaxed);
-    GEOM_X_RESET_CHARS_MILLIS.store(((x_reset_chars.max(0.0)) * 1000.0) as usize, Ordering::Relaxed);
-}
+// Geometry params removed (reverted to raw text + normalize heuristics)
 
 fn bind_pdfium_from_env() -> Option<Box<dyn PdfiumLibraryBindings>> {
     // Prefer explicit full DLL path
@@ -79,7 +69,7 @@ pub fn read_pdf_to_blocks_pdfium(path: &str) -> Vec<UnifiedBlock> {
 }
 
 pub fn read_pdf_to_blocks_pdfium_with_mode(path: &str, mode: PdfStructureMode) -> Vec<UnifiedBlock> {
-    // Try env override → bundled under file-chunker/bin → system library
+    // Try env override 竊・bundled under file-chunker/bin 竊・system library
     let bindings = if let Some(b) = bind_pdfium_from_env() {
         b
     } else if let Some(b) = bind_pdfium_from_bundle() {
@@ -118,7 +108,7 @@ pub fn read_pdf_to_blocks_pdfium_with_mode(path: &str, mode: PdfStructureMode) -
     for (idx, page) in document.pages().iter().enumerate() {
         let page_num = (idx as u32) + 1;
         let text = match page.text() {
-            Ok(_t) => reconstruct_text_by_geometry(&page),
+            Ok(t) => t.all(),
             Err(_) => String::new(),
         };
         let text = normalize_pdfium_text(&text);
@@ -299,80 +289,6 @@ fn normalize_pdfium_text(raw: &str) -> String {
 
 // --- Geometry-based reconstruction -----------------------------------------
 
-fn reconstruct_text_by_geometry(page: &PdfPage) -> String {
-    let text = match page.text() { Ok(t) => t, Err(_) => return String::new() };
-    let y_size_factor = (GEOM_Y_SIZE_FACTOR_MILLIS.load(Ordering::Relaxed) as f32) / 1000.0;
-    let y_baseline_factor = (GEOM_Y_BASELINE_FACTOR_MILLIS.load(Ordering::Relaxed) as f32) / 1000.0;
-    let overlap_min = (GEOM_OVERLAP_MIN_MILLIS.load(Ordering::Relaxed) as f32) / 1000.0;
-    let x_reset_chars = (GEOM_X_RESET_CHARS_MILLIS.load(Ordering::Relaxed) as f32) / 1000.0;
-
-    let mut out = String::new();
-    let mut have_line = false;
-    let mut line_bottom = 0f32;
-    let mut line_top = 0f32;
-    let mut ref_height = 0f32;
-    let mut line_start_x = 0f32;
-    let mut sum_width = 0f32;
-    let mut count_width: u32 = 0;
-
-    let chars = text.chars();
-    for ch in chars.iter() {
-        let Some(c) = ch.unicode_char() else { continue; };
-        // Skip explicit newlines from Pdfium (we will insert our own)
-        if c == '\n' || c == '\r' { continue; }
-
-        let rect = ch
-            .tight_bounds()
-            .or_else(|_| ch.loose_bounds())
-            .unwrap_or(PdfRect::ZERO);
-        let left = rect.left().value;
-        let right = rect.right().value;
-        let bottom = rect.bottom().value;
-        let top = rect.top().value;
-        let height = (top - bottom).max(0.01);
-        let width = (right - left).max(0.01);
-
-        if !have_line {
-            have_line = true;
-            line_bottom = bottom;
-            line_top = top;
-            ref_height = height;
-            line_start_x = left;
-        } else {
-            let overlap_low = line_bottom.max(bottom);
-            let overlap_high = line_top.min(top);
-            let overlap = (overlap_high - overlap_low).max(0.0);
-            let line_h = (line_top - line_bottom).max(0.01);
-            let ratio = overlap / line_h.min(height);
-
-            let size_ok = height >= (ref_height / y_size_factor) && height <= (ref_height * y_size_factor);
-
-            let avg_char_w = (sum_width / (count_width.max(1) as f32)).max(0.01);
-            let x_reset = left < (line_start_x + avg_char_w * x_reset_chars);
-
-            if ratio < overlap_min || !size_ok || x_reset {
-                if !out.ends_with('\n') { out.push('\n'); }
-                line_bottom = bottom;
-                line_top = top;
-                ref_height = height;
-                line_start_x = left;
-                sum_width = 0.0;
-                count_width = 0;
-            }
-        }
-
-        out.push(c);
-
-        // Update line metrics
-        if bottom < line_bottom { line_bottom = bottom; }
-        if top > line_top { line_top = top; }
-        if height > ref_height { ref_height = height; }
-        sum_width += width;
-        count_width += 1;
-    }
-
-    out
-}
 
 // Insert a newline before common bullet / numbered-list markers when they are not already
 // at the start of a line. This helps when PDF text extraction yields a single long line
@@ -438,19 +354,16 @@ fn push_heuristic_blocks(out: &mut Vec<UnifiedBlock>, text: &str, origin: &str, 
 
 fn heading_level_guess(line: &str) -> Option<u8> {
     let s = line.trim_start();
-    // 第n章 → level 1
-    if s.starts_with('第') && s.contains('章') {
-        return Some(1);
-    }
-    // n.  / n)  / n.n  patterns → level by dot count (capped)
+    // JP style "第n章" -> treat as level 1
+    if s.starts_with("第") && s.contains("章") { return Some(1); }
+    // n.  / n)  / n.n  patterns -> level by dot count (capped)
     let mut digits = 0usize;
     let mut dots = 0usize;
     for ch in s.chars().take(12) {
         if ch.is_ascii_digit() { digits += 1; continue; }
         if ch == '.' { dots += 1; continue; }
-        if ch == ')' && digits > 0 { break; }
+        if (ch == ')' || ch == '）') && digits > 0 { break; }
         if ch.is_whitespace() { break; }
-        // Non-matching char early
         break;
     }
     if digits > 0 {
@@ -462,18 +375,21 @@ fn heading_level_guess(line: &str) -> Option<u8> {
 
 fn list_info_guess(line: &str) -> Option<crate::unified_blocks::ListInfo> {
     let s = line.trim_start();
-    // Bulleted
-    if s.starts_with('・') || s.starts_with('•') || s.starts_with("-") {
-        return Some(crate::unified_blocks::ListInfo { ordered: false, level: 1, marker: s.chars().next().map(|c| c.to_string()) });
+    // Bulleted markers (common set)
+    if let Some(ch) = s.chars().next() {
+        if matches!(ch, '•' | '◦' | '▪' | '■' | '●' | '○' | '‣' | '・' | '-' | '*') {
+            return Some(crate::unified_blocks::ListInfo { ordered: false, level: 1, marker: Some(ch.to_string()) });
+        }
     }
     // Ordered: 1. foo  or  1) foo
-    let mut i = 0usize;
-    let chars: Vec<char> = s.chars().collect();
-    while i < chars.len() && chars[i].is_ascii_digit() { i += 1; }
-    if i > 0 && i < chars.len() {
-        if chars[i] == '.' || chars[i] == ')' {
-            return Some(crate::unified_blocks::ListInfo { ordered: true, level: 1, marker: Some(chars[i].to_string()) });
-        }
+    let mut it = s.chars().skip_while(|c| c.is_whitespace());
+    let mut digits = 0usize;
+    let mut marker = String::new();
+    while let Some(c) = it.clone().next() {
+        if c.is_ascii_digit() { marker.push(c); digits += 1; it.next(); } else { break; }
+    }
+    if digits > 0 {
+        if let Some(c) = it.next() { if c == '.' || c == ')' || c == '．' || c == '）' { marker.push(c); return Some(crate::unified_blocks::ListInfo { ordered: true, level: 1, marker: Some(marker) }); } }
     }
     None
 }
@@ -516,7 +432,7 @@ fn last_nonblank_index(lines: &[&str]) -> Option<usize> {
     None
 }
 
-// Detect page number lines like "- 12 -", "(3)", "★5☆" with any number of ornaments on each side.
+// Detect page number lines like "- 12 -", "(3)", "笘・笘・ with any number of ornaments on each side.
 fn is_decorated_page_number_line(line: &str) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() { return false; }
@@ -543,7 +459,7 @@ fn is_decorated_page_number_line(line: &str) -> bool {
 }
 
 // Detect page header/footer lines containing page labels like "Page 3", "p. 12",
-// "pp. 12–14", "3ページ", "第5頁". Requires that the line contains a page keyword and a digit
+// "pp. 12窶・4", "3繝壹・繧ｸ", "隨ｬ5鬆・. Requires that the line contains a page keyword and a digit
 // (ASCII or full-width). Whitespace is tolerated; only evaluated for first/last lines.
 fn is_page_label_line(line: &str) -> bool {
     let t = line.trim();
@@ -553,14 +469,14 @@ fn is_page_label_line(line: &str) -> bool {
     if !has_digit { return false; }
 
     if ascii_lower.contains("page") { return true; }
-    if ascii_lower.contains("p.") || ascii_lower.contains("p．") { return true; }
+    if ascii_lower.contains("p.") { return true; }
     if contains_pp_label(&ascii_lower) { return true; }
     if t.contains("ページ") || t.contains("頁") { return true; }
     false
 }
 
 // Rough detection for plural page label "pp".
-// Matches: "pp.", "pp ", "pp12", "pp-12", "pp/12", "pp〜12" etc.
+// Matches: "pp.", "pp ", "pp12", "pp-12", "pp/12", "pp縲・2" etc.
 fn contains_pp_label(s_lower: &str) -> bool {
     let chars: Vec<char> = s_lower.chars().collect();
     let n = chars.len();
@@ -638,7 +554,8 @@ fn is_digits_of_digits_line(line: &str) -> bool {
 }
 
 fn is_pair_sep_char(c: char) -> bool {
-    matches!(c, '/' | '／' | '-' | '‐' | '‑' | '‒' | '–' | '—' | '−' | '~' | '〜' | '～')
+    // Accept common pair separators: slash or dash variants
+    matches!(c, '/' | '-' | '–' | '—' | '―')
 }
 
 fn is_ascii_or_fullwidth_digit(c: char) -> bool {
@@ -646,28 +563,21 @@ fn is_ascii_or_fullwidth_digit(c: char) -> bool {
 }
 
 fn is_ornament_char(c: char) -> bool {
-    match c {
-        // dashes/lines
-        '-' | '‐' | '‑' | '‒' | '–' | '—' | '―' | '−' | '─' | '━' | '_'
-        // bullets/stars/shapes
-        | '*' | '•' | '·' | '・' | '●' | '○' | '◇' | '◆' | '☆' | '★'
-        // brackets/angles/quotes
-        | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | '‹' | '›' | '«' | '»'
-        | '「' | '」' | '『' | '』' | '【' | '】' | '〈' | '〉' | '《' | '》'
-        // misc decorations
-        | '|' | '｜' | '=' | '~' | '〜' | '～' | '†' | '‡' | '§' | '¶' | '※'
-            => true,
-        _ => false,
-    }
+    matches!(c,
+        '-' | '_' | '–' | '—' | '―' |
+        '*' | '•' | '◦' | '▪' | '■' | '●' | '○' | '‣' | '・' |
+        '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' |
+        '|' | '=' | '~')
 }
 
 fn ends_with_hyphen_like(s: &str) -> bool {
-    s.trim_end().ends_with('-') || s.trim_end().ends_with('‐') || s.trim_end().ends_with('−')
+    let t = s.trim_end();
+    t.ends_with('-') || t.ends_with('–') || t.ends_with('—') || t.ends_with('―') || t.ends_with('‐')
 }
 
 fn pop_trailing_hyphen(buf: &mut String) {
     while buf.ends_with(' ') { buf.pop(); }
-    if buf.ends_with('−') || buf.ends_with('‐') || buf.ends_with('-') { buf.pop(); }
+    if buf.ends_with('‐') || buf.ends_with('–') || buf.ends_with('—') || buf.ends_with('―') || buf.ends_with('-') { buf.pop(); }
 }
 
 fn first_non_ws_is_ascii_alpha(s: &str) -> bool {
@@ -684,13 +594,16 @@ fn last_non_ws_is_ascii_alnum(s: &str) -> bool {
 
 fn looks_like_heading_or_list(s: &str) -> bool {
     let st = s.trim_start();
-    // Heading like "第2章" / "第 2 章"
-    if st.starts_with('第') && st.contains('章') { return true; }
-    // Simple numbered headings: "1.", "1)" at start
+    // JP-style heading like "第2章"
+    if st.starts_with("第") && st.contains("章") { return true; }
+    // Simple numbered headings: "1.", "1)" at start (accept full-width dot/paren too)
     if st.chars().take(3).any(|c| c.is_ascii_digit()) {
-        if st.contains('.') || st.contains(')') { return true; }
+        if st.contains('.') || st.contains(')') || st.contains('．') || st.contains('）') { return true; }
     }
     // Bullet-like markers
-    if st.starts_with('・') || st.starts_with('•') || st.starts_with("-") { return true; }
+    if let Some(ch) = st.chars().next() {
+        if matches!(ch, '•' | '◦' | '▪' | '■' | '●' | '○' | '‣' | '・' | '-' | '*') { return true; }
+    }
     false
 }
+
