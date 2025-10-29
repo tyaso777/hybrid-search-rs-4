@@ -14,6 +14,7 @@ use hybrid_service::{HybridService, ServiceConfig, CancelToken, ProgressEvent};
 use embedding_provider::config::{default_stdio_config, ONNX_STDIO_DEFAULTS};
 use chunking_store::FilterClause;
 use chunking_store::ChunkStoreRead;
+use chunking_store::{FilterKind, FilterOp};
 #[cfg(feature = "tantivy")]
 use chunking_store::tantivy_index::{TantivyIndex, TokenCombine};
 use chunk_model::{ChunkId, DocumentId, ChunkRecord, SCHEMA_MAJOR};
@@ -99,6 +100,7 @@ struct AppState {
     ingest_total: usize,
     ingest_last_batch: usize,
     ingest_started: Option<Instant>,
+    ingest_doc_key: Option<String>,
 
     // Search
     query: String,
@@ -278,6 +280,7 @@ impl AppState {
             ingest_total: 0,
             ingest_last_batch: 0,
             ingest_started: None,
+            ingest_doc_key: None,
 
             query: String::new(),
             top_k: 10,
@@ -492,6 +495,8 @@ impl AppState {
         self.ingest_total = 0;
         self.ingest_last_batch = 0;
         self.ingest_started = Some(Instant::now());
+        // Remember the doc key used for Tantivy upsert after finish
+        self.ingest_doc_key = Some(if self.doc_hint.trim().is_empty() { path_owned.clone() } else { self.doc_hint.trim().to_string() });
         self.status = format!("Ingesting file: {}", path_owned);
         std::thread::spawn(move || {
             let hint = doc_hint_opt.as_deref();
@@ -539,6 +544,23 @@ impl AppState {
                                 let secs = self.ingest_started.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
                                 self.status = format!("Ingest finished ({} chunks) in {:.1}s.", total, secs);
                                 self.ingest_started = None;
+                                // After ingest, upsert into Tantivy (if enabled)
+                                #[cfg(feature = "tantivy")]
+                                {
+                                    if let Some(doc_key) = self.ingest_doc_key.clone() {
+                                        if let Err(err) = self.ensure_tantivy_open() { self.status = format!("Tantivy init failed: {err}"); break; }
+                                        use chunking_store::sqlite_repo::SqliteRepo;
+                                        let repo = match SqliteRepo::open(self.db_path.trim()) { Ok(r) => r, Err(e) => { self.status = format!("Open DB failed: {e}"); break; } };
+                                        let filter = FilterClause { kind: FilterKind::Must, op: FilterOp::DocIdEq(doc_key) };
+                                        let ids = match repo.list_chunk_ids_by_filter(&[filter], 50_000, 0) { Ok(v) => v, Err(_) => Vec::new() };
+                                        if !ids.is_empty() {
+                                            if let Ok(recs) = repo.get_chunks_by_ids(&ids) {
+                                                if let Some(idx) = &self.tantivy { let _ = idx.upsert_records(&recs); }
+                                            }
+                                        }
+                                    }
+                                    self.ingest_doc_key = None;
+                                }
                                 break;
                             }
                             ProgressEvent::Canceled => {
