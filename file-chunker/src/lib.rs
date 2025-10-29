@@ -11,6 +11,7 @@ pub mod pdf_chunker;
 use chunk_model::{ChunkId, ChunkRecord, DocumentId, FileRecord};
 use std::collections::BTreeMap;
 use unified_blocks::{UnifiedBlock, BlockKind};
+use std::path::Path;
 
 /// Result bundle including file-level metadata and chunk list.
 #[derive(Debug, Clone)]
@@ -43,7 +44,7 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
             chunker_rules_jp::chunk_blocks_jp(&blocks)
         }
         _ => {
-            if path.ends_with(".txt") {
+            if is_text_like(path) {
                 let blocks: Vec<UnifiedBlock> = reader_txt::read_txt_to_blocks(path);
                 let params = text_segmenter::TextChunkParams::default();
                 let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
@@ -109,5 +110,29 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
 /// Legacy helper returning only chunks for backward compatibility.
 pub fn chunk_file(path: &str) -> Vec<ChunkRecord> {
     chunk_file_with_file_record(path).chunks
+}
+
+fn is_text_like(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    // Common text-ish extensions
+    let exts = [
+        ".txt", ".md", ".markdown", ".csv", ".tsv", ".log", ".json", ".yaml", ".yml",
+        ".ini", ".toml", ".cfg", ".conf", ".rst", ".tex", ".srt", ".properties",
+    ];
+    if exts.iter().any(|e| lower.ends_with(e)) {
+        return true;
+    }
+    // As a fallback, if no extension or unknown, try a lightweight probe: small read and check for NUL bytes
+    if Path::new(path).extension().is_none() {
+        use std::io::Read;
+        if let Ok(mut f) = std::fs::File::open(path) {
+            let mut buf = [0u8; 2048];
+            if let Ok(n) = f.read(&mut buf) {
+                let slice = &buf[..n];
+                return !slice.iter().any(|&b| b == 0);
+            }
+        }
+    }
+    false
 }
 
