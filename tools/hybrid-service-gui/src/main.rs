@@ -375,13 +375,6 @@ impl App for AppState {
                     ui.selectable_value(&mut self.tab, ActiveTab::Search, "Search");
                     ui.selectable_value(&mut self.tab, ActiveTab::Config, "Config");
                     ui.separator();
-                    if ui.button("Init Model/Index").clicked() {
-                        if self.model_not_initialized() { self.start_service_init(); }
-                    }
-                    if ui.button("Release Model/Index").clicked() {
-                        self.release_model_and_indexes();
-                    }
-                    ui.separator();
                     let (model_status, index_status) = if self.svc.is_none() {
                         if self.svc_task.is_some() { ("loading", "loading") } else { ("released", "released") }
                     } else {
@@ -390,6 +383,13 @@ impl App for AppState {
                     };
                     let status_text = format!("Model: {} | Index: {}", model_status, index_status);
                     ui.label(status_text);
+                    ui.add_space(8.0);
+                    if ui.button("Init").clicked() {
+                        if self.model_not_initialized() { self.start_service_init(); }
+                    }
+                    if ui.button("Release").clicked() {
+                        self.release_model_and_indexes();
+                    }
                 });
                 if self.ingest_running {
                     ui.add(Spinner::new());
