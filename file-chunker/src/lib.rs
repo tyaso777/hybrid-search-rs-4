@@ -1,5 +1,6 @@
 pub mod reader_pdf;
 pub mod reader_docx;
+pub mod reader_txt;
 pub mod unified_blocks;
 pub mod chunker_rules_jp;
 #[cfg(feature = "pdfium")] pub mod reader_pdf_pdfium;
@@ -41,8 +42,13 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
             chunker_rules_jp::chunk_blocks_jp(&blocks)
         }
         _ => {
-            let blocks: Vec<UnifiedBlock> = vec![UnifiedBlock::new(BlockKind::Paragraph, "(stub) read file content here", 0, path, "stub.plain")];
-            chunker_rules_jp::chunk_blocks_jp(&blocks)
+            if path.ends_with(".txt") {
+                let blocks: Vec<UnifiedBlock> = reader_txt::read_txt_to_blocks(path);
+                chunker_rules_jp::chunk_blocks_jp(&blocks)
+            } else {
+                let blocks: Vec<UnifiedBlock> = vec![UnifiedBlock::new(BlockKind::Paragraph, "(stub) read file content here", 0, path, "stub.plain")];
+                chunker_rules_jp::chunk_blocks_jp(&blocks)
+            }
         }
     };
 

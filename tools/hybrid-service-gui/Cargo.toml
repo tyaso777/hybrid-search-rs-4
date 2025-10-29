@@ -1,0 +1,19 @@
+[package]
+name = "hybrid-service-gui"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+eframe = { version = "0.27", default-features = true, features = ["wgpu"] }
+egui_extras = "0.27"
+rfd = "0.14"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+hybrid-service = { path = "../../service/hybrid-service" }
+embedding-provider = { path = "../../embedding_provider" }
+chunking-store = { path = "../../chunking-store" }
+chunk-model = { path = "../../chunk-model" }
+
+[features]
+default = ["tantivy"]
+tantivy = ["chunking-store/tantivy-impl"]

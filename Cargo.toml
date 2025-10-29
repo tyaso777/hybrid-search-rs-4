@@ -4,12 +4,14 @@ members = [
     "chunking-store",
     "chunk-model",
     "embedding_provider",
+    "service/hybrid-service",
     "tools/embedder-demo",
     "tools/chunker-viewer",
     "tools/pdf-block-viewer",
     "tools/hybrid-orchestrator",
     "tools/hybrid-orchestrator-gui",
     "tools/tokenize-lab",
+    "tools/hybrid-service-gui",
 ]
 
 resolver = "2"
