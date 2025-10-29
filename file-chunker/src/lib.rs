@@ -41,7 +41,9 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
         }
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
             let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
-            chunker_rules_jp::chunk_blocks_jp(&blocks)
+            let params = text_segmenter::TextChunkParams::default();
+            let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
+            segs.into_iter().map(|(t, _, _)| t).collect()
         }
         _ => {
             if is_text_like(path) {
