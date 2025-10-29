@@ -33,6 +33,13 @@ enum ActiveTab {
     Search,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchMode {
+    Hybrid,
+    Tantivy,
+    Vec,
+}
+
 #[derive(Debug)]
 struct ServiceInitTask {
     rx: Receiver<Result<Arc<HybridService>, String>>,
@@ -95,10 +102,8 @@ struct AppState {
     // Search
     query: String,
     top_k: usize,
-    use_hybrid: bool,
-    w_text: f32,
-    w_vec: f32,
     results: Vec<HitRow>,
+    search_mode: SearchMode,
 
     // UI
     tab: ActiveTab,
@@ -214,10 +219,8 @@ impl AppState {
 
             query: String::new(),
             top_k: 10,
-            use_hybrid: true,
-            w_text: 0.5,
-            w_vec: 0.5,
             results: Vec::new(),
+            search_mode: SearchMode::Hybrid,
 
             tab: ActiveTab::Insert,
             status: String::new(),
@@ -530,19 +533,22 @@ impl AppState {
                     ui.add(TextEdit::singleline(&mut self.query).desired_width(400.0).id_source("search_query"));
                     if ui.add(Button::new("Search")).clicked() { self.do_search_now(); }
                 });
-                // Row 2: Options (TopK / Hybrid / weights)
-                ui.horizontal(|ui| {
-                    ui.label("TopK");
-                    let mut topk_str = self.top_k.to_string();
-                    if ui.add(TextEdit::singleline(&mut topk_str).desired_width(60.0).id_source("search_topk")).changed() {
-                        self.top_k = topk_str.parse().unwrap_or(10);
-                    }
-                    ui.checkbox(&mut self.use_hybrid, "Hybrid");
-                    if self.use_hybrid {
-                        ui.label("w_text"); ui.add(egui::DragValue::new(&mut self.w_text).speed(0.1).clamp_range(0.0..=1.0));
-                        ui.label("w_vec"); ui.add(egui::DragValue::new(&mut self.w_vec).speed(0.1).clamp_range(0.0..=1.0));
-                    }
-                });
+            // Row 2: Options (TopK / Mode slider)
+            ui.horizontal(|ui| {
+                ui.label("TopK");
+                let mut topk_str = self.top_k.to_string();
+                if ui.add(TextEdit::singleline(&mut topk_str).desired_width(60.0).id_source("search_topk")).changed() {
+                    self.top_k = topk_str.parse().unwrap_or(10);
+                }
+                ui.separator();
+                ui.label("Mode");
+                let mut idx = match self.search_mode { SearchMode::Hybrid => 0, SearchMode::Tantivy => 1, SearchMode::Vec => 2 };
+                if ui.add(egui::Slider::new(&mut idx, 0..=2).show_value(false).clamp_to_range(true).smart_aim(false)).changed() {
+                    self.search_mode = match idx { 1 => SearchMode::Tantivy, 2 => SearchMode::Vec, _ => SearchMode::Hybrid };
+                }
+                let mode_name = match self.search_mode { SearchMode::Hybrid => "Hybrid", SearchMode::Tantivy => "Tantivy", SearchMode::Vec => "VEC" };
+                ui.label(mode_name);
+            });
 
             ui.separator();
             ui.push_id("results_table", |ui| {
@@ -639,9 +645,11 @@ impl AppState {
         // FTS5 is not used for search ranking here; skip any FTS maintenance.
         let opts = SearchOptions { top_k, fetch_factor: 10 };
 
-        // Tantivy queries
+        // Tantivy queries (skip when mode = VEC)
         #[cfg(feature = "tantivy")]
-        let (tv, tv_and, tv_or) = {
+        let (tv, tv_and, tv_or) = if matches!(self.search_mode, SearchMode::Vec) {
+            (Vec::new(), Vec::new(), Vec::new())
+        } else {
             if let Err(err) = self.ensure_tantivy_open() { self.status = format!("Tantivy init failed: {err}"); return; }
             if let Some(ti) = &self.tantivy {
                 let a = chunking_store::TextSearcher::search_ids(ti, &repo, q, filters, &opts);
@@ -654,14 +662,16 @@ impl AppState {
         let (tv, tv_and, tv_or) = (Vec::new(), Vec::new(), Vec::new());
 
         // Vector query (optional): use service.search_hybrid with w_text=0 for vector-only scoring
-        let vec_matches: Vec<chunking_store::TextMatch> = if self.use_hybrid {
+        let vec_matches: Vec<chunking_store::TextMatch> = if matches!(self.search_mode, SearchMode::Tantivy) {
+            Vec::new()
+        } else {
             if let Some(svc) = &self.svc {
                 match svc.search_hybrid(q, top_k, filters, 0.0, 1.0) {
                     Ok(hits) => hits.into_iter().map(|h| chunking_store::TextMatch { chunk_id: chunk_model::ChunkId(h.chunk.chunk_id.0), score: h.score, raw_score: h.score }).collect(),
                     Err(_) => Vec::new(),
                 }
             } else { Vec::new() }
-        } else { Vec::new() };
+        };
 
         // Aggregate by chunk_id
         use std::collections::HashMap;
@@ -671,12 +681,20 @@ impl AppState {
         for m in tv_or { let e = agg.entry(m.chunk_id.0).or_default(); e.2 = Some(m.score); }
         for m in vec_matches { let e = agg.entry(m.chunk_id.0).or_default(); e.3 = Some(m.score); }
 
-        // Sort by fused score: TV(OR) + VEC (others ignored)
+        // Sort by selected mode
         let mut items: Vec<(String, (Option<f32>, Option<f32>, Option<f32>, Option<f32>))> = agg.into_iter().collect();
         items.sort_by(|a, b| {
-            let sum_a = a.1.2.unwrap_or(0.0) + a.1.3.unwrap_or(0.0);
-            let sum_b = b.1.2.unwrap_or(0.0) + b.1.3.unwrap_or(0.0);
-            sum_b.partial_cmp(&sum_a).unwrap_or(std::cmp::Ordering::Equal)
+            let key_a = match self.search_mode {
+                SearchMode::Hybrid => a.1.2.unwrap_or(0.0) + a.1.3.unwrap_or(0.0),
+                SearchMode::Tantivy => a.1.2.unwrap_or(0.0),
+                SearchMode::Vec => a.1.3.unwrap_or(0.0),
+            };
+            let key_b = match self.search_mode {
+                SearchMode::Hybrid => b.1.2.unwrap_or(0.0) + b.1.3.unwrap_or(0.0),
+                SearchMode::Tantivy => b.1.2.unwrap_or(0.0),
+                SearchMode::Vec => b.1.3.unwrap_or(0.0),
+            };
+            key_b.partial_cmp(&key_a).unwrap_or(std::cmp::Ordering::Equal)
         });
         if items.len() > top_k { items.truncate(top_k); }
 
