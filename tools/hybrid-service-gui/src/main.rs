@@ -102,6 +102,8 @@ struct AppState {
     // Search
     query: String,
     top_k: usize,
+    w_text: f32,
+    w_vec: f32,
     results: Vec<HitRow>,
     search_mode: SearchMode,
 
@@ -219,6 +221,8 @@ impl AppState {
 
             query: String::new(),
             top_k: 10,
+            w_text: 0.5,
+            w_vec: 0.5,
             results: Vec::new(),
             search_mode: SearchMode::Hybrid,
 
@@ -533,7 +537,7 @@ impl AppState {
                     ui.add(TextEdit::singleline(&mut self.query).desired_width(400.0).id_source("search_query"));
                     if ui.add(Button::new("Search")).clicked() { self.do_search_now(); }
                 });
-            // Row 2: Options (TopK / Mode slider)
+            // Row 2: Options (TopK / Mode slider / Weights when Hybrid)
             ui.horizontal(|ui| {
                 ui.label("TopK");
                 let mut topk_str = self.top_k.to_string();
@@ -548,6 +552,17 @@ impl AppState {
                 }
                 let mode_name = match self.search_mode { SearchMode::Hybrid => "Hybrid", SearchMode::Tantivy => "Tantivy", SearchMode::Vec => "VEC" };
                 ui.label(mode_name);
+                if matches!(self.search_mode, SearchMode::Hybrid) {
+                    ui.separator();
+                    ui.label("w_TV(OR)");
+                    ui.add(egui::DragValue::new(&mut self.w_text).speed(0.1).clamp_range(0.0..=100.0));
+                    ui.label("w_VEC");
+                    ui.add(egui::DragValue::new(&mut self.w_vec).speed(0.1).clamp_range(0.0..=100.0));
+                    let denom = (self.w_text + self.w_vec).max(1e-6);
+                    let wt = self.w_text / denom;
+                    let wv = self.w_vec / denom;
+                    ui.label(format!("{:.0}%/{:.0}%", wt*100.0, wv*100.0));
+                }
             });
 
             ui.separator();
@@ -684,15 +699,27 @@ impl AppState {
         // Sort by selected mode
         let mut items: Vec<(String, (Option<f32>, Option<f32>, Option<f32>, Option<f32>))> = agg.into_iter().collect();
         items.sort_by(|a, b| {
+            let (tv_a, vec_a) = (a.1.2.unwrap_or(0.0), a.1.3.unwrap_or(0.0));
+            let (tv_b, vec_b) = (b.1.2.unwrap_or(0.0), b.1.3.unwrap_or(0.0));
             let key_a = match self.search_mode {
-                SearchMode::Hybrid => a.1.2.unwrap_or(0.0) + a.1.3.unwrap_or(0.0),
-                SearchMode::Tantivy => a.1.2.unwrap_or(0.0),
-                SearchMode::Vec => a.1.3.unwrap_or(0.0),
+                SearchMode::Hybrid => {
+                    let denom = (self.w_text + self.w_vec).max(1e-6);
+                    let wt = self.w_text / denom;
+                    let wv = self.w_vec / denom;
+                    wt * tv_a + wv * vec_a
+                }
+                SearchMode::Tantivy => tv_a,
+                SearchMode::Vec => vec_a,
             };
             let key_b = match self.search_mode {
-                SearchMode::Hybrid => b.1.2.unwrap_or(0.0) + b.1.3.unwrap_or(0.0),
-                SearchMode::Tantivy => b.1.2.unwrap_or(0.0),
-                SearchMode::Vec => b.1.3.unwrap_or(0.0),
+                SearchMode::Hybrid => {
+                    let denom = (self.w_text + self.w_vec).max(1e-6);
+                    let wt = self.w_text / denom;
+                    let wv = self.w_vec / denom;
+                    wt * tv_b + wv * vec_b
+                }
+                SearchMode::Tantivy => tv_b,
+                SearchMode::Vec => vec_b,
             };
             key_b.partial_cmp(&key_a).unwrap_or(std::cmp::Ordering::Equal)
         });
