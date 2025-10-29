@@ -36,17 +36,19 @@ pub fn read_docx_to_blocks(path: &str) -> Vec<UnifiedBlock> {
     let mut buf = Vec::new();
 
     let mut order = 0u32;
+    let mut current_page: u32 = 1;
     let mut cur_text = String::new();
     let mut in_t = false;
     let mut pending_heading_level: Option<u8> = None;
     let mut in_p = false;
+    let mut para_start_page: u32 = 1;
 
     loop {
         buf.clear();
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 match local_name(e.name().as_ref()) {
-                    b"p" => { in_p = true; cur_text.clear(); pending_heading_level = None; }
+                    b"p" => { in_p = true; cur_text.clear(); pending_heading_level = None; para_start_page = current_page; }
                     b"pStyle" => {
                         // Heading style e.g., w:pStyle w:val="Heading1"
                         if let Some(val) = attr_val(&e, b"val") {
@@ -56,14 +58,25 @@ pub fn read_docx_to_blocks(path: &str) -> Vec<UnifiedBlock> {
                         }
                     }
                     b"t" => { in_t = true; }
-                    b"br" => { cur_text.push('\n'); }
+                    b"br" => {
+                        // page break or line break
+                        if let Some(t) = attr_val(&e, b"type") {
+                            if t.eq_ignore_ascii_case("page") { current_page = current_page.saturating_add(1); }
+                        }
+                        cur_text.push('\n');
+                    }
                     b"tab" => { cur_text.push('\t'); }
                     _ => {}
                 }
             }
             Ok(Event::Empty(e)) => {
                 match local_name(e.name().as_ref()) {
-                    b"br" => { cur_text.push('\n'); }
+                    b"br" => {
+                        if let Some(t) = attr_val(&e, b"type") {
+                            if t.eq_ignore_ascii_case("page") { current_page = current_page.saturating_add(1); }
+                        }
+                        cur_text.push('\n');
+                    }
                     b"tab" => { cur_text.push('\t'); }
                     _ => {}
                 }
@@ -78,9 +91,13 @@ pub fn read_docx_to_blocks(path: &str) -> Vec<UnifiedBlock> {
                                 if let Some(level) = pending_heading_level {
                                     let mut b = UnifiedBlock::new(BlockKind::Heading, text_s.to_string(), order, path, "docx");
                                     b.heading_level = Some(level);
+                                    b.page_start = Some(para_start_page);
+                                    b.page_end = Some(current_page);
                                     blocks.push(b);
                                 } else {
-                                    let b = UnifiedBlock::new(BlockKind::Paragraph, text_s.to_string(), order, path, "docx");
+                                    let mut b = UnifiedBlock::new(BlockKind::Paragraph, text_s.to_string(), order, path, "docx");
+                                    b.page_start = Some(para_start_page);
+                                    b.page_end = Some(current_page);
                                     blocks.push(b);
                                 }
                                 order += 1;

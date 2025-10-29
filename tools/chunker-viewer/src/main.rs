@@ -199,15 +199,15 @@ fn chunk_file_auto(path: &str, params: PdfChunkParams) -> Result<(FileRecord, Ve
         let chunks: Vec<ChunkRecord> = segs
             .into_iter()
             .enumerate()
-            .map(|(i, (text, _ps, _pe))| ChunkRecord {
+            .map(|(i, (text, ps, pe))| ChunkRecord {
                 schema_version: SCHEMA_MAJOR,
                 doc_id: DocumentId(path.to_string()),
                 chunk_id: ChunkId(format!("{}#{}", path, i)),
                 source_uri: path.to_string(),
                 source_mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
                 extracted_at: String::new(),
-                page_start: None,
-                page_end: None,
+                page_start: ps,
+                page_end: pe,
                 text,
                 section_path: None,
                 meta: std::collections::BTreeMap::new(),
@@ -258,15 +258,15 @@ fn chunk_file_auto(path: &str, params: PdfChunkParams) -> Result<(FileRecord, Ve
         let chunks: Vec<ChunkRecord> = segs
             .into_iter()
             .enumerate()
-            .map(|(i, (text, _ps, _pe))| ChunkRecord {
+            .map(|(i, (text, ps, pe))| ChunkRecord {
                 schema_version: SCHEMA_MAJOR,
                 doc_id: DocumentId(path.to_string()),
                 chunk_id: ChunkId(format!("{}#{}", path, i)),
                 source_uri: path.to_string(),
                 source_mime: "text/plain".into(),
                 extracted_at: String::new(),
-                page_start: None,
-                page_end: None,
+                page_start: Some(ps.unwrap_or(1)),
+                page_end: Some(pe.unwrap_or(1)),
                 text,
                 section_path: None,
                 meta: std::collections::BTreeMap::new(),
