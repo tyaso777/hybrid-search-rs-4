@@ -1,18 +1,19 @@
-use std::env;
+﻿use std::env;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{mpsc::{self, Receiver, TryRecvError}, Arc};
 use std::time::Instant;
 
 use eframe::egui::{self, Button, CentralPanel, ScrollArea, Spinner, TextEdit, CollapsingHeader};
+use eframe::egui::ProgressBar;
 use egui_extras::{Column, TableBuilder};
 use eframe::{App, CreationContext, Frame, NativeOptions};
 use rfd::FileDialog;
 
-use hybrid_service::{HybridService, ServiceConfig};
+use hybrid_service::{HybridService, ServiceConfig, CancelToken, ProgressEvent};
 use embedding_provider::config::{default_stdio_config, ONNX_STDIO_DEFAULTS};
 use chunking_store::FilterClause;
-use chunking_store::{FilterKind, FilterOp, ChunkStoreRead};
+use chunking_store::ChunkStoreRead;
 #[cfg(feature = "tantivy")]
 use chunking_store::tantivy_index::{TantivyIndex, TokenCombine};
 use chunk_model::{ChunkId, DocumentId, ChunkRecord, SCHEMA_MAJOR};
@@ -34,7 +35,7 @@ enum ActiveTab {
 
 #[derive(Debug)]
 struct ServiceInitTask {
-    rx: Receiver<Result<HybridService, String>>,
+    rx: Receiver<Result<Arc<HybridService>, String>>,
     started: Instant,
 }
 
@@ -58,6 +59,10 @@ struct AppState {
     runtime_path: String,
     embedding_dimension: String,
     max_tokens: String,
+    embed_batch_size: String,
+    embed_auto: bool,
+    embed_initial_batch: String,
+    embed_min_batch: String,
     preload_model_to_memory: bool,
 
     // Store/index config (root -> derive artifacts)
@@ -70,13 +75,22 @@ struct AppState {
     tantivy: Option<TantivyIndex>,
 
     // Service
-    svc: Option<HybridService>,
+    svc: Option<Arc<HybridService>>,
     svc_task: Option<ServiceInitTask>,
 
     // Insert
     input_text: String,
     doc_hint: String,
     ingest_file_path: String,
+
+    // Ingest job (async)
+    ingest_rx: Option<Receiver<ProgressEvent>>,
+    ingest_cancel: Option<CancelToken>,
+    ingest_running: bool,
+    ingest_done: usize,
+    ingest_total: usize,
+    ingest_last_batch: usize,
+    ingest_started: Option<Instant>,
 
     // Search
     query: String,
@@ -169,6 +183,10 @@ impl AppState {
             runtime_path: defaults.runtime_library_path.display().to_string(),
             embedding_dimension: ONNX_STDIO_DEFAULTS.embedding_dimension.to_string(),
             max_tokens: ONNX_STDIO_DEFAULTS.max_input_tokens.to_string(),
+            embed_batch_size: String::from("64"),
+            embed_auto: true,
+            embed_initial_batch: String::from("128"),
+            embed_min_batch: String::from("8"),
             preload_model_to_memory: false,
 
             store_root: store_default.clone(),
@@ -185,6 +203,14 @@ impl AppState {
             input_text: String::new(),
             doc_hint: String::new(),
             ingest_file_path: String::new(),
+
+            ingest_rx: None,
+            ingest_cancel: None,
+            ingest_running: false,
+            ingest_done: 0,
+            ingest_total: 0,
+            ingest_last_batch: 0,
+            ingest_started: None,
 
             query: String::new(),
             top_k: 10,
@@ -222,12 +248,18 @@ impl AppState {
         cfg.embedder.dimension = self.embedding_dimension.trim().parse().unwrap_or(ONNX_STDIO_DEFAULTS.embedding_dimension);
         cfg.embedder.max_input_length = self.max_tokens.trim().parse().unwrap_or(ONNX_STDIO_DEFAULTS.max_input_tokens);
         cfg.embedder.preload_model_to_memory = self.preload_model_to_memory;
+        // Embed batch size
+        if let Ok(bs) = self.embed_batch_size.trim().parse::<usize>() { if bs > 0 { cfg.embed_batch_size = bs; } }
+        // Auto batch params
+        cfg.embed_auto = self.embed_auto;
+        if let Ok(x) = self.embed_initial_batch.trim().parse::<usize>() { if x > 0 { cfg.embed_initial_batch = x; } }
+        if let Ok(x) = self.embed_min_batch.trim().parse::<usize>() { if x > 0 { cfg.embed_min_batch = x; } }
 
         let (tx, rx) = mpsc::channel();
         self.status = "Initializing model...".into();
         self.svc_task = Some(ServiceInitTask { rx, started: Instant::now() });
         std::thread::spawn(move || {
-            let res = HybridService::new(cfg).map_err(|e| e.to_string());
+            let res = HybridService::new(cfg).map(|s| Arc::new(s)).map_err(|e| e.to_string());
             let _ = tx.send(res);
         });
     }
@@ -259,51 +291,75 @@ impl AppState {
 impl App for AppState {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
         self.poll_service_task();
+        self.poll_ingest_job();
         CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.tab, ActiveTab::Insert, "Insert");
-                ui.selectable_value(&mut self.tab, ActiveTab::Search, "Search");
-                ui.separator();
-                if self.model_not_initialized() {
-                    if ui.button("Init Model").clicked() {
-                        self.start_service_init();
+                ui.add_enabled_ui(!self.ingest_running, |ui| {
+                    ui.selectable_value(&mut self.tab, ActiveTab::Insert, "Insert");
+                    ui.selectable_value(&mut self.tab, ActiveTab::Search, "Search");
+                    ui.separator();
+                    if self.model_not_initialized() {
+                        if ui.button("Init Model").clicked() {
+                            self.start_service_init();
+                        }
+                    } else if self.svc.is_none() {
+                        ui.add(Spinner::new());
+                        ui.label("Loading model...");
+                    } else {
+                        ui.label("Model: ready");
                     }
-                } else if self.svc.is_none() {
+                });
+                if self.ingest_running {
                     ui.add(Spinner::new());
-                    ui.label("Loading model...");
-                } else {
-                    ui.label("Model: ready");
+                    if ui.add(Button::new("Cancel")).clicked() {
+                        if let Some(ct) = &self.ingest_cancel { ct.cancel(); }
+                    }
                 }
             });
 
             CollapsingHeader::new("Model/Store Config").default_open(true).show(ui, |ui| {
-                let mut root_changed = false;
-                ui.horizontal(|ui| {
-                    ui.label("Store Root");
-                    if ui.add(TextEdit::singleline(&mut self.store_root).desired_width(400.0)).changed() { root_changed = true; }
-                    if ui.button("…").clicked() { if let Some(p) = FileDialog::new().pick_folder() { self.store_root = p.display().to_string(); root_changed = true; } }
-                    if ui.button("Reset").clicked() { self.store_root = "target/demo/store".into(); root_changed = true; }
-                });
-                if root_changed { self.refresh_store_paths(); }
-                ui.horizontal(|ui| { ui.label("DB"); ui.label(&self.db_path); });
-                ui.horizontal(|ui| { ui.label("HNSW"); ui.label(&self.hnsw_dir); });
-                #[cfg(feature = "tantivy")]
-                ui.horizontal(|ui| { ui.label("Tantivy"); ui.label(&self.tantivy_dir); });
-                ui.separator();
-                ui.collapsing("Danger zone", |ui| {
+                ui.add_enabled_ui(!self.ingest_running, |ui| {
+                    let mut root_changed = false;
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Deletes DB and indexes (HNSW/Tantivy)").color(egui::Color32::LIGHT_RED));
-                        if ui.button(egui::RichText::new("Delete DB & Indexes").color(egui::Color32::RED)).clicked() {
-                            self.delete_store_files();
-                        }
+                        ui.label("Store Root");
+                        if ui.add(TextEdit::singleline(&mut self.store_root).desired_width(400.0)).changed() { root_changed = true; }
+                        if ui.button("窶ｦ").clicked() { if let Some(p) = FileDialog::new().pick_folder() { self.store_root = p.display().to_string(); root_changed = true; } }
+                        if ui.button("Reset").clicked() { self.store_root = "target/demo/store".into(); root_changed = true; }
+                    });
+                    if root_changed { self.refresh_store_paths(); }
+                    ui.horizontal(|ui| { ui.label("DB"); ui.label(&self.db_path); });
+                    ui.horizontal(|ui| { ui.label("HNSW"); ui.label(&self.hnsw_dir); });
+                    #[cfg(feature = "tantivy")]
+                    ui.horizontal(|ui| { ui.label("Tantivy"); ui.label(&self.tantivy_dir); });
+                    ui.separator();
+                    ui.collapsing("Danger zone", |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Deletes DB and indexes (HNSW/Tantivy)").color(egui::Color32::LIGHT_RED));
+                            if ui.button(egui::RichText::new("Delete DB & Indexes").color(egui::Color32::RED)).clicked() {
+                                self.delete_store_files();
+                            }
+                        });
+                    });
+                    ui.separator();
+                    ui.horizontal(|ui| { ui.label("Model"); ui.add(TextEdit::singleline(&mut self.model_path).desired_width(400.0)); if ui.button("窶ｦ").clicked() { if let Some(p) = FileDialog::new().add_filter("ONNX", &["onnx"]).pick_file() { self.model_path = p.display().to_string(); } } });
+                    ui.horizontal(|ui| { ui.label("Tokenizer"); ui.add(TextEdit::singleline(&mut self.tokenizer_path).desired_width(400.0)); if ui.button("窶ｦ").clicked() { if let Some(p) = FileDialog::new().add_filter("JSON", &["json"]).pick_file() { self.tokenizer_path = p.display().to_string(); } } });
+                    ui.horizontal(|ui| { ui.label("Runtime DLL"); ui.add(TextEdit::singleline(&mut self.runtime_path).desired_width(400.0)); if ui.button("窶ｦ").clicked() { if let Some(p) = FileDialog::new().pick_file() { self.runtime_path = p.display().to_string(); } } });
+                    ui.horizontal(|ui| {
+                        ui.label("Dim"); ui.add(TextEdit::singleline(&mut self.embedding_dimension).desired_width(80.0));
+                        ui.label("MaxTokens"); ui.add(TextEdit::singleline(&mut self.max_tokens).desired_width(80.0));
+                        ui.label("Batch"); ui.add(TextEdit::singleline(&mut self.embed_batch_size).desired_width(60.0));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.preload_model_to_memory, "Preload model into memory");
+                        ui.checkbox(&mut self.embed_auto, "Auto batch");
+                    });
+                    ui.collapsing("Auto batch settings", |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Initial"); ui.add(TextEdit::singleline(&mut self.embed_initial_batch).desired_width(60.0));
+                            ui.label("Min"); ui.add(TextEdit::singleline(&mut self.embed_min_batch).desired_width(60.0));
+                        });
                     });
                 });
-                ui.separator();
-                ui.horizontal(|ui| { ui.label("Model"); ui.add(TextEdit::singleline(&mut self.model_path).desired_width(400.0)); if ui.button("…").clicked() { if let Some(p) = FileDialog::new().add_filter("ONNX", &["onnx"]).pick_file() { self.model_path = p.display().to_string(); } } });
-                ui.horizontal(|ui| { ui.label("Tokenizer"); ui.add(TextEdit::singleline(&mut self.tokenizer_path).desired_width(400.0)); if ui.button("…").clicked() { if let Some(p) = FileDialog::new().add_filter("JSON", &["json"]).pick_file() { self.tokenizer_path = p.display().to_string(); } } });
-                ui.horizontal(|ui| { ui.label("Runtime DLL"); ui.add(TextEdit::singleline(&mut self.runtime_path).desired_width(400.0)); if ui.button("…").clicked() { if let Some(p) = FileDialog::new().pick_file() { self.runtime_path = p.display().to_string(); } } });
-                ui.horizontal(|ui| { ui.label("Dim"); ui.add(TextEdit::singleline(&mut self.embedding_dimension).desired_width(80.0)); ui.label("MaxTokens"); ui.add(TextEdit::singleline(&mut self.max_tokens).desired_width(80.0)); });
-                ui.horizontal(|ui| { ui.checkbox(&mut self.preload_model_to_memory, "Preload model into memory"); });
             });
 
             ui.separator();
@@ -321,21 +377,38 @@ impl App for AppState {
 impl AppState {
     fn ui_insert(&mut self, ui: &mut egui::Ui) {
         ui.heading("Insert");
-        ui.horizontal(|ui| {
-            ui.label("Doc Hint");
-            ui.add(TextEdit::singleline(&mut self.doc_hint).desired_width(200.0));
+        ui.add_enabled_ui(!self.ingest_running, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Doc Hint");
+                ui.add(TextEdit::singleline(&mut self.doc_hint).desired_width(200.0));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Text");
+                ui.add(TextEdit::multiline(&mut self.input_text).desired_rows(4).desired_width(600.0));
+            });
+            ui.horizontal(|ui| {
+                if ui.add(Button::new("Insert Text")).clicked() { self.do_insert_text(); }
+                ui.separator();
+                ui.add(TextEdit::singleline(&mut self.ingest_file_path).desired_width(400.0));
+                if ui.button("Choose File").clicked() { if let Some(p) = FileDialog::new().pick_file() { self.ingest_file_path = p.display().to_string(); } }
+                let ingest_btn = ui.add_enabled(!self.ingest_running, Button::new("Ingest File"));
+                if ingest_btn.clicked() { self.do_ingest_file(); }
+            });
         });
-        ui.horizontal(|ui| {
-            ui.label("Text");
-            ui.add(TextEdit::multiline(&mut self.input_text).desired_rows(4).desired_width(600.0));
-        });
-        ui.horizontal(|ui| {
-            if ui.add(Button::new("Insert Text")).clicked() { self.do_insert_text(); }
-            ui.separator();
-            ui.add(TextEdit::singleline(&mut self.ingest_file_path).desired_width(400.0));
-            if ui.button("Choose File").clicked() { if let Some(p) = FileDialog::new().pick_file() { self.ingest_file_path = p.display().to_string(); } }
-            if ui.add(Button::new("Ingest File")).clicked() { self.do_ingest_file(); }
-        });
+        if self.ingest_running {
+            ui.horizontal(|ui| {
+                let frac = if self.ingest_total > 0 { (self.ingest_done as f32 / self.ingest_total as f32).clamp(0.0, 1.0) } else { 0.0 };
+                ui.add(ProgressBar::new(frac).desired_width(400.0).show_percentage());
+                ui.label(format!("{} / {} (batch {})", self.ingest_done, self.ingest_total, self.ingest_last_batch));
+                if ui.add(Button::new("Cancel")).clicked() {
+                    if let Some(ct) = &self.ingest_cancel { ct.cancel(); }
+                }
+                if let Some(started) = self.ingest_started {
+                    let secs = started.elapsed().as_secs_f32();
+                    ui.label(format!("{:.1}s", secs));
+                }
+            });
+        }
     }
 
     fn do_insert_text(&mut self) {
@@ -363,53 +436,113 @@ impl AppState {
         let path_owned = self.ingest_file_path.trim().to_string();
         if path_owned.is_empty() { self.status = "Choose a file to ingest".into(); return; }
         let Some(svc) = self.svc.as_ref() else { self.status = "Model not initialized".into(); return; };
-        match svc.ingest_file(&path_owned, if self.doc_hint.trim().is_empty() { None } else { Some(self.doc_hint.trim()) }) {
-            Ok(()) => {
-                // Best-effort Tantivy upsert for ingested file
-                #[cfg(feature = "tantivy")]
-                {
-                    if let Err(err) = self.ensure_tantivy_open() { self.status = format!("Tantivy init failed: {err}"); return; }
-                    use chunking_store::sqlite_repo::SqliteRepo;
-                    let repo = match SqliteRepo::open(self.db_path.trim()) { Ok(r) => r, Err(e) => { self.status = format!("Open DB failed: {e}"); return; } };
-                    let doc = if self.doc_hint.trim().is_empty() { path_owned.clone() } else { self.doc_hint.trim().to_string() };
-                    let filter = FilterClause { kind: FilterKind::Must, op: FilterOp::DocIdEq(doc) };
-                    let ids = match repo.list_chunk_ids_by_filter(&[filter], 10_000, 0) { Ok(v) => v, Err(_) => Vec::new() };
-                    if !ids.is_empty() {
-                        if let Ok(recs) = repo.get_chunks_by_ids(&ids) {
-                            if let Some(idx) = &self.tantivy {
-                                let _ = idx.upsert_records(&recs);
+        let svc = Arc::clone(svc);
+        let doc_hint_opt = if self.doc_hint.trim().is_empty() { None } else { Some(self.doc_hint.trim().to_string()) };
+        let (tx, rx) = mpsc::channel::<ProgressEvent>();
+        let cancel = CancelToken::new();
+        self.ingest_rx = Some(rx);
+        self.ingest_cancel = Some(cancel.clone());
+        self.ingest_running = true;
+        self.ingest_done = 0;
+        self.ingest_total = 0;
+        self.ingest_last_batch = 0;
+        self.ingest_started = Some(Instant::now());
+        self.status = format!("Ingesting file: {}", path_owned);
+        std::thread::spawn(move || {
+            let hint = doc_hint_opt.as_deref();
+            let cb: Box<dyn FnMut(ProgressEvent) + Send> = Box::new(move |ev: ProgressEvent| { let _ = tx.send(ev); });
+            let _ = svc.ingest_file_with_progress(&path_owned, hint, Some(&cancel), Some(cb));
+            // The service emits Finished/Canceled; no-op here.
+        });
+    }
+
+    fn poll_ingest_job(&mut self) {
+        if let Some(rx) = &self.ingest_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(ev) => {
+                        match ev {
+                            ProgressEvent::Start { total_chunks } => {
+                                self.ingest_total = total_chunks;
+                                self.ingest_done = 0;
+                                self.ingest_last_batch = 0;
+                                if self.ingest_started.is_none() { self.ingest_started = Some(Instant::now()); }
+                                self.status = format!("Embedding {} chunks...", total_chunks);
+                            }
+                            ProgressEvent::EmbedBatch { done, total, batch } => {
+                                self.ingest_done = done;
+                                self.ingest_total = total;
+                                self.ingest_last_batch = batch;
+                                self.status = format!("Embedding: {} / {} (batch {})", done, total, batch);
+                            }
+                            ProgressEvent::UpsertDb { total } => {
+                                self.status = format!("Upserting into DB ({} chunks)...", total);
+                            }
+                            ProgressEvent::IndexText { total } => {
+                                self.status = format!("Indexing text ({} chunks)...", total);
+                            }
+                            ProgressEvent::IndexVector { total } => {
+                                self.status = format!("Indexing vectors ({} chunks)...", total);
+                            }
+                            ProgressEvent::SaveIndexes => {
+                                self.status = "Saving indexes...".into();
+                            }
+                            ProgressEvent::Finished { total } => {
+                                self.ingest_running = false;
+                                self.ingest_cancel = None;
+                                self.ingest_rx = None;
+                                let secs = self.ingest_started.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
+                                self.status = format!("Ingest finished ({} chunks) in {:.1}s.", total, secs);
+                                self.ingest_started = None;
+                                break;
+                            }
+                            ProgressEvent::Canceled => {
+                                self.ingest_running = false;
+                                self.ingest_cancel = None;
+                                self.ingest_rx = None;
+                                let secs = self.ingest_started.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
+                                self.status = format!("Ingest canceled after {:.1}s.", secs);
+                                self.ingest_started = None;
+                                break;
                             }
                         }
                     }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        self.ingest_running = false;
+                        self.ingest_cancel = None;
+                        self.ingest_rx = None;
+                        self.status = "Ingest worker disconnected".into();
+                        break;
+                    }
                 }
-                self.status = format!("Ingested file: {}", path_owned);
             }
-            Err(e) => { self.status = format!("Ingest failed: {e}"); }
         }
     }
 
     fn ui_search(&mut self, ui: &mut egui::Ui) {
         ui.push_id("search_panel", |ui| {
-            ui.heading("Search");
-            // Row 1: Query + Search
-            ui.horizontal(|ui| {
-                ui.label("Query");
-                ui.add(TextEdit::singleline(&mut self.query).desired_width(400.0).id_source("search_query"));
-                if ui.add(Button::new("Search")).clicked() { self.do_search_now(); }
-            });
-            // Row 2: Options (TopK / Hybrid / weights)
-            ui.horizontal(|ui| {
-                ui.label("TopK");
-                let mut topk_str = self.top_k.to_string();
-                if ui.add(TextEdit::singleline(&mut topk_str).desired_width(60.0).id_source("search_topk")).changed() {
-                    self.top_k = topk_str.parse().unwrap_or(10);
-                }
-                ui.checkbox(&mut self.use_hybrid, "Hybrid");
-                if self.use_hybrid {
-                    ui.label("w_text"); ui.add(egui::DragValue::new(&mut self.w_text).speed(0.1).clamp_range(0.0..=1.0));
-                    ui.label("w_vec"); ui.add(egui::DragValue::new(&mut self.w_vec).speed(0.1).clamp_range(0.0..=1.0));
-                }
-            });
+            ui.add_enabled_ui(!self.ingest_running, |ui| {
+                ui.heading("Search");
+                // Row 1: Query + Search
+                ui.horizontal(|ui| {
+                    ui.label("Query");
+                    ui.add(TextEdit::singleline(&mut self.query).desired_width(400.0).id_source("search_query"));
+                    if ui.add(Button::new("Search")).clicked() { self.do_search_now(); }
+                });
+                // Row 2: Options (TopK / Hybrid / weights)
+                ui.horizontal(|ui| {
+                    ui.label("TopK");
+                    let mut topk_str = self.top_k.to_string();
+                    if ui.add(TextEdit::singleline(&mut topk_str).desired_width(60.0).id_source("search_topk")).changed() {
+                        self.top_k = topk_str.parse().unwrap_or(10);
+                    }
+                    ui.checkbox(&mut self.use_hybrid, "Hybrid");
+                    if self.use_hybrid {
+                        ui.label("w_text"); ui.add(egui::DragValue::new(&mut self.w_text).speed(0.1).clamp_range(0.0..=1.0));
+                        ui.label("w_vec"); ui.add(egui::DragValue::new(&mut self.w_vec).speed(0.1).clamp_range(0.0..=1.0));
+                    }
+                });
 
             ui.separator();
             ui.push_id("results_table", |ui| {
@@ -473,6 +606,7 @@ impl AppState {
                         row_ui.col(|ui| { ui.label(opt_fmt(row.vec)); });
                     });
                 }
+            });
             });
             });
 
