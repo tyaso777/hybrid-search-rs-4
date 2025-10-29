@@ -374,6 +374,8 @@ impl App for AppState {
                     ui.selectable_value(&mut self.tab, ActiveTab::Insert, "Insert");
                     ui.selectable_value(&mut self.tab, ActiveTab::Search, "Search");
                     ui.selectable_value(&mut self.tab, ActiveTab::Config, "Config");
+                    // stronger visual divider (double vertical separator)
+                    ui.separator();
                     ui.separator();
                     let (model_status, index_status) = if self.svc.is_none() {
                         if self.svc_task.is_some() { ("loading", "loading") } else { ("released", "released") }
@@ -383,6 +385,8 @@ impl App for AppState {
                     };
                     let status_text = format!("Model: {} | Index: {}", model_status, index_status);
                     ui.label(status_text);
+                    // compact controls with a clear right-side divider as well
+                    ui.add_space(8.0);
                     ui.add_space(8.0);
                     if ui.button("Init").clicked() {
                         if self.model_not_initialized() { self.start_service_init(); }
@@ -390,6 +394,8 @@ impl App for AppState {
                     if ui.button("Release").clicked() {
                         self.release_model_and_indexes();
                     }
+                    ui.separator();
+                    ui.separator();
                 });
                 if self.ingest_running {
                     ui.add(Spinner::new());
