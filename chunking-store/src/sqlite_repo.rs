@@ -47,6 +47,8 @@ impl SqliteRepo {
                 source_uri TEXT NOT NULL,
                 source_mime TEXT NOT NULL,
                 extracted_at TEXT NOT NULL,
+                page_start INTEGER,
+                page_end INTEGER,
                 text TEXT NOT NULL,
                 section_path_json TEXT NOT NULL,
                 meta_json TEXT NOT NULL,
@@ -80,6 +82,9 @@ impl SqliteRepo {
             END;
             "#,
         )?;
+        // Best-effort migration for older tables missing page_start/page_end
+        let _ = self.conn.execute("ALTER TABLE chunks ADD COLUMN page_start INTEGER", []);
+        let _ = self.conn.execute("ALTER TABLE chunks ADD COLUMN page_end INTEGER", []);
         Ok(())
     }
 
@@ -184,21 +189,41 @@ impl SqliteRepo {
                         where_sql.push(')');
                     }
                 }
-                // Numeric range on meta via JSON1 + CAST
+                // Numeric range on columns (page_start/page_end) or meta via JSON1 + CAST
                 crate::FilterOp::RangeNumeric { key, min, max, min_incl, max_incl } => {
-                    if let Some(lo) = min {
-                        where_sql.push_str(" AND CAST(json_extract(meta_json, ?) AS REAL) ");
-                        if *min_incl { where_sql.push_str(">= ?"); } else { where_sql.push_str("> ?"); }
-                        let path = format!("$.\"{}\"", key.replace('"', "\""));
-                        params.push(path.into());
-                        params.push((*lo as f64).into());
-                    }
-                    if let Some(hi) = max {
-                        where_sql.push_str(" AND CAST(json_extract(meta_json, ?) AS REAL) ");
-                        if *max_incl { where_sql.push_str("<= ?"); } else { where_sql.push_str("< ?"); }
-                        let path = format!("$.\"{}\"", key.replace('"', "\""));
-                        params.push(path.into());
-                        params.push((*hi as f64).into());
+                    let mut push_bound = |col: &str, is_min: bool, incl: bool, val: f64| {
+                        where_sql.push_str(" AND ");
+                        where_sql.push_str(col);
+                        where_sql.push_str(" ");
+                        if is_min { if incl { where_sql.push_str(">= ?"); } else { where_sql.push_str("> ?"); } }
+                        else { if incl { where_sql.push_str("<= ?"); } else { where_sql.push_str("< ?"); } }
+                        params.push(val.into());
+                    };
+                    match key.as_str() {
+                        "page_start" => {
+                            if let Some(lo) = min { push_bound("page_start", true, *min_incl, *lo as f64); }
+                            if let Some(hi) = max { push_bound("page_start", false, *max_incl, *hi as f64); }
+                        }
+                        "page_end" => {
+                            if let Some(lo) = min { push_bound("page_end", true, *min_incl, *lo as f64); }
+                            if let Some(hi) = max { push_bound("page_end", false, *max_incl, *hi as f64); }
+                        }
+                        _ => {
+                            if let Some(lo) = min {
+                                where_sql.push_str(" AND CAST(json_extract(meta_json, ?) AS REAL) ");
+                                if *min_incl { where_sql.push_str(">= ?"); } else { where_sql.push_str("> ?"); }
+                                let path = format!("$.\"{}\"", key.replace('"', "\""));
+                                params.push(path.into());
+                                params.push((*lo as f64).into());
+                            }
+                            if let Some(hi) = max {
+                                where_sql.push_str(" AND CAST(json_extract(meta_json, ?) AS REAL) ");
+                                if *max_incl { where_sql.push_str("<= ?"); } else { where_sql.push_str("< ?"); }
+                                let path = format!("$.\"{}\"", key.replace('"', "\""));
+                                params.push(path.into());
+                                params.push((*hi as f64).into());
+                            }
+                        }
                     }
                 }
             }
@@ -246,14 +271,17 @@ impl ChunkPrimaryStore for SqliteRepo {
                 r#"
             INSERT INTO chunks (
                 schema_version, chunk_id, doc_id, source_uri, source_mime, extracted_at,
+                page_start, page_end,
                 text, section_path_json, meta_json, extra_json, vector
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL)
             ON CONFLICT(chunk_id) DO UPDATE SET
                 schema_version=excluded.schema_version,
                 doc_id=excluded.doc_id,
                 source_uri=excluded.source_uri,
                 source_mime=excluded.source_mime,
                 extracted_at=excluded.extracted_at,
+                page_start=excluded.page_start,
+                page_end=excluded.page_end,
                 text=excluded.text,
                 section_path_json=excluded.section_path_json,
                 meta_json=excluded.meta_json,
@@ -288,6 +316,8 @@ impl ChunkPrimaryStore for SqliteRepo {
                     rec.source_uri,
                     rec.source_mime,
                     rec.extracted_at,
+                    rec.page_start.map(|v| v as i64),
+                    rec.page_end.map(|v| v as i64),
                     rec.text,
                     section_json,
                     meta_json,
@@ -352,8 +382,38 @@ impl ChunkPrimaryStore for SqliteRepo {
                     }
                 }
                 FilterOp::RangeNumeric { key, min, max, min_incl, max_incl } => {
-                    if let Some(lo) = min { where_sql.push_str(" AND CAST(json_extract(meta_json, ?) AS REAL) "); where_sql.push_str(if *min_incl { ">= ?" } else { "> ?" }); let path = format!("$.\"{}\"", key.replace('"', "\"")); params.push(path.into()); params.push((*lo as f64).into()); }
-                    if let Some(hi) = max { where_sql.push_str(" AND CAST(json_extract(meta_json, ?) AS REAL) "); where_sql.push_str(if *max_incl { "<= ?" } else { "< ?" }); let path = format!("$.\"{}\"", key.replace('"', "\"")); params.push(path.into()); params.push((*hi as f64).into()); }
+                    let push_bound = |sql: &mut String, col: &str, is_min: bool, incl: bool| {
+                        sql.push_str(" AND ");
+                        sql.push_str(col);
+                        if is_min { if incl { sql.push_str(" >= ?"); } else { sql.push_str(" > ?"); } }
+                        else { if incl { sql.push_str(" <= ?"); } else { sql.push_str(" < ?"); } }
+                    };
+                    match key.as_str() {
+                        "page_start" => {
+                            if let Some(lo) = min { push_bound(&mut where_sql, "page_start", true, *min_incl); params.push((*lo as f64).into()); }
+                            if let Some(hi) = max { push_bound(&mut where_sql, "page_start", false, *max_incl); params.push((*hi as f64).into()); }
+                        }
+                        "page_end" => {
+                            if let Some(lo) = min { push_bound(&mut where_sql, "page_end", true, *min_incl); params.push((*lo as f64).into()); }
+                            if let Some(hi) = max { push_bound(&mut where_sql, "page_end", false, *max_incl); params.push((*hi as f64).into()); }
+                        }
+                        _ => {
+                            if let Some(lo) = min {
+                                where_sql.push_str(" AND CAST(json_extract(meta_json, ?) AS REAL) ");
+                                where_sql.push_str(if *min_incl { ">= ?" } else { "> ?" });
+                                let path = format!("$.\"{}\"", key.replace('"', "\""));
+                                params.push(path.into());
+                                params.push((*lo as f64).into());
+                            }
+                            if let Some(hi) = max {
+                                where_sql.push_str(" AND CAST(json_extract(meta_json, ?) AS REAL) ");
+                                where_sql.push_str(if *max_incl { "<= ?" } else { "< ?" });
+                                let path = format!("$.\"{}\"", key.replace('"', "\""));
+                                params.push(path.into());
+                                params.push((*hi as f64).into());
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -380,7 +440,7 @@ impl ChunkStoreRead for SqliteRepo {
         placeholders.push(')');
 
         let sql = format!(
-            "SELECT schema_version, chunk_id, doc_id, source_uri, source_mime, extracted_at, text, section_path_json, meta_json, extra_json FROM chunks WHERE chunk_id IN {}",
+            "SELECT schema_version, chunk_id, doc_id, source_uri, source_mime, extracted_at, page_start, page_end, text, section_path_json, meta_json, extra_json FROM chunks WHERE chunk_id IN {}",
             placeholders
         );
 
@@ -401,10 +461,12 @@ impl ChunkStoreRead for SqliteRepo {
                 let source_uri: String = row.get(3)?;
                 let source_mime: String = row.get(4)?;
                 let extracted_at: String = row.get(5)?;
-                let text: String = row.get(6)?;
-                let section_path_json: String = row.get(7)?;
-                let meta_json: String = row.get(8)?;
-                let extra_json: String = row.get(9)?;
+                let page_start_opt: Option<i64> = row.get(6).ok();
+                let page_end_opt: Option<i64> = row.get(7).ok();
+                let text: String = row.get(8)?;
+                let section_path_json: String = row.get(9)?;
+                let meta_json: String = row.get(10)?;
+                let extra_json: String = row.get(11)?;
 
                 let section_path: Option<Vec<String>> = serde_json::from_str(&section_path_json).ok();
                 let meta: std::collections::BTreeMap<String, String> = serde_json::from_str(&meta_json).unwrap_or_default();
@@ -417,6 +479,8 @@ impl ChunkStoreRead for SqliteRepo {
                     source_uri,
                     source_mime,
                     extracted_at,
+                    page_start: page_start_opt.and_then(|v| u32::try_from(v).ok()),
+                    page_end: page_end_opt.and_then(|v| u32::try_from(v).ok()),
                     text,
                     section_path,
                     meta,

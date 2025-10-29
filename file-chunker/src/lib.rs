@@ -57,6 +57,8 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
             source_uri: path.to_string(),
             source_mime: content_type.to_string(),
             extracted_at: String::new(),
+            page_start: None,
+            page_end: None,
             text,
             section_path: None,
             meta: BTreeMap::new(),

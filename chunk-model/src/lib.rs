@@ -105,6 +105,9 @@ pub struct ChunkRecord {
     pub source_mime: String,
     /// Extraction timestamp in ISO 8601 (UTC). Optional producers may leave empty.
     pub extracted_at: String,
+    /// Page range within the source document (1-based, inclusive). Optional.
+    pub page_start: Option<u32>,
+    pub page_end: Option<u32>,
     /// Searchable text body.
     pub text: String,
     /// Optional logical section path within the document.

@@ -234,6 +234,8 @@ fn value_for_key(rec: &ChunkRecord, key: &str) -> Option<String> {
         "source_uri" => Some(rec.source_uri.clone()),
         "source_mime" => Some(rec.source_mime.clone()),
         "extracted_at" => Some(rec.extracted_at.clone()),
+        "page_start" => rec.page_start.map(|v| v.to_string()),
+        "page_end" => rec.page_end.map(|v| v.to_string()),
         _ => rec.meta.get(key).cloned(),
     }
 }

@@ -261,14 +261,11 @@ pub fn chunk_pdf_file_with_file_record(path: &str, params: &PdfChunkParams) -> (
             source_uri: path.to_string(),
             source_mime: "application/pdf".into(),
             extracted_at: String::new(),
+            page_start: pstart,
+            page_end: pend,
             text,
             section_path: None,
-            meta: {
-                let mut m = BTreeMap::new();
-                if let Some(ps) = pstart { m.insert("page_start".into(), ps.to_string()); }
-                if let Some(pe) = pend { m.insert("page_end".into(), pe.to_string()); }
-                m
-            },
+            meta: BTreeMap::new(),
             extra: BTreeMap::new(),
         })
         .collect();

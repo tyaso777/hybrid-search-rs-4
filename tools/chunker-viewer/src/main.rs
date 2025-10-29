@@ -172,8 +172,8 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
 }
 
 fn pages_label(c: &ChunkRecord) -> String {
-    let ps = c.meta.get("page_start").and_then(|s| s.parse::<u32>().ok());
-    let pe = c.meta.get("page_end").and_then(|s| s.parse::<u32>().ok());
+    let ps = c.page_start;
+    let pe = c.page_end;
     match (ps, pe) {
         (Some(s), Some(e)) if s == e => format!("{}", s),
         (Some(s), Some(e)) => format!("{}-{}", s, e),

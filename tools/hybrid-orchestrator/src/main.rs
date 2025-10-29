@@ -119,6 +119,8 @@ fn do_insert(mut tail: Vec<String>) -> Result<(), String> {
         source_uri: "user://input".into(),
         source_mime: "text/plain".into(),
         extracted_at: now_iso(),
+        page_start: None,
+        page_end: None,
         text: input_text.clone(),
         section_path: None,
         meta,
