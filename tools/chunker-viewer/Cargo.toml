@@ -1,0 +1,19 @@
+[package]
+name = "chunker-viewer"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+eframe = { version = "0.27", default-features = true, features = ["wgpu"] }
+rfd = "0.14"
+serde_json = "1"
+file-chunker = { path = "../../file-chunker" }
+chunk-model = { path = "../../chunk-model" }
+
+[features]
+# Enable both PDF backends by default so the PDF path works out-of-the-box.
+default = ["pdfium", "pure-pdf"]
+pdfium = ["file-chunker/pdfium"]
+pure-pdf = ["file-chunker/pure-pdf"]
+
