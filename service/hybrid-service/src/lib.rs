@@ -107,6 +107,15 @@ impl HybridService {
         Ok(svc)
     }
 
+    /// Returns true when the resident HNSW index is loaded in memory.
+    pub fn hnsw_ready(&self) -> bool {
+        if let Ok(g) = self.hnsw.read() {
+            g.as_ref().is_some()
+        } else {
+            false
+        }
+    }
+
     fn ensure_warm(&self) {
         if !self.warmed.load(Ordering::Relaxed) {
             if self.embedder.embed("warmup").is_ok() {

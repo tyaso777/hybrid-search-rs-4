@@ -296,6 +296,15 @@ impl AppState {
 
     fn model_not_initialized(&self) -> bool { self.svc.is_none() && self.svc_task.is_none() }
 
+    fn release_model_and_indexes(&mut self) {
+        // Drop service (ONNX session + resident HNSW) and Tantivy handle if any
+        self.svc = None;
+        #[cfg(feature = "tantivy")] {
+            self.tantivy = None;
+        }
+        self.status = "Released model and resident indexes".into();
+    }
+
     fn start_service_init(&mut self) {
         // Build config from UI fields
         let root = self.store_root.trim().to_string();
@@ -366,16 +375,21 @@ impl App for AppState {
                     ui.selectable_value(&mut self.tab, ActiveTab::Search, "Search");
                     ui.selectable_value(&mut self.tab, ActiveTab::Config, "Config");
                     ui.separator();
-                    if self.model_not_initialized() {
-                        if ui.button("Init Model").clicked() {
-                            self.start_service_init();
-                        }
-                    } else if self.svc.is_none() {
-                        ui.add(Spinner::new());
-                        ui.label("Loading model...");
-                    } else {
-                        ui.label("Model: ready");
+                    if ui.button("Init Model/Index").clicked() {
+                        if self.model_not_initialized() { self.start_service_init(); }
                     }
+                    if ui.button("Release Model/Index").clicked() {
+                        self.release_model_and_indexes();
+                    }
+                    ui.separator();
+                    let (model_status, index_status) = if self.svc.is_none() {
+                        if self.svc_task.is_some() { ("loading", "loading") } else { ("released", "released") }
+                    } else {
+                        let idx_ready = self.svc.as_ref().map(|s| s.hnsw_ready()).unwrap_or(false);
+                        ("ready", if idx_ready { "ready" } else { "loading" })
+                    };
+                    let status_text = format!("Model: {} | Index: {}", model_status, index_status);
+                    ui.label(status_text);
                 });
                 if self.ingest_running {
                     ui.add(Spinner::new());
