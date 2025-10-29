@@ -5,6 +5,28 @@
 use crate::unified_blocks::{UnifiedBlock, BlockKind};
 use pdfium_render::prelude::*;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+// Runtime-tunable gap (in "characters") used to decide whether to keep a visible line break.
+// Default: 3 chars. Adjust via `set_line_gap_chars`.
+static LINE_GAP_CHARS: AtomicUsize = AtomicUsize::new(3);
+
+/// Set the gap threshold in "characters" for newline detection.
+/// Example: 2 -> stricter join, 3 -> more breaks preserved.
+pub fn set_line_gap_chars(chars: usize) { LINE_GAP_CHARS.store(chars.max(1), Ordering::Relaxed); }
+
+// Geometry-based line reconstruction parameters (scaled by 1000 for atomic storage).
+static GEOM_Y_SIZE_FACTOR_MILLIS: AtomicUsize = AtomicUsize::new(1200);   // 1.2x
+static GEOM_Y_BASELINE_FACTOR_MILLIS: AtomicUsize = AtomicUsize::new(500); // 0.5x of height
+static GEOM_OVERLAP_MIN_MILLIS: AtomicUsize = AtomicUsize::new(600);       // 0.6 overlap
+static GEOM_X_RESET_CHARS_MILLIS: AtomicUsize = AtomicUsize::new(1000);    // 1.0 avg char width
+
+pub fn set_geometry_params(y_size_factor: f32, y_baseline_factor: f32, overlap_min: f32, x_reset_chars: f32) {
+    GEOM_Y_SIZE_FACTOR_MILLIS.store(((y_size_factor.max(1.0)) * 1000.0) as usize, Ordering::Relaxed);
+    GEOM_Y_BASELINE_FACTOR_MILLIS.store(((y_baseline_factor.max(0.0)) * 1000.0) as usize, Ordering::Relaxed);
+    GEOM_OVERLAP_MIN_MILLIS.store(((overlap_min.clamp(0.0, 1.0)) * 1000.0) as usize, Ordering::Relaxed);
+    GEOM_X_RESET_CHARS_MILLIS.store(((x_reset_chars.max(0.0)) * 1000.0) as usize, Ordering::Relaxed);
+}
 
 fn bind_pdfium_from_env() -> Option<Box<dyn PdfiumLibraryBindings>> {
     // Prefer explicit full DLL path
@@ -96,7 +118,7 @@ pub fn read_pdf_to_blocks_pdfium_with_mode(path: &str, mode: PdfStructureMode) -
     for (idx, page) in document.pages().iter().enumerate() {
         let page_num = (idx as u32) + 1;
         let text = match page.text() {
-            Ok(t) => t.all(),
+            Ok(_t) => reconstruct_text_by_geometry(&page),
             Err(_) => String::new(),
         };
         let text = normalize_pdfium_text(&text);
@@ -195,10 +217,10 @@ fn normalize_pdfium_text(raw: &str) -> String {
         let is_pruned = Some(i) == header_idx || Some(i) == footer_idx;
         if !is_pruned { max_len = max_len.max(*w); }
     }
-    // "Two characters" threshold in visual units, adapted to script mix (ASCII vs CJK).
-    // This makes us conservative: we only keep an explicit line break when the previous
-    // line ends at least ~2 characters left of the common right edge. Otherwise, we join.
-    let char_gap_threshold = 2.0 * avg_char_unit(&raw);
+    // Threshold in visual units, scaled by the average char width and tunable at runtime.
+    // Default is 3 characters; see `set_line_gap_chars`.
+    let gap_chars = LINE_GAP_CHARS.load(Ordering::Relaxed) as f32;
+    let char_gap_threshold = gap_chars * avg_char_unit(&raw);
 
     // 3) Build output with heuristics:
     //    - Blank line => paragraph separator (\n\n)
@@ -261,8 +283,101 @@ fn normalize_pdfium_text(raw: &str) -> String {
         prev_w = w;
     }
 
+    // At page boundary: if the last line is clearly short (would have inserted a visible
+    // line break if followed by more text), keep a trailing newline so that downstream
+    // merging respects this break across pages.
+    if started {
+        let short_by = (max_len - prev_w).max(0.0);
+        let should_join_by_width = short_by < char_gap_threshold;
+        if !should_join_by_width && !out.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+
     out
 }
+
+// --- Geometry-based reconstruction -----------------------------------------
+
+fn reconstruct_text_by_geometry(page: &PdfPage) -> String {
+    let text = match page.text() { Ok(t) => t, Err(_) => return String::new() };
+    let y_size_factor = (GEOM_Y_SIZE_FACTOR_MILLIS.load(Ordering::Relaxed) as f32) / 1000.0;
+    let y_baseline_factor = (GEOM_Y_BASELINE_FACTOR_MILLIS.load(Ordering::Relaxed) as f32) / 1000.0;
+    let overlap_min = (GEOM_OVERLAP_MIN_MILLIS.load(Ordering::Relaxed) as f32) / 1000.0;
+    let x_reset_chars = (GEOM_X_RESET_CHARS_MILLIS.load(Ordering::Relaxed) as f32) / 1000.0;
+
+    let mut out = String::new();
+    let mut have_line = false;
+    let mut line_bottom = 0f32;
+    let mut line_top = 0f32;
+    let mut ref_height = 0f32;
+    let mut line_start_x = 0f32;
+    let mut sum_width = 0f32;
+    let mut count_width: u32 = 0;
+
+    let chars = text.chars();
+    for ch in chars.iter() {
+        let Some(c) = ch.unicode_char() else { continue; };
+        // Skip explicit newlines from Pdfium (we will insert our own)
+        if c == '\n' || c == '\r' { continue; }
+
+        let rect = ch
+            .tight_bounds()
+            .or_else(|_| ch.loose_bounds())
+            .unwrap_or(PdfRect::ZERO);
+        let left = rect.left().value;
+        let right = rect.right().value;
+        let bottom = rect.bottom().value;
+        let top = rect.top().value;
+        let height = (top - bottom).max(0.01);
+        let width = (right - left).max(0.01);
+
+        if !have_line {
+            have_line = true;
+            line_bottom = bottom;
+            line_top = top;
+            ref_height = height;
+            line_start_x = left;
+        } else {
+            let overlap_low = line_bottom.max(bottom);
+            let overlap_high = line_top.min(top);
+            let overlap = (overlap_high - overlap_low).max(0.0);
+            let line_h = (line_top - line_bottom).max(0.01);
+            let ratio = overlap / line_h.min(height);
+
+            let size_ok = height >= (ref_height / y_size_factor) && height <= (ref_height * y_size_factor);
+
+            let avg_char_w = (sum_width / (count_width.max(1) as f32)).max(0.01);
+            let x_reset = left < (line_start_x + avg_char_w * x_reset_chars);
+
+            if ratio < overlap_min || !size_ok || x_reset {
+                if !out.ends_with('\n') { out.push('\n'); }
+                line_bottom = bottom;
+                line_top = top;
+                ref_height = height;
+                line_start_x = left;
+                sum_width = 0.0;
+                count_width = 0;
+            }
+        }
+
+        out.push(c);
+
+        // Update line metrics
+        if bottom < line_bottom { line_bottom = bottom; }
+        if top > line_top { line_top = top; }
+        if height > ref_height { ref_height = height; }
+        sum_width += width;
+        count_width += 1;
+    }
+
+    out
+}
+
+// Insert a newline before common bullet / numbered-list markers when they are not already
+// at the start of a line. This helps when PDF text extraction yields a single long line
+// for list content.
+// (Removed) list marker-based newline injection; keep only visual width-based breaks
 
 // --- Heuristic segmentation --------------------------------------------------
 

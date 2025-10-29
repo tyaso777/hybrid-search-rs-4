@@ -11,6 +11,11 @@ use file_chunker::pdf_chunker::PdfChunkParams;
 struct AppState {
     path: String,
     params: PdfChunkParams,
+    gap_chars: usize,
+    y_size_factor: f32,
+    y_baseline_factor: f32,
+    overlap_min: f32,
+    x_reset_chars: f32,
     file_json: String,
     chunks: Vec<ChunkRecord>,
     error: Option<String>,
@@ -25,7 +30,7 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             install_japanese_fallback_fonts(&cc.egui_ctx);
-            Box::new(AppState { show_tab_escape: true, ..Default::default() })
+            Box::new(AppState { show_tab_escape: true, gap_chars: 3, y_size_factor: 1.2, y_baseline_factor: 0.5, overlap_min: 0.6, x_reset_chars: 1.0, ..Default::default() })
         }),
     )
 }
@@ -55,6 +60,11 @@ impl eframe::App for AppState {
                         if path.is_empty() {
                             self.error = Some("Please pick a file".into());
                         } else {
+                            #[cfg(feature = "pdfium")]
+                            {
+                                file_chunker::reader_pdf_pdfium::set_line_gap_chars(self.gap_chars);
+                                file_chunker::reader_pdf_pdfium::set_geometry_params(self.y_size_factor, self.y_baseline_factor, self.overlap_min, self.x_reset_chars);
+                            }
                             match chunk_file_auto(path, self.params) {
                                 Ok((f, chunks)) => {
                                     self.file_json = serde_json::to_string_pretty(&f)
@@ -77,6 +87,18 @@ impl eframe::App for AppState {
                     ui.add(egui::DragValue::new(&mut self.params.min_chars).clamp_range(1..=20000).prefix("min(chars)=").speed(10));
                     ui.add(egui::DragValue::new(&mut self.params.max_chars).clamp_range(1..=20000).prefix("max(chars)=").speed(10));
                     ui.add(egui::DragValue::new(&mut self.params.cap_chars).clamp_range(1..=20000).prefix("cap(chars)=").speed(10));
+                    ui.separator();
+                    ui.label("break-gap(c):");
+                    ui.add(egui::DragValue::new(&mut self.gap_chars).clamp_range(1..=100).speed(1));
+                    ui.separator();
+                    ui.label("geom y_size:");
+                    ui.add(egui::DragValue::new(&mut self.y_size_factor).clamp_range(1.0..=3.0).speed(0.05));
+                    ui.label("y_base:");
+                    ui.add(egui::DragValue::new(&mut self.y_baseline_factor).clamp_range(0.0..=2.0).speed(0.05));
+                    ui.label("overlap:");
+                    ui.add(egui::DragValue::new(&mut self.overlap_min).clamp_range(0.0..=1.0).speed(0.05));
+                    ui.label("x_reset(c):");
+                    ui.add(egui::DragValue::new(&mut self.x_reset_chars).clamp_range(0.0..=10.0).speed(0.1));
                 });
             });
         });
