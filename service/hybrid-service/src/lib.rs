@@ -133,7 +133,7 @@ impl HybridService {
         // IDs
         let (doc_id, chunk_id) = make_ids_from_text(doc_id_hint, text);
         // Build record
-        let mut rec = ChunkRecord {
+        let rec = ChunkRecord {
             schema_version: chunk_model::SCHEMA_MAJOR,
             doc_id: doc_id.clone(),
             chunk_id: chunk_id.clone(),

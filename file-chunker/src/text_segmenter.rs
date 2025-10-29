@@ -58,12 +58,14 @@ fn collect_text_and_boundaries(blocks: &[UnifiedBlock]) -> (String, Vec<Boundary
         i += 1;
     }
 
-    // Sentence ends for ASCII and Japanese punctuation
+    // Sentence ends for ASCII and Japanese punctuation (exclude dot leaders as hard boundaries)
     for (idx, ch) in text.char_indices() {
         if matches!(ch, '.' | '!' | '?' | '。' | '！' | '？') {
             boundaries.push(Boundary { idx: idx + ch.len_utf8(), base_score: 0.6 });
         }
     }
+
+    // (moved is_leader_char helper into chunking function)
 
     // Sort and dedup by idx (keep highest base_score)
     boundaries.sort_by_key(|b| b.idx);
@@ -128,10 +130,49 @@ pub fn chunk_blocks_to_segments(blocks: &[UnifiedBlock], params: &TextChunkParam
     if text.trim().is_empty() { return vec![(String::new(), None, None)]; }
 
     // Score boundaries with optional penalties
+    // Helper: leader characters used for TOC dot leaders
+    let is_leader_char = |c: char| matches!(c, '.' | '…' | '・');
+
     let mut scored: Vec<(usize, f32)> = boundaries.iter().map(|b| {
         let mut s = b.base_score;
         if params.penalize_short_line { s -= penalize_after_short_line(&text, b.idx); }
         if params.penalize_page_boundary_no_newline { s -= extra_penalty_page_boundary_no_newline(b.idx, &text, &spans); }
+        // Penalize boundaries that fall inside a dot-leader run (e.g., "……")
+        // and avoid cutting immediately after a leader char.
+        // Compute leader run lengths around the boundary: consecutive leaders to the left/right.
+        let mut left_len = 0usize;
+        {
+            let mut pos = b.idx;
+            while pos > 0 {
+                // find prev char start
+                let mut p = pos - 1; while p > 0 && !text.is_char_boundary(p) { p -= 1; }
+                if !text.is_char_boundary(p) { break; }
+                if let Some(ch) = text[p..pos].chars().next() { if is_leader_char(ch) { left_len += 1; pos = p; continue; } }
+                break;
+            }
+        }
+        let mut right_len = 0usize;
+        {
+            let mut pos = b.idx;
+            while pos < text.len() {
+                // find next char end
+                if !text.is_char_boundary(pos) { break; }
+                if let Some(ch) = text[pos..].chars().next() {
+                    let next = pos + ch.len_utf8();
+                    if is_leader_char(ch) { right_len += 1; pos = next; continue; }
+                }
+                break;
+            }
+        }
+        let run_len = left_len + right_len;
+        if run_len >= 3 {
+            if left_len > 0 {
+                // inside or just after leader run -> strong penalty
+                s -= 0.6;
+            } else {
+                // boundary is just before a leader run; keep neutral (no bonus) to avoid preferring it too much
+            }
+        }
         (b.idx, s)
     }).collect();
     scored.sort_by_key(|p| p.0);
@@ -143,6 +184,26 @@ pub fn chunk_blocks_to_segments(blocks: &[UnifiedBlock], params: &TextChunkParam
         let min = start.saturating_add(params.min_chars.min(total - start));
         let max = start.saturating_add(params.max_chars.min(total - start));
         let cap = start.saturating_add(params.cap_chars.min(total - start));
+        // Ensure we have a valid char boundary for a hard cap fallback
+        let mut hard_cap = cap;
+        while hard_cap > start && !text.is_char_boundary(hard_cap) { hard_cap -= 1; }
+        if hard_cap <= start { hard_cap = (cap + 1).min(total); while hard_cap < total && !text.is_char_boundary(hard_cap) { hard_cap += 1; } }
+        // Avoid placing hard cap inside a leader run: move left to the start of the run when detected.
+        {
+            let mut pos = hard_cap;
+            let mut moved = false;
+            // step back while previous char is a leader
+            loop {
+                if pos == start { break; }
+                let mut p = pos - 1; while p > 0 && !text.is_char_boundary(p) { p -= 1; }
+                if !text.is_char_boundary(p) { break; }
+                if let Some(ch) = text[p..pos].chars().next() {
+                    if is_leader_char(ch) { pos = p; moved = true; continue; }
+                }
+                break;
+            }
+            if moved { hard_cap = pos.max(start + 1); }
+        }
 
         if start + params.min_chars >= total {
             let seg = text[start..total].trim();
@@ -169,15 +230,11 @@ pub fn chunk_blocks_to_segments(blocks: &[UnifiedBlock], params: &TextChunkParam
         let mut fallback_cut: Option<usize> = None;
         for (idx, _) in &scored { if *idx > cap { fallback_cut = Some(*idx); break; } }
         if fallback_cut.is_none() { if let Some((idx, _)) = scored.last() { fallback_cut = Some(*idx); } }
-        let cut = fallback_cut.unwrap_or(total);
-        if cut <= start || cut > total {
-            let seg = text[start..total].trim();
-            if !seg.is_empty() {
-                let (ps, pe) = page_range_for_segment(start, total, &spans);
-                out.push((seg.to_string(), ps, pe));
-            }
-            break;
-        }
+        // Enforce hard cap if no reasonable boundary is found
+        let mut cut = fallback_cut.unwrap_or(hard_cap);
+        if cut > hard_cap { cut = hard_cap; }
+        if cut <= start { cut = hard_cap; }
+        if cut <= start { cut = total; } // safety to avoid infinite loop
         let seg = text[start..cut].trim();
         if !seg.is_empty() {
             let (ps, pe) = page_range_for_segment(start, cut, &spans);
@@ -189,4 +246,3 @@ pub fn chunk_blocks_to_segments(blocks: &[UnifiedBlock], params: &TextChunkParam
     if out.is_empty() { out.push((String::new(), None, None)); }
     out
 }
-

@@ -23,43 +23,124 @@ pub struct ChunkOutput {
 /// High-level entry to chunk a file by path and return file/chunks.
 /// This is a stubbed pipeline that returns a simple chunking for now.
 pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
-    // Simple content-type inference by extension (stub)
-    let content_type = if path.ends_with(".pdf") {
-        "application/pdf"
-    } else if path.ends_with(".docx") {
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    } else {
-        "text/plain"
-    };
+    // PDF: delegate to dedicated chunker which already returns page ranges
+    if path.ends_with(".pdf") {
+        let params = pdf_chunker::PdfChunkParams::default();
+        let (file, chunks) = pdf_chunker::chunk_pdf_file_with_file_record(path, &params);
+        return ChunkOutput { file, chunks };
+    }
 
-    // Read and chunk by type (PDF uses dedicated chunker with heuristics)
-    let chunks_text: Vec<String> = match content_type {
-        "application/pdf" => {
-            let params = pdf_chunker::PdfChunkParams::default();
-            let (_file, chunks) = pdf_chunker::chunk_pdf_file_with_file_record(path, &params);
-            chunks.into_iter().map(|c| c.text).collect()
-        }
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
-            let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
-            let params = text_segmenter::TextChunkParams::default();
-            let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
-            segs.into_iter().map(|(t, _, _)| t).collect()
-        }
-        _ => {
-            if is_text_like(path) {
-                let blocks: Vec<UnifiedBlock> = reader_txt::read_txt_to_blocks(path);
-                let params = text_segmenter::TextChunkParams::default();
-                let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
-                segs.into_iter().map(|(t, _, _)| t).collect()
-            } else {
-                let blocks: Vec<UnifiedBlock> = vec![UnifiedBlock::new(BlockKind::Paragraph, "(stub) read file content here", 0, path, "stub.plain")];
-                chunker_rules_jp::chunk_blocks_jp(&blocks)
-            }
-        }
-    };
+    // DOCX: read blocks, segment with text_segmenter (preserve page ranges from blocks/segmenter)
+    if path.ends_with(".docx") {
+        let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
+        let params = text_segmenter::TextChunkParams::default();
+        let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
 
-    // Build ChunkRecord list (schema-based)
-    let chunks: Vec<ChunkRecord> = chunks_text
+        let chunks: Vec<ChunkRecord> = segs
+            .into_iter()
+            .enumerate()
+            .map(|(i, (text, ps, pe))| ChunkRecord {
+                schema_version: chunk_model::SCHEMA_MAJOR,
+                doc_id: DocumentId(path.to_string()),
+                chunk_id: ChunkId(format!("{}#{}", path, i)),
+                source_uri: path.to_string(),
+                source_mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
+                extracted_at: String::new(),
+                page_start: ps,
+                page_end: pe,
+                text,
+                section_path: None,
+                meta: BTreeMap::new(),
+                extra: BTreeMap::new(),
+            })
+            .collect();
+
+        let file = FileRecord {
+            schema_version: chunk_model::SCHEMA_MAJOR,
+            doc_id: DocumentId(path.to_string()),
+            doc_revision: Some(1),
+            source_uri: path.to_string(),
+            source_mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
+            file_size_bytes: None,
+            content_sha256: None,
+            page_count: None,
+            extracted_at: String::new(),
+            created_at_meta: None,
+            updated_at_meta: None,
+            title_guess: None,
+            author_guess: None,
+            dominant_lang: None,
+            tags: Vec::new(),
+            ingest_tool: Some("file-chunker".into()),
+            ingest_tool_version: Some(env!("CARGO_PKG_VERSION").into()),
+            reader_backend: Some("docx".into()),
+            ocr_used: None,
+            ocr_langs: Vec::new(),
+            chunk_count: Some(chunks.len() as u32),
+            total_tokens: None,
+            meta: BTreeMap::new(),
+            extra: BTreeMap::new(),
+        };
+        return ChunkOutput { file, chunks };
+    }
+
+    // Text-like files: segment and set page to 1
+    if is_text_like(path) {
+        let blocks: Vec<UnifiedBlock> = reader_txt::read_txt_to_blocks(path);
+        let params = text_segmenter::TextChunkParams::default();
+        let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
+        let chunks: Vec<ChunkRecord> = segs
+            .into_iter()
+            .enumerate()
+            .map(|(i, (text, _ps, _pe))| ChunkRecord {
+                schema_version: chunk_model::SCHEMA_MAJOR,
+                doc_id: DocumentId(path.to_string()),
+                chunk_id: ChunkId(format!("{}#{}", path, i)),
+                source_uri: path.to_string(),
+                source_mime: "text/plain".into(),
+                extracted_at: String::new(),
+                page_start: Some(1),
+                page_end: Some(1),
+                text,
+                section_path: None,
+                meta: BTreeMap::new(),
+                extra: BTreeMap::new(),
+            })
+            .collect();
+
+        let file = FileRecord {
+            schema_version: chunk_model::SCHEMA_MAJOR,
+            doc_id: DocumentId(path.to_string()),
+            doc_revision: Some(1),
+            source_uri: path.to_string(),
+            source_mime: "text/plain".into(),
+            file_size_bytes: None,
+            content_sha256: None,
+            page_count: None,
+            extracted_at: String::new(),
+            created_at_meta: None,
+            updated_at_meta: None,
+            title_guess: None,
+            author_guess: None,
+            dominant_lang: None,
+            tags: Vec::new(),
+            ingest_tool: Some("file-chunker".into()),
+            ingest_tool_version: Some(env!("CARGO_PKG_VERSION").into()),
+            reader_backend: Some("txt".into()),
+            ocr_used: None,
+            ocr_langs: Vec::new(),
+            chunk_count: Some(chunks.len() as u32),
+            total_tokens: None,
+            meta: BTreeMap::new(),
+            extra: BTreeMap::new(),
+        };
+        return ChunkOutput { file, chunks };
+    }
+
+    // Fallback stub
+    let blocks: Vec<UnifiedBlock> = vec![UnifiedBlock::new(BlockKind::Paragraph, "(stub) read file content here", 0, path, "stub.plain")];
+    let texts = chunker_rules_jp::chunk_blocks_jp(&blocks);
+    let chunks: Vec<ChunkRecord> = texts
         .into_iter()
         .enumerate()
         .map(|(i, text)| ChunkRecord {
@@ -67,7 +148,7 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
             doc_id: DocumentId(path.to_string()),
             chunk_id: ChunkId(format!("{}#{}", path, i)),
             source_uri: path.to_string(),
-            source_mime: content_type.to_string(),
+            source_mime: "text/plain".into(),
             extracted_at: String::new(),
             page_start: None,
             page_end: None,
@@ -78,13 +159,12 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
         })
         .collect();
 
-    // Construct FileRecord
     let file = FileRecord {
         schema_version: chunk_model::SCHEMA_MAJOR,
         doc_id: DocumentId(path.to_string()),
         doc_revision: Some(1),
         source_uri: path.to_string(),
-        source_mime: content_type.to_string(),
+        source_mime: "text/plain".into(),
         file_size_bytes: None,
         content_sha256: None,
         page_count: None,
@@ -97,7 +177,7 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
         tags: Vec::new(),
         ingest_tool: Some("file-chunker".into()),
         ingest_tool_version: Some(env!("CARGO_PKG_VERSION").into()),
-        reader_backend: None,
+        reader_backend: Some("stub".into()),
         ocr_used: None,
         ocr_langs: Vec::new(),
         chunk_count: Some(chunks.len() as u32),
@@ -105,7 +185,6 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
         meta: BTreeMap::new(),
         extra: BTreeMap::new(),
     };
-
     ChunkOutput { file, chunks }
 }
 

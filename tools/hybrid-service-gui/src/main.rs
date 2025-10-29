@@ -91,6 +91,7 @@ struct AppState {
     status: String,
     selected_cid: Option<String>,
     selected_text: String,
+    selected_display: String,
 }
 
 impl AppState {
@@ -111,6 +112,52 @@ impl AppState {
             self.tantivy = Some(idx);
         }
         Ok(())
+    }
+
+    fn delete_store_files(&mut self) {
+        // Close any open service to release SQLite handles before deleting
+        self.svc = None;
+        // Delete DB and sidecar files (-wal, -shm)
+        let db = std::path::PathBuf::from(self.db_path.trim());
+        let mut removed: Vec<String> = Vec::new();
+        let mut errs: Vec<String> = Vec::new();
+        let mut try_remove = |p: &std::path::Path| {
+            if p.exists() {
+                match std::fs::remove_file(p) {
+                    Ok(_) => removed.push(p.display().to_string()),
+                    Err(e) => errs.push(format!("{}: {}", p.display(), e)),
+                }
+            }
+        };
+        try_remove(&db);
+        // Remove SQLite sidecar files (WAL/SHM)
+        if let Some(s) = db.to_str() { try_remove(std::path::Path::new(&format!("{}-wal", s))); try_remove(std::path::Path::new(&format!("{}-shm", s))); }
+        // HNSW dir
+        let hdir = std::path::PathBuf::from(self.hnsw_dir.trim());
+        if hdir.exists() {
+            match std::fs::remove_dir_all(&hdir) { Ok(_) => removed.push(hdir.display().to_string()), Err(e) => errs.push(format!("{}: {}", hdir.display(), e)) }
+        }
+        // Tantivy dir
+        #[cfg(feature = "tantivy")]
+        {
+            let tdir = std::path::PathBuf::from(self.tantivy_dir.trim());
+            if tdir.exists() {
+                match std::fs::remove_dir_all(&tdir) { Ok(_) => removed.push(tdir.display().to_string()), Err(e) => errs.push(format!("{}: {}", tdir.display(), e)) }
+            }
+        }
+
+        if errs.is_empty() {
+            if removed.is_empty() {
+                self.status = "Delete: nothing to remove".into();
+            } else {
+                self.status = format!("Deleted: {}", removed.join(", "));
+            }
+        } else {
+            self.status = format!("Deleted: {}  Errors: {}",
+                if removed.is_empty() { String::from("<none>") } else { removed.join(", ") },
+                errs.join(", ")
+            );
+        }
     }
     fn new(cc: &CreationContext<'_>) -> Self {
         install_japanese_fallback_fonts(&cc.egui_ctx);
@@ -150,6 +197,7 @@ impl AppState {
             status: String::new(),
             selected_cid: None,
             selected_text: String::new(),
+            selected_display: String::new(),
         }
     }
 
@@ -242,6 +290,15 @@ impl App for AppState {
                 #[cfg(feature = "tantivy")]
                 ui.horizontal(|ui| { ui.label("Tantivy"); ui.label(&self.tantivy_dir); });
                 ui.separator();
+                ui.collapsing("Danger zone", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Deletes DB and indexes (HNSW/Tantivy)").color(egui::Color32::LIGHT_RED));
+                        if ui.button(egui::RichText::new("Delete DB & Indexes").color(egui::Color32::RED)).clicked() {
+                            self.delete_store_files();
+                        }
+                    });
+                });
+                ui.separator();
                 ui.horizontal(|ui| { ui.label("Model"); ui.add(TextEdit::singleline(&mut self.model_path).desired_width(400.0)); if ui.button("…").clicked() { if let Some(p) = FileDialog::new().add_filter("ONNX", &["onnx"]).pick_file() { self.model_path = p.display().to_string(); } } });
                 ui.horizontal(|ui| { ui.label("Tokenizer"); ui.add(TextEdit::singleline(&mut self.tokenizer_path).desired_width(400.0)); if ui.button("…").clicked() { if let Some(p) = FileDialog::new().add_filter("JSON", &["json"]).pick_file() { self.tokenizer_path = p.display().to_string(); } } });
                 ui.horizontal(|ui| { ui.label("Runtime DLL"); ui.add(TextEdit::singleline(&mut self.runtime_path).desired_width(400.0)); if ui.button("…").clicked() { if let Some(p) = FileDialog::new().pick_file() { self.runtime_path = p.display().to_string(); } } });
@@ -332,25 +389,31 @@ impl AppState {
     }
 
     fn ui_search(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Search");
-        ui.horizontal(|ui| {
-            ui.label("Query");
-            ui.add(TextEdit::singleline(&mut self.query).desired_width(400.0));
-            ui.label("TopK");
-            let mut topk_str = self.top_k.to_string();
-            if ui.add(TextEdit::singleline(&mut topk_str).desired_width(60.0)).changed() {
-                self.top_k = topk_str.parse().unwrap_or(10);
-            }
-            ui.checkbox(&mut self.use_hybrid, "Hybrid");
-            if self.use_hybrid {
-                ui.label("w_text"); ui.add(egui::DragValue::new(&mut self.w_text).speed(0.1).clamp_range(0.0..=1.0));
-                ui.label("w_vec"); ui.add(egui::DragValue::new(&mut self.w_vec).speed(0.1).clamp_range(0.0..=1.0));
-            }
-            if ui.add(Button::new("Search")).clicked() { self.do_search_now(); }
-        });
+        ui.push_id("search_panel", |ui| {
+            ui.heading("Search");
+            // Row 1: Query + Search
+            ui.horizontal(|ui| {
+                ui.label("Query");
+                ui.add(TextEdit::singleline(&mut self.query).desired_width(400.0).id_source("search_query"));
+                if ui.add(Button::new("Search")).clicked() { self.do_search_now(); }
+            });
+            // Row 2: Options (TopK / Hybrid / weights)
+            ui.horizontal(|ui| {
+                ui.label("TopK");
+                let mut topk_str = self.top_k.to_string();
+                if ui.add(TextEdit::singleline(&mut topk_str).desired_width(60.0).id_source("search_topk")).changed() {
+                    self.top_k = topk_str.parse().unwrap_or(10);
+                }
+                ui.checkbox(&mut self.use_hybrid, "Hybrid");
+                if self.use_hybrid {
+                    ui.label("w_text"); ui.add(egui::DragValue::new(&mut self.w_text).speed(0.1).clamp_range(0.0..=1.0));
+                    ui.label("w_vec"); ui.add(egui::DragValue::new(&mut self.w_vec).speed(0.1).clamp_range(0.0..=1.0));
+                }
+            });
 
-        ui.separator();
-        TableBuilder::new(ui)
+            ui.separator();
+            ui.push_id("results_table", |ui| {
+                TableBuilder::new(ui)
             .striped(true)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .column(Column::initial(36.0).at_least(30.0))
@@ -375,14 +438,34 @@ impl AppState {
                 for (i, row) in self.results.iter().enumerate() {
                     body.row(20.0, |mut row_ui| {
                         row_ui.col(|ui| { ui.label(format!("{}", i+1)); });
-                        row_ui.col(|ui| { ui.label(&row.file); });
-                        row_ui.col(|ui| { ui.label(&row.page); });
+                        // Make file and page clickable to select the row
                         row_ui.col(|ui| {
-                            if ui.link(&row.cid).clicked() {
+                            if ui.link(&row.file).clicked() {
                                 self.selected_cid = Some(row.cid.clone());
                                 self.selected_text = row.text_full.clone();
+                                self.selected_display = format!("{} {}", &row.file, if row.page.is_empty() { String::new() } else { row.page.clone() });
                             }
-                            ui.label(&row.text_preview);
+                        });
+                        row_ui.col(|ui| {
+                            if !row.page.is_empty() {
+                                if ui.link(&row.page).clicked() {
+                                    self.selected_cid = Some(row.cid.clone());
+                                    self.selected_text = row.text_full.clone();
+                                    self.selected_display = format!("{} {}", &row.file, &row.page);
+                                }
+                            } else {
+                                ui.label(&row.page);
+                            }
+                        });
+                        row_ui.col(|ui| {
+                            ui.push_id(i, |ui| {
+                                // Clickable preview (remove chunk_id link display)
+                                if ui.link(&row.text_preview).clicked() {
+                                    self.selected_cid = Some(row.cid.clone());
+                                    self.selected_text = row.text_full.clone();
+                                    self.selected_display = format!("{} {}", &row.file, if row.page.is_empty() { String::new() } else { row.page.clone() });
+                                }
+                            });
                         });
                         row_ui.col(|ui| { ui.label(opt_fmt(row.tv)); });
                         row_ui.col(|ui| { ui.label(opt_fmt(row.tv_and)); });
@@ -391,14 +474,21 @@ impl AppState {
                     });
                 }
             });
-
-        if let Some(cid) = &self.selected_cid {
-            ui.separator();
-            ui.label(format!("Selected: {}", cid));
-            ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
-                ui.add(TextEdit::multiline(&mut self.selected_text).desired_rows(8).desired_width(800.0));
             });
-        }
+
+            if let Some(_cid) = &self.selected_cid {
+                ui.separator();
+                // Prefer human-friendly Selected header
+                if self.selected_display.is_empty() {
+                    ui.label("Selected:");
+                } else {
+                    ui.label(format!("Selected: {}", self.selected_display));
+                }
+                ScrollArea::vertical().max_height(200.0).id_source("selected_scroll").show(ui, |ui| {
+                    ui.add(TextEdit::multiline(&mut self.selected_text).desired_rows(8).desired_width(800.0).id_source("selected_text"));
+                });
+            }
+        });
     }
 
     fn do_search_now(&mut self) {
@@ -466,7 +556,12 @@ impl AppState {
         for (cid, (sc_tv, sc_and, sc_or, sc_vec)) in items.into_iter() {
             if let Some(rec) = rec_map.remove(&cid) {
                 let file = match std::path::Path::new(&rec.source_uri).file_name().and_then(|s| s.to_str()) { Some(s) => s.to_string(), None => rec.source_uri.clone() };
-                let page = match (rec.page_start, rec.page_end) { (Some(s), Some(e)) if s==e => format!("{}", s), (Some(s), Some(e)) => format!("{}-{}", s, e), (Some(s), None) => format!("{}", s), _ => String::new() };
+                let page = match (rec.page_start, rec.page_end) {
+                    (Some(s), Some(e)) if s == e => format!("#{}", s),
+                    (Some(s), Some(e)) => format!("#{}-{}", s, e),
+                    (Some(s), None) => format!("#{}", s),
+                    _ => page_label_from_chunk_id(&rec.chunk_id.0).unwrap_or_default(),
+                };
                 let text_preview: String = rec.text.chars().take(80).collect();
                 self.results.push(HitRow { cid: rec.chunk_id.0, file, page, text_preview, text_full: rec.text, tv: sc_tv, tv_and: sc_and, tv_or: sc_or, vec: sc_vec });
             }
@@ -480,6 +575,25 @@ fn derive_db_path(root: &str) -> String { format!("{}/chunks.db", root) }
 fn derive_hnsw_dir(root: &str) -> String { format!("{}/hnsw", root) }
 #[cfg(feature = "tantivy")]
 fn derive_tantivy_dir(root: &str) -> String { format!("{}/tantivy", root) }
+
+// Fallback: derive page label from trailing part of chunk_id like "...#12" or "...#3-4"
+fn page_label_from_chunk_id(cid: &str) -> Option<String> {
+    if let Some(pos) = cid.rfind('#') {
+        let tail = &cid[pos + 1..];
+        // parse digits or digits-digits
+        let mut it = tail.splitn(2, '-');
+        let a = it.next()?;
+        if a.is_empty() || !a.chars().all(|c| c.is_ascii_digit()) { return None; }
+        if let Some(b) = it.next() {
+            if b.chars().all(|c| c.is_ascii_digit()) {
+                return Some(format!("#{}-{}", a, b));
+            }
+            return Some(format!("#{}", a));
+        }
+        return Some(format!("#{}", a));
+    }
+    None
+}
 
 #[cfg(feature = "tantivy")]
 fn rec_clone_for_tantivy(doc: &DocumentId, cid: &ChunkId, text: &str) -> ChunkRecord {
