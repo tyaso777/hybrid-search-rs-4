@@ -120,7 +120,7 @@ fn do_insert(mut tail: Vec<String>) -> Result<(), String> {
         source_mime: "text/plain".into(),
         extracted_at: now_iso(),
         text: input_text.clone(),
-        section_path: vec![],
+        section_path: None,
         meta,
         extra: BTreeMap::new(),
     };

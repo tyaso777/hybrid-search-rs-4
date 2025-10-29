@@ -21,7 +21,7 @@ Thin, shared schema crate that defines the data contract for content chunks prod
 - `source_mime: String` — MIME-like type (e.g., `application/pdf`)
 - `extracted_at: String` — ISO 8601 (UTC), producer may leave empty
 - `text: String` — searchable text body
-- `section_path: Vec<String>` — logical path within the document (optional)
+- `section_path: Option<SectionPath>` — logical path within the document (optional)
 - `meta: BTreeMap<String, String>` — lightweight key/value metadata
 - `extra: BTreeMap<String, serde_json::Value>` — forward-compatible extensions (flattened)
 
@@ -51,7 +51,7 @@ let record = ChunkRecord {
     source_mime: "application/pdf".into(),
     extracted_at: "".into(),
     text: "...chunk text...".into(),
-    section_path: vec!["Ⅰ 概要".into()],
+    section_path: Some(vec!["Ⅰ 概要".into()]),
     meta: BTreeMap::new(),
     extra: BTreeMap::new(),
 };
@@ -69,7 +69,7 @@ record.validate_soft().unwrap();
   "source_mime": "application/pdf",
   "extracted_at": "",
   "text": "...chunk text...",
-  "section_path": ["Ⅰ 概要"],
+  "section_path": null,
   "meta": {},
   "extra": {"layout.page": 1}
 }

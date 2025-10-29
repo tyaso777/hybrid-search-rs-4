@@ -12,6 +12,7 @@ path = "src/lib.rs"
 chunk-model = { path = "../chunk-model" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+blake3 = "1"
 
 [features]
 default = []

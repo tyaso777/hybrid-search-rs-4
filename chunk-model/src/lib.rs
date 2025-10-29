@@ -108,7 +108,7 @@ pub struct ChunkRecord {
     /// Searchable text body.
     pub text: String,
     /// Optional logical section path within the document.
-    pub section_path: SectionPath,
+    pub section_path: Option<SectionPath>,
     /// Lightweight metadata bag.
     pub meta: BTreeMap<String, String>,
 

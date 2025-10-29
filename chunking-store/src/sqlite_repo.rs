@@ -406,7 +406,7 @@ impl ChunkStoreRead for SqliteRepo {
                 let meta_json: String = row.get(8)?;
                 let extra_json: String = row.get(9)?;
 
-                let section_path: Vec<String> = serde_json::from_str(&section_path_json).unwrap_or_default();
+                let section_path: Option<Vec<String>> = serde_json::from_str(&section_path_json).ok();
                 let meta: std::collections::BTreeMap<String, String> = serde_json::from_str(&meta_json).unwrap_or_default();
                 let extra: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_str(&extra_json).unwrap_or_default();
 

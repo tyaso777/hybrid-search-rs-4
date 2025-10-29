@@ -35,7 +35,7 @@ let rec = ChunkRecord {
     source_mime: "text/plain".into(),
     extracted_at: "".into(),
     text: "hello world".into(),
-    section_path: vec![],
+    section_path: None,
     meta: BTreeMap::new(),
     extra: BTreeMap::new(),
 };

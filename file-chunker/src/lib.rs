@@ -52,7 +52,7 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
             source_mime: content_type.to_string(),
             extracted_at: String::new(),
             text,
-            section_path: Vec::new(),
+            section_path: None,
             meta: BTreeMap::new(),
             extra: BTreeMap::new(),
         })

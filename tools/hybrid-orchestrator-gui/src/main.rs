@@ -215,7 +215,7 @@ impl AppState {
             source_mime: "text/plain".into(),
             extracted_at: Utc::now().to_rfc3339(),
             text: text.clone(),
-            section_path: vec![],
+            section_path: None,
             meta,
             extra: std::collections::BTreeMap::new(),
         };
@@ -417,7 +417,7 @@ impl AppState {
                     source_mime: "text/plain".into(),
                     extracted_at: chrono::Utc::now().to_rfc3339(),
                     text: text.clone(),
-                    section_path: Vec::new(),
+                    section_path: None,
                     meta,
                     extra: std::collections::BTreeMap::new(),
                 };
@@ -941,7 +941,7 @@ fn rec_clone_for_tantivy(doc: &DocumentId, cid: &ChunkId, text: &str) -> ChunkRe
         source_mime: "text/plain".into(),
         extracted_at: chrono::Utc::now().to_rfc3339(),
         text: text.to_string(),
-        section_path: Vec::new(),
+        section_path: None,
         meta: BTreeMap::new(),
         extra: BTreeMap::new(),
     }

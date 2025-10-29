@@ -25,7 +25,7 @@ fn make_rec(id: &str, text: &str, extracted_at: &str) -> ChunkRecord {
         source_mime: "text/plain".into(),
         extracted_at: extracted_at.into(),
         text: text.into(),
-        section_path: Vec::new(),
+        section_path: None,
         meta: BTreeMap::new(),
         extra: BTreeMap::new(),
     }
