@@ -374,7 +374,9 @@ impl App for AppState {
                     ui.selectable_value(&mut self.tab, ActiveTab::Insert, "Insert");
                     ui.selectable_value(&mut self.tab, ActiveTab::Search, "Search");
                     ui.selectable_value(&mut self.tab, ActiveTab::Config, "Config");
-                    // divider removed for compactness
+                    // stronger visual divider (double vertical separator)
+                    ui.separator();
+                    ui.separator();
                     let (model_status, index_status) = if self.svc.is_none() {
                         if self.svc_task.is_some() { ("loading", "loading") } else { ("released", "released") }
                     } else {
@@ -392,7 +394,9 @@ impl App for AppState {
                     if ui.button("Release").clicked() {
                         self.release_model_and_indexes();
                     }
-                    // trailing divider removed for compactness
+                    // trailing divider (double) to close the group
+                    ui.separator();
+                    ui.separator();
                 });
                 if self.ingest_running {
                     ui.add(Spinner::new());
