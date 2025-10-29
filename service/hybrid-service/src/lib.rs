@@ -57,6 +57,7 @@ pub struct HybridService {
     cfg: ServiceConfig,
     embedder: OnnxStdIoEmbedder,
     hnsw: Arc<RwLock<Option<HnswIndex>>>,
+    warmed: AtomicBool,
 }
 
 /// Cooperative cancellation handle shared across long-running operations.
@@ -89,7 +90,9 @@ impl HybridService {
         }
         let embedder = OnnxStdIoEmbedder::new(cfg.embedder.clone())
             .map_err(|e| ServiceError::Embed(e.to_string()))?;
-        let svc = Self { cfg, embedder, hnsw: Arc::new(RwLock::new(None)) };
+        let svc = Self { cfg, embedder, hnsw: Arc::new(RwLock::new(None)), warmed: AtomicBool::new(false) };
+        // Warm up ONNX session once (best-effort)
+        let _ = svc.embedder.embed("warmup").map(|_| svc.warmed.store(true, Ordering::Relaxed));
         // Background preload HNSW (if index exists)
         let hdir = svc.hnsw_dir();
         let dim = svc.embedder.info().dimension;
@@ -102,6 +105,14 @@ impl HybridService {
             }
         });
         Ok(svc)
+    }
+
+    fn ensure_warm(&self) {
+        if !self.warmed.load(Ordering::Relaxed) {
+            if self.embedder.embed("warmup").is_ok() {
+                self.warmed.store(true, Ordering::Relaxed);
+            }
+        }
     }
 
     fn open_repo(&self) -> Result<SqliteRepo, ServiceError> {
@@ -250,7 +261,8 @@ impl HybridService {
 
         let mut text_matches = TextSearcher::search_ids(&fts, &repo, query, filters, &opts);
 
-        // Vector query
+        // Vector query (ensure model warm)
+        self.ensure_warm();
         let qvec = self.embedder.embed(query).map_err(|e| ServiceError::Embed(e.to_string()))?;
         // Use resident HNSW if available; lazily load once if missing
         let mut vec_matches: Vec<chunking_store::TextMatch> = Vec::new();
