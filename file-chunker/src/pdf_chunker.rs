@@ -113,75 +113,14 @@ fn pick_boundary_in_range(scored: &[(usize, f32)], lo: usize, hi: usize, prefer:
 
 /// Produce ChunkRecord texts from UnifiedBlocks with heuristics.
 fn chunk_pdf_blocks_to_segments(blocks: &[UnifiedBlock], params: &PdfChunkParams) -> Vec<(String, Option<u32>, Option<u32>)> {
-    let (text, boundaries, spans) = collect_text_and_boundaries(blocks);
-    if text.trim().is_empty() { return vec![(String::new(), None, None)]; }
-    // Precompute scored boundaries (sorted by idx)
-    let mut scored: Vec<(usize, f32)> = boundaries
-        .iter()
-        .map(|b| {
-            let mut s = penalize_after_short_line(&text, b);
-            // Penalize block-end boundaries that coincide with a page transition without an actual newline.
-            s -= extra_penalty_page_boundary_no_newline(b.idx, &text, &spans);
-            (b.idx, s)
-        })
-        .collect();
-    scored.sort_by_key(|(i, _)| *i);
-
-    let mut out: Vec<(String, Option<u32>, Option<u32>)> = Vec::new();
-    let mut start = 0usize;
-    let total = text.len();
-    while start < total {
-        let min = (start + params.min_chars).min(total);
-        let max = (start + params.max_chars).min(total);
-        let cap = (start + params.cap_chars).min(total);
-
-        // If the remainder is small enough, flush and break
-        if total - start <= params.cap_chars.max(1) {
-            let seg = text[start..total].trim();
-            if !seg.is_empty() {
-                // compute page range for [start..total)
-                let (ps, pe) = page_range_for_segment(start, total, &spans);
-                out.push((seg.to_string(), ps, pe));
-            }
-            break;
-        }
-
-        // Prefer boundary within [min..cap]
-        if let Some(cut) = pick_boundary_in_range(&scored, min, cap, max) {
-            if cut > start {
-                let seg = text[start..cut].trim();
-                if !seg.is_empty() {
-                    let (ps, pe) = page_range_for_segment(start, cut, &spans);
-                    out.push((seg.to_string(), ps, pe));
-                }
-                start = cut;
-                continue;
-            }
-        }
-
-        // Fallback: boundary just after cap, else last boundary
-        let mut fallback_cut: Option<usize> = None;
-        for (idx, _) in &scored { if *idx > cap { fallback_cut = Some(*idx); break; } }
-        if fallback_cut.is_none() { if let Some((idx, _)) = scored.last() { fallback_cut = Some(*idx); } }
-        let cut = fallback_cut.unwrap_or(total);
-        if cut <= start || cut > total {
-            let seg = text[start..total].trim();
-            if !seg.is_empty() {
-                let (ps, pe) = page_range_for_segment(start, total, &spans);
-                out.push((seg.to_string(), ps, pe));
-            }
-            break;
-        }
-        let seg = text[start..cut].trim();
-        if !seg.is_empty() {
-            let (ps, pe) = page_range_for_segment(start, cut, &spans);
-            out.push((seg.to_string(), ps, pe));
-        }
-        start = cut;
-    }
-
-    if out.is_empty() { out.push((String::new(), None, None)); }
-    out
+    let tparams = crate::text_segmenter::TextChunkParams {
+        min_chars: params.min_chars,
+        max_chars: params.max_chars,
+        cap_chars: params.cap_chars,
+        penalize_short_line: true,
+        penalize_page_boundary_no_newline: true,
+    };
+    crate::text_segmenter::chunk_blocks_to_segments(blocks, &tparams)
 }
 
 fn extra_penalty_page_boundary_no_newline(idx: usize, text: &str, spans: &[BlockSpan]) -> f32 {

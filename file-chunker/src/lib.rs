@@ -3,6 +3,7 @@ pub mod reader_docx;
 pub mod reader_txt;
 pub mod unified_blocks;
 pub mod chunker_rules_jp;
+pub mod text_segmenter;
 #[cfg(feature = "pdfium")] pub mod reader_pdf_pdfium;
 #[cfg(feature = "pure-pdf")] pub mod reader_pdf_pure;
 pub mod pdf_chunker;
@@ -44,7 +45,9 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
         _ => {
             if path.ends_with(".txt") {
                 let blocks: Vec<UnifiedBlock> = reader_txt::read_txt_to_blocks(path);
-                chunker_rules_jp::chunk_blocks_jp(&blocks)
+                let params = text_segmenter::TextChunkParams::default();
+                let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
+                segs.into_iter().map(|(t, _, _)| t).collect()
             } else {
                 let blocks: Vec<UnifiedBlock> = vec![UnifiedBlock::new(BlockKind::Paragraph, "(stub) read file content here", 0, path, "stub.plain")];
                 chunker_rules_jp::chunk_blocks_jp(&blocks)
