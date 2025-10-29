@@ -32,45 +32,51 @@ fn main() -> eframe::Result<()> {
 impl eframe::App for AppState {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("File:");
-                ui.text_edit_singleline(&mut self.path);
-                if ui.button("Pick...").clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Documents", &["pdf", "docx", "txt", "xlsx", "pptx"]).pick_file()
-                    {
-                        self.path = path.display().to_string();
+            ui.vertical(|ui| {
+                // Row 1: file input + actions
+                ui.horizontal(|ui| {
+                    ui.label("File:");
+                    ui.text_edit_singleline(&mut self.path);
+                    if ui.button("Pick...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Documents", &["pdf", "docx", "txt", "xlsx", "pptx"]).pick_file()
+                        {
+                            self.path = path.display().to_string();
+                        }
                     }
-                }
-                ui.separator();
-                ui.label("Params:");
-                ui.add(egui::DragValue::new(&mut self.params.min_chars).clamp_range(1..=20000).prefix("min(chars)=").speed(10));
-                ui.add(egui::DragValue::new(&mut self.params.max_chars).clamp_range(1..=20000).prefix("max(chars)=").speed(10));
-                ui.add(egui::DragValue::new(&mut self.params.cap_chars).clamp_range(1..=20000).prefix("cap(chars)=").speed(10));
-                ui.separator();
-                if ui.button("Chunk").clicked() {
-                    self.error = None;
-                    self.file_json.clear();
-                    self.chunks.clear();
-                    self.selected = None;
-                    let path = self.path.trim();
-                    if path.is_empty() {
-                        self.error = Some("Please pick a file".into());
-                    } else {
-                        match chunk_file_auto(path, self.params) {
-                            Ok((f, chunks)) => {
-                                self.file_json = serde_json::to_string_pretty(&f)
-                                    .unwrap_or_else(|_| "<serde error>".into());
-                                self.chunks = chunks;
-                            }
-                            Err(e) => {
-                                self.error = Some(e);
+                    ui.separator();
+                    if ui.button("Chunk").clicked() {
+                        self.error = None;
+                        self.file_json.clear();
+                        self.chunks.clear();
+                        self.selected = None;
+                        let path = self.path.trim();
+                        if path.is_empty() {
+                            self.error = Some("Please pick a file".into());
+                        } else {
+                            match chunk_file_auto(path, self.params) {
+                                Ok((f, chunks)) => {
+                                    self.file_json = serde_json::to_string_pretty(&f)
+                                        .unwrap_or_else(|_| "<serde error>".into());
+                                    self.chunks = chunks;
+                                }
+                                Err(e) => {
+                                    self.error = Some(e);
+                                }
                             }
                         }
                     }
-                }
-                ui.separator();
-                ui.checkbox(&mut self.show_tab_escape, "Show \\t for tabs");
+                    ui.separator();
+                    ui.checkbox(&mut self.show_tab_escape, "Show \\t for tabs");
+                });
+
+                // Row 2: params (on a separate line)
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Params:");
+                    ui.add(egui::DragValue::new(&mut self.params.min_chars).clamp_range(1..=20000).prefix("min(chars)=").speed(10));
+                    ui.add(egui::DragValue::new(&mut self.params.max_chars).clamp_range(1..=20000).prefix("max(chars)=").speed(10));
+                    ui.add(egui::DragValue::new(&mut self.params.cap_chars).clamp_range(1..=20000).prefix("cap(chars)=").speed(10));
+                });
             });
         });
 
@@ -96,18 +102,33 @@ impl eframe::App for AppState {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 for (i, c) in self.chunks.iter().enumerate() {
                     let preview = truncate_chars(&c.text, 80);
-                    let click = ui.selectable_label(self.selected == Some(i), format!("{}  {}", c.chunk_id.0, preview));
+                    let page_label = pages_label(c);
+                    let title = if page_label.is_empty() {
+                        format!("{}  {}", c.chunk_id.0, preview)
+                    } else {
+                        format!("{}  {}  {}", c.chunk_id.0, page_label, preview)
+                    };
+                    let click = ui.selectable_label(self.selected == Some(i), title);
                     if click.clicked() { self.selected = Some(i); }
                 }
             });
         });
 
-        egui::TopBottomPanel::bottom("bottom").resizable(true).show(ctx, |ui| {
+        egui::TopBottomPanel::bottom("bottom")
+            .resizable(true)
+            .default_height(360.0) // roughly ~1.5x typical default
+            .min_height(120.0)
+            .show(ctx, |ui| {
             ui.heading("Selected Chunk");
             ui.separator();
             if let Some(i) = self.selected { if let Some(c) = self.chunks.get(i) {
                 let text = if self.show_tab_escape { escape_text_for_view(&c.text) } else { c.text.clone() };
-                ui.monospace(format!("len={} bytes", c.text.len()));
+                let page_label = pages_label(c);
+                if page_label.is_empty() {
+                    ui.monospace(format!("len={} bytes", c.text.len()));
+                } else {
+                    ui.monospace(format!("len={} bytes  |  {}", c.text.len(), page_label));
+                }
                 ui.separator();
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.monospace(text);
@@ -133,6 +154,17 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
     let mut it = s.chars();
     let truncated: String = it.by_ref().take(max_chars).collect();
     if it.next().is_some() { format!("{}…", truncated) } else { truncated }
+}
+
+fn pages_label(c: &ChunkRecord) -> String {
+    let ps = c.meta.get("page_start").and_then(|s| s.parse::<u32>().ok());
+    let pe = c.meta.get("page_end").and_then(|s| s.parse::<u32>().ok());
+    match (ps, pe) {
+        (Some(s), Some(e)) if s == e => format!("p. {}", s),
+        (Some(s), Some(e)) => format!("p. {}-{}", s, e),
+        (Some(s), None) => format!("p. {}", s),
+        _ => String::new(),
+    }
 }
 
 fn escape_text_for_view(s: &str) -> String {
