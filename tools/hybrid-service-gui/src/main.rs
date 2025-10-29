@@ -741,7 +741,10 @@ impl AppState {
                     (Some(s), None) => format!("#{}", s),
                     _ => page_label_from_chunk_id(&rec.chunk_id.0).unwrap_or_default(),
                 };
-                let text_preview: String = rec.text.chars().take(80).collect();
+                // Flatten newlines/tabs for single-line preview, then truncate
+                let flat: String = rec.text.replace(['\n', '\r', '\t'], " ");
+                let mut text_preview: String = flat.chars().take(80).collect();
+                if flat.chars().count() > 80 { text_preview.push('…'); }
                 self.results.push(HitRow { cid: rec.chunk_id.0, file, page, text_preview, text_full: rec.text, tv: sc_tv, tv_and: sc_and, tv_or: sc_or, vec: sc_vec });
             }
         }
