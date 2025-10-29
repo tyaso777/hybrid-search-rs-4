@@ -44,9 +44,9 @@ impl eframe::App for AppState {
                 }
                 ui.separator();
                 ui.label("Params:");
-                ui.add(egui::DragValue::new(&mut self.params.min_planned_chunks).clamp_range(1..=1000).prefix("min=").speed(1));
-                ui.add(egui::DragValue::new(&mut self.params.max_planned_chunks).clamp_range(1..=5000).prefix("max=").speed(1));
-                ui.add(egui::DragValue::new(&mut self.params.max_chunks).clamp_range(1..=10000).prefix("cap=").speed(1));
+                ui.add(egui::DragValue::new(&mut self.params.min_chars).clamp_range(1..=20000).prefix("min(chars)=").speed(10));
+                ui.add(egui::DragValue::new(&mut self.params.max_chars).clamp_range(1..=20000).prefix("max(chars)=").speed(10));
+                ui.add(egui::DragValue::new(&mut self.params.cap_chars).clamp_range(1..=20000).prefix("cap(chars)=").speed(10));
                 ui.separator();
                 if ui.button("Chunk").clicked() {
                     self.error = None;

@@ -270,7 +270,7 @@ fn push_heuristic_blocks(out: &mut Vec<UnifiedBlock>, text: &str, origin: &str, 
     let base_len = out.len();
     let mut para_buf = String::new();
 
-    let mut flush_para = |buf: &mut String, out: &mut Vec<UnifiedBlock>, order: &mut u32| {
+    let flush_para = |buf: &mut String, out: &mut Vec<UnifiedBlock>, order: &mut u32| {
         if buf.trim().is_empty() { return; }
         let mut b = UnifiedBlock::new(BlockKind::Paragraph, buf.trim(), *order, origin, "pdfium");
         *order += 1;

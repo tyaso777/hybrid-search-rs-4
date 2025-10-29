@@ -5,22 +5,23 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PdfChunkParams {
-    pub min_planned_chunks: usize,
-    pub max_planned_chunks: usize,
-    pub max_chunks: usize,
+    /// Prefer chunk lengths >= this many characters
+    pub min_chars: usize,
+    /// Prefer chunk lengths around this many characters
+    pub max_chars: usize,
+    /// Hard cap: do not exceed this many characters per chunk when possible
+    pub cap_chars: usize,
 }
 
 impl Default for PdfChunkParams {
-    fn default() -> Self {
-        Self { min_planned_chunks: 4, max_planned_chunks: 16, max_chunks: 64 }
-    }
+    fn default() -> Self { Self { min_chars: 400, max_chars: 600, cap_chars: 800 } }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BoundaryKind { BlockEnd, DoubleNewline, SingleNewline, SentenceEnd, Fallback }
+enum BoundaryKind { BlockEnd, DoubleNewline, SingleNewline, SentenceEnd }
 
 #[derive(Debug, Clone)]
-struct Boundary { idx: usize, kind: BoundaryKind, base_score: f32 }
+struct Boundary { idx: usize, _kind: BoundaryKind, base_score: f32 }
 
 fn collect_text_and_boundaries(blocks: &[UnifiedBlock]) -> (String, Vec<Boundary>) {
     let mut text = String::new();
@@ -34,7 +35,7 @@ fn collect_text_and_boundaries(blocks: &[UnifiedBlock]) -> (String, Vec<Boundary
         cursor += t.len();
         // Prefer block boundaries
         if i + 1 < blocks.len() {
-            boundaries.push(Boundary { idx: cursor, kind: BoundaryKind::BlockEnd, base_score: 1.0 });
+            boundaries.push(Boundary { idx: cursor, _kind: BoundaryKind::BlockEnd, base_score: 1.0 });
             // Add a single newline between blocks to avoid accidental merges
             text.push('\n');
             cursor += 1;
@@ -49,11 +50,11 @@ fn collect_text_and_boundaries(blocks: &[UnifiedBlock]) -> (String, Vec<Boundary
             b'\n' => {
                 // Double newline?
                 if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
-                    boundaries.push(Boundary { idx: i + 2, kind: BoundaryKind::DoubleNewline, base_score: 0.95 });
+                    boundaries.push(Boundary { idx: i + 2, _kind: BoundaryKind::DoubleNewline, base_score: 0.95 });
                     i += 2;
                     continue;
                 } else {
-                    boundaries.push(Boundary { idx: i + 1, kind: BoundaryKind::SingleNewline, base_score: 0.8 });
+                    boundaries.push(Boundary { idx: i + 1, _kind: BoundaryKind::SingleNewline, base_score: 0.8 });
                 }
             }
             _ => {}
@@ -64,7 +65,7 @@ fn collect_text_and_boundaries(blocks: &[UnifiedBlock]) -> (String, Vec<Boundary
     // Sentence ends (basic ASCII and common JP full stops)
     for (idx, ch) in text.char_indices() {
         if matches!(ch, '.' | '!' | '?' | '。' | '！' | '？' | '．') {
-            boundaries.push(Boundary { idx: idx + ch.len_utf8(), kind: BoundaryKind::SentenceEnd, base_score: 0.6 });
+            boundaries.push(Boundary { idx: idx + ch.len_utf8(), _kind: BoundaryKind::SentenceEnd, base_score: 0.6 });
         }
     }
 
@@ -92,89 +93,66 @@ fn penalize_after_short_line(text: &str, b: &Boundary) -> f32 {
     b.base_score - penalty
 }
 
-fn choose_cut_indices(text: &str, mut boundaries: Vec<Boundary>, target_chunks: usize) -> Vec<usize> {
-    if target_chunks <= 1 { return Vec::new(); }
-    let total_len = text.len();
-    let cuts_needed = target_chunks - 1;
-    let mut cuts: Vec<usize> = Vec::with_capacity(cuts_needed);
-
-    // Precompute effective scores
-    let mut scored: Vec<(usize, f32)> = boundaries
-        .iter()
-        .map(|b| (b.idx, penalize_after_short_line(text, b)))
-        .collect();
-
-    // Helper to find best boundary near a target position
-    let find_near = |pos: usize, used: &Vec<usize>| -> Option<usize> {
-        let window = (total_len / (target_chunks.max(2))).max(200); // search window
-        let lo = pos.saturating_sub(window);
-        let hi = (pos + window).min(total_len);
-        let mut best: Option<(usize, f32)> = None;
-        for (idx, score) in &scored {
-            if *idx <= lo || *idx >= hi { continue; }
-            if used.binary_search(idx).is_ok() { continue; }
-            // distance penalty to prefer closer boundaries
-            let dist = if pos > *idx { pos - *idx } else { *idx - pos };
-            let eff = *score - (dist as f32) / (window as f32);
-            if let Some((_, bscore)) = best {
-                if eff > bscore { best = Some((*idx, eff)); }
-            } else {
-                best = Some((*idx, eff));
-            }
-        }
-        best.map(|(i, _)| i)
-    };
-
-    for i in 1..=cuts_needed {
-        let pos = (total_len as f32 * (i as f32) / (target_chunks as f32)).round() as usize;
-        if let Some(c) = find_near(pos, &cuts) { cuts.push(c); }
+// Pick best boundary between [lo..=hi], preferring near `prefer` and higher score.
+fn pick_boundary_in_range(scored: &[(usize, f32)], lo: usize, hi: usize, prefer: usize) -> Option<usize> {
+    let mut best: Option<(usize, f32)> = None;
+    for (idx, score) in scored {
+        if *idx < lo || *idx > hi { continue; }
+        let dist = if *idx > prefer { *idx - prefer } else { prefer - *idx } as f32;
+        let eff = *score - dist / ((hi.saturating_sub(lo)) as f32 + 1.0);
+        if let Some((_, b)) = best { if eff > b { best = Some((*idx, eff)); } } else { best = Some((*idx, eff)); }
     }
-    cuts.sort_unstable();
-    cuts.dedup();
-    cuts
+    best.map(|(i, _)| i)
 }
 
-fn decide_target_chunks(total_len: usize, params: &PdfChunkParams) -> usize {
-    let suggested = ((total_len as f32) / 1000.0).round() as usize;
-    let mut target = suggested.clamp(params.min_planned_chunks.max(1), params.max_planned_chunks.max(1));
-    target = target.min(params.max_chunks.max(1));
-    target.max(1)
-}
+// removed
 
 /// Produce ChunkRecord texts from UnifiedBlocks with heuristics.
 pub fn chunk_pdf_blocks_to_text(blocks: &[UnifiedBlock], params: &PdfChunkParams) -> Vec<String> {
     let (text, boundaries) = collect_text_and_boundaries(blocks);
     if text.trim().is_empty() { return vec![String::new()]; }
-    let target = decide_target_chunks(text.len(), params);
-    let mut cuts = choose_cut_indices(&text, boundaries, target);
+    // Precompute scored boundaries (sorted by idx)
+    let mut scored: Vec<(usize, f32)> = boundaries
+        .iter()
+        .map(|b| (b.idx, penalize_after_short_line(&text, b)))
+        .collect();
+    scored.sort_by_key(|(i, _)| *i);
 
-    // If we couldn’t find enough cuts, fallback to greedy split by length
-    let needed = target.saturating_sub(1);
-    if cuts.len() < needed && text.len() > 0 {
-        let mut i = cuts.len();
-        let mut pos = *cuts.last().unwrap_or(&0);
-        while i < needed {
-            pos = ((i + 1) * text.len()) / target;
-            cuts.push(pos);
-            i += 1;
-        }
-        cuts.sort_unstable(); cuts.dedup();
-    }
-
-    // Build segments
-    let mut out: Vec<String> = Vec::with_capacity(target);
+    let mut out: Vec<String> = Vec::new();
     let mut start = 0usize;
-    for c in cuts {
-        if c <= start || c > text.len() { continue; }
-        let seg = text[start..c].trim();
-        if !seg.is_empty() { out.push(seg.to_string()); }
-        start = c;
-    }
-    let tail = text[start..].trim();
-    if !tail.is_empty() { out.push(tail.to_string()); }
+    let total = text.len();
+    while start < total {
+        let min = (start + params.min_chars).min(total);
+        let max = (start + params.max_chars).min(total);
+        let cap = (start + params.cap_chars).min(total);
 
-    // Respect max_chunks hard cap
-    out.truncate(params.max_chunks.max(1));
+        // If the remainder is small enough, flush and break
+        if total - start <= params.cap_chars.max(1) {
+            let seg = text[start..total].trim();
+            if !seg.is_empty() { out.push(seg.to_string()); }
+            break;
+        }
+
+        // Prefer boundary within [min..cap]
+        if let Some(cut) = pick_boundary_in_range(&scored, min, cap, max) {
+            if cut > start { let seg = text[start..cut].trim(); if !seg.is_empty() { out.push(seg.to_string()); } start = cut; continue; }
+        }
+
+        // Fallback: boundary just after cap, else last boundary
+        let mut fallback_cut: Option<usize> = None;
+        for (idx, _) in &scored { if *idx > cap { fallback_cut = Some(*idx); break; } }
+        if fallback_cut.is_none() { if let Some((idx, _)) = scored.last() { fallback_cut = Some(*idx); } }
+        let cut = fallback_cut.unwrap_or(total);
+        if cut <= start || cut > total {
+            let seg = text[start..total].trim();
+            if !seg.is_empty() { out.push(seg.to_string()); }
+            break;
+        }
+        let seg = text[start..cut].trim();
+        if !seg.is_empty() { out.push(seg.to_string()); }
+        start = cut;
+    }
+
     if out.is_empty() { out.push(String::new()); }
     out
 }
@@ -232,4 +210,3 @@ pub fn chunk_pdf_file_with_file_record(path: &str, params: &PdfChunkParams) -> (
 
     (file, chunks)
 }
-
