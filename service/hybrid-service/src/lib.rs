@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{Arc, RwLock, atomic::{AtomicBool, Ordering}};
 
 use chrono::Utc;
 use chunk_model::{ChunkId, ChunkRecord, DocumentId};
@@ -56,6 +56,7 @@ impl Default for ServiceConfig {
 pub struct HybridService {
     cfg: ServiceConfig,
     embedder: OnnxStdIoEmbedder,
+    hnsw: Arc<RwLock<Option<HnswIndex>>>,
 }
 
 /// Cooperative cancellation handle shared across long-running operations.
@@ -88,7 +89,19 @@ impl HybridService {
         }
         let embedder = OnnxStdIoEmbedder::new(cfg.embedder.clone())
             .map_err(|e| ServiceError::Embed(e.to_string()))?;
-        Ok(Self { cfg, embedder })
+        let svc = Self { cfg, embedder, hnsw: Arc::new(RwLock::new(None)) };
+        // Background preload HNSW (if index exists)
+        let hdir = svc.hnsw_dir();
+        let dim = svc.embedder.info().dimension;
+        let cache = Arc::clone(&svc.hnsw);
+        std::thread::spawn(move || {
+            if Path::new(&hdir).join("map.tsv").exists() {
+                if let Ok(h) = HnswIndex::load(&hdir, dim) {
+                    if let Ok(mut guard) = cache.write() { *guard = Some(h); }
+                }
+            }
+        });
+        Ok(svc)
     }
 
     fn open_repo(&self) -> Result<SqliteRepo, ServiceError> {
@@ -129,6 +142,8 @@ impl HybridService {
         if vectors.is_some() {
             hnsw.save(&hdir).map_err(|e| ServiceError::Io(e.to_string()))?;
         }
+        // Refresh resident cache
+        if let Ok(mut guard) = self.hnsw.write() { *guard = Some(hnsw); }
         Ok(())
     }
 
@@ -237,13 +252,33 @@ impl HybridService {
 
         // Vector query
         let qvec = self.embedder.embed(query).map_err(|e| ServiceError::Embed(e.to_string()))?;
-        let hdir = self.hnsw_dir();
-        let maybe_hnsw = if Path::new(&hdir).join("map.tsv").exists() {
-            match HnswIndex::load(&hdir, qvec.len()) { Ok(h) => Some(h), Err(_) => None }
-        } else { None };
-        let mut vec_matches = if let Some(h) = &maybe_hnsw {
-            VectorSearcher::knn_ids(h, &repo, &qvec, filters, &opts)
-        } else { Vec::new() };
+        // Use resident HNSW if available; lazily load once if missing
+        let mut vec_matches: Vec<chunking_store::TextMatch> = Vec::new();
+        let mut need_try_load = false;
+        {
+            if let Ok(guard) = self.hnsw.read() {
+                if let Some(h) = guard.as_ref() {
+                    vec_matches = VectorSearcher::knn_ids(h, &repo, &qvec, filters, &opts);
+                } else {
+                    need_try_load = true;
+                }
+            } else {
+                need_try_load = true;
+            }
+        }
+        if need_try_load {
+            let hdir = self.hnsw_dir();
+            if Path::new(&hdir).join("map.tsv").exists() {
+                if let Ok(h) = HnswIndex::load(&hdir, qvec.len()) {
+                    if let Ok(mut w) = self.hnsw.write() { *w = Some(h); }
+                    if let Ok(r) = self.hnsw.read() {
+                        if let Some(h) = r.as_ref() {
+                            vec_matches = VectorSearcher::knn_ids(h, &repo, &qvec, filters, &opts);
+                        }
+                    }
+                }
+            }
+        }
 
         // Combine
         let mut score_map: HashMap<String, f32> = HashMap::new();
@@ -290,8 +325,9 @@ impl HybridService {
         let rep = delete_by_filter_orchestrated(&mut repo, filters, batch_size, &text_m, &mut vec_m)
             .map_err(|e| ServiceError::Index(e.to_string()))?;
 
-        // Persist HNSW snapshot post-delete
+        // Persist HNSW snapshot post-delete and refresh resident cache
         hnsw.save(&hdir).map_err(|e| ServiceError::Io(e.to_string()))?;
+        if let Ok(mut guard) = self.hnsw.write() { *guard = Some(hnsw); }
         Ok(rep)
     }
 
