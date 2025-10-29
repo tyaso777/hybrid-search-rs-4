@@ -636,7 +636,7 @@ impl AppState {
         use chunking_store::sqlite_repo::SqliteRepo;
         use chunking_store::SearchOptions;
         let repo = match SqliteRepo::open(self.db_path.trim()) { Ok(r) => r, Err(e) => { self.status = format!("Open DB failed: {e}"); return; } };
-        let _ = repo.maybe_rebuild_fts();
+        // FTS5 is not used for search ranking here; skip any FTS maintenance.
         let opts = SearchOptions { top_k, fetch_factor: 10 };
 
         // Tantivy queries
@@ -671,12 +671,12 @@ impl AppState {
         for m in tv_or { let e = agg.entry(m.chunk_id.0).or_default(); e.2 = Some(m.score); }
         for m in vec_matches { let e = agg.entry(m.chunk_id.0).or_default(); e.3 = Some(m.score); }
 
-        // Sort keys by max score desc and truncate to top_k
+        // Sort by fused score: TV(OR) + VEC (others ignored)
         let mut items: Vec<(String, (Option<f32>, Option<f32>, Option<f32>, Option<f32>))> = agg.into_iter().collect();
         items.sort_by(|a, b| {
-            let max_a = a.1.0.unwrap_or(0.0).max(a.1.1.unwrap_or(0.0)).max(a.1.2.unwrap_or(0.0)).max(a.1.3.unwrap_or(0.0));
-            let max_b = b.1.0.unwrap_or(0.0).max(b.1.1.unwrap_or(0.0)).max(b.1.2.unwrap_or(0.0)).max(b.1.3.unwrap_or(0.0));
-            max_b.partial_cmp(&max_a).unwrap_or(std::cmp::Ordering::Equal)
+            let sum_a = a.1.2.unwrap_or(0.0) + a.1.3.unwrap_or(0.0);
+            let sum_b = b.1.2.unwrap_or(0.0) + b.1.3.unwrap_or(0.0);
+            sum_b.partial_cmp(&sum_a).unwrap_or(std::cmp::Ordering::Equal)
         });
         if items.len() > top_k { items.truncate(top_k); }
 
