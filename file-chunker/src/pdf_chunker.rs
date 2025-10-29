@@ -23,22 +23,26 @@ enum BoundaryKind { BlockEnd, DoubleNewline, SingleNewline, SentenceEnd }
 #[derive(Debug, Clone)]
 struct Boundary { idx: usize, _kind: BoundaryKind, base_score: f32 }
 
-fn collect_text_and_boundaries(blocks: &[UnifiedBlock]) -> (String, Vec<Boundary>) {
+#[derive(Debug, Clone, Copy)]
+struct BlockSpan { start: usize, end: usize, page_start: Option<u32>, page_end: Option<u32> }
+
+fn collect_text_and_boundaries(blocks: &[UnifiedBlock]) -> (String, Vec<Boundary>, Vec<BlockSpan>) {
     let mut text = String::new();
     let mut boundaries: Vec<Boundary> = Vec::new();
+    let mut spans: Vec<BlockSpan> = Vec::new();
 
     let mut cursor = 0usize;
     for (i, b) in blocks.iter().enumerate() {
         // Normalize newlines
         let t = b.text.replace('\r', "");
+        let start_idx = cursor;
         text.push_str(&t);
         cursor += t.len();
+        spans.push(BlockSpan { start: start_idx, end: cursor, page_start: b.page_start, page_end: b.page_end });
         // Prefer block boundaries
         if i + 1 < blocks.len() {
+            // Prefer block boundaries, but do not inject artificial newlines between blocks.
             boundaries.push(Boundary { idx: cursor, _kind: BoundaryKind::BlockEnd, base_score: 1.0 });
-            // Add a single newline between blocks to avoid accidental merges
-            text.push('\n');
-            cursor += 1;
         }
     }
 
@@ -79,7 +83,7 @@ fn collect_text_and_boundaries(blocks: &[UnifiedBlock]) -> (String, Vec<Boundary
         } else { false }
     });
 
-    (text, boundaries)
+    (text, boundaries, spans)
 }
 
 fn penalize_after_short_line(text: &str, b: &Boundary) -> f32 {
@@ -108,17 +112,22 @@ fn pick_boundary_in_range(scored: &[(usize, f32)], lo: usize, hi: usize, prefer:
 // removed
 
 /// Produce ChunkRecord texts from UnifiedBlocks with heuristics.
-pub fn chunk_pdf_blocks_to_text(blocks: &[UnifiedBlock], params: &PdfChunkParams) -> Vec<String> {
-    let (text, boundaries) = collect_text_and_boundaries(blocks);
-    if text.trim().is_empty() { return vec![String::new()]; }
+fn chunk_pdf_blocks_to_segments(blocks: &[UnifiedBlock], params: &PdfChunkParams) -> Vec<(String, Option<u32>, Option<u32>)> {
+    let (text, boundaries, spans) = collect_text_and_boundaries(blocks);
+    if text.trim().is_empty() { return vec![(String::new(), None, None)]; }
     // Precompute scored boundaries (sorted by idx)
     let mut scored: Vec<(usize, f32)> = boundaries
         .iter()
-        .map(|b| (b.idx, penalize_after_short_line(&text, b)))
+        .map(|b| {
+            let mut s = penalize_after_short_line(&text, b);
+            // Penalize block-end boundaries that coincide with a page transition without an actual newline.
+            s -= extra_penalty_page_boundary_no_newline(b.idx, &text, &spans);
+            (b.idx, s)
+        })
         .collect();
     scored.sort_by_key(|(i, _)| *i);
 
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<(String, Option<u32>, Option<u32>)> = Vec::new();
     let mut start = 0usize;
     let total = text.len();
     while start < total {
@@ -129,13 +138,25 @@ pub fn chunk_pdf_blocks_to_text(blocks: &[UnifiedBlock], params: &PdfChunkParams
         // If the remainder is small enough, flush and break
         if total - start <= params.cap_chars.max(1) {
             let seg = text[start..total].trim();
-            if !seg.is_empty() { out.push(seg.to_string()); }
+            if !seg.is_empty() {
+                // compute page range for [start..total)
+                let (ps, pe) = page_range_for_segment(start, total, &spans);
+                out.push((seg.to_string(), ps, pe));
+            }
             break;
         }
 
         // Prefer boundary within [min..cap]
         if let Some(cut) = pick_boundary_in_range(&scored, min, cap, max) {
-            if cut > start { let seg = text[start..cut].trim(); if !seg.is_empty() { out.push(seg.to_string()); } start = cut; continue; }
+            if cut > start {
+                let seg = text[start..cut].trim();
+                if !seg.is_empty() {
+                    let (ps, pe) = page_range_for_segment(start, cut, &spans);
+                    out.push((seg.to_string(), ps, pe));
+                }
+                start = cut;
+                continue;
+            }
         }
 
         // Fallback: boundary just after cap, else last boundary
@@ -145,22 +166,61 @@ pub fn chunk_pdf_blocks_to_text(blocks: &[UnifiedBlock], params: &PdfChunkParams
         let cut = fallback_cut.unwrap_or(total);
         if cut <= start || cut > total {
             let seg = text[start..total].trim();
-            if !seg.is_empty() { out.push(seg.to_string()); }
+            if !seg.is_empty() {
+                let (ps, pe) = page_range_for_segment(start, total, &spans);
+                out.push((seg.to_string(), ps, pe));
+            }
             break;
         }
         let seg = text[start..cut].trim();
-        if !seg.is_empty() { out.push(seg.to_string()); }
+        if !seg.is_empty() {
+            let (ps, pe) = page_range_for_segment(start, cut, &spans);
+            out.push((seg.to_string(), ps, pe));
+        }
         start = cut;
     }
 
-    if out.is_empty() { out.push(String::new()); }
+    if out.is_empty() { out.push((String::new(), None, None)); }
     out
+}
+
+fn extra_penalty_page_boundary_no_newline(idx: usize, text: &str, spans: &[BlockSpan]) -> f32 {
+    // Find if `idx` equals a block end and the next block starts on a different page,
+    // and the preceding character is not a newline. If so, penalize to encourage merging.
+    for w in spans.windows(2) {
+        let a = &w[0];
+        let b = &w[1];
+        if a.end == idx {
+            let page_transition = match (a.page_end, b.page_start) {
+                (Some(pe), Some(ps)) => pe != ps,
+                _ => false,
+            };
+            let has_newline_before = idx > 0 && text.as_bytes()[idx.saturating_sub(1)] == b'\n';
+            if page_transition && !has_newline_before { return 0.4; }
+        }
+    }
+    0.0
+}
+
+fn page_range_for_segment(start: usize, end: usize, spans: &[BlockSpan]) -> (Option<u32>, Option<u32>) {
+    let mut min_p: Option<u32> = None;
+    let mut max_p: Option<u32> = None;
+    for s in spans {
+        if s.end <= start || s.start >= end { continue; }
+        if let Some(ps) = s.page_start { min_p = Some(match min_p { Some(v) => v.min(ps), None => ps }); }
+        if let Some(pe) = s.page_end { max_p = Some(match max_p { Some(v) => v.max(pe), None => pe }); }
+    }
+    (min_p, max_p)
+}
+
+pub fn chunk_pdf_blocks_to_text(blocks: &[UnifiedBlock], params: &PdfChunkParams) -> Vec<String> {
+    chunk_pdf_blocks_to_segments(blocks, params).into_iter().map(|(t, _, _)| t).collect()
 }
 
 /// High-level: read PDF -> chunk -> return FileRecord and ChunkRecords
 pub fn chunk_pdf_file_with_file_record(path: &str, params: &PdfChunkParams) -> (FileRecord, Vec<ChunkRecord>) {
     let blocks = read_pdf_to_blocks(path);
-    let texts = chunk_pdf_blocks_to_text(&blocks, params);
+    let segs = chunk_pdf_blocks_to_segments(&blocks, params);
 
     let backend = match default_backend() { PdfBackend::Pdfium => "pdfium", PdfBackend::PureRust => "pure-pdf", PdfBackend::Stub => "stub.pdf" };
 
@@ -185,16 +245,16 @@ pub fn chunk_pdf_file_with_file_record(path: &str, params: &PdfChunkParams) -> (
         reader_backend: Some(backend.into()),
         ocr_used: None,
         ocr_langs: Vec::new(),
-        chunk_count: Some(texts.len() as u32),
+        chunk_count: Some(segs.len() as u32),
         total_tokens: None,
         meta: BTreeMap::new(),
         extra: BTreeMap::new(),
     };
 
-    let chunks: Vec<ChunkRecord> = texts
+    let chunks: Vec<ChunkRecord> = segs
         .into_iter()
         .enumerate()
-        .map(|(i, text)| ChunkRecord {
+        .map(|(i, (text, pstart, pend))| ChunkRecord {
             schema_version: SCHEMA_MAJOR,
             doc_id: DocumentId(path.to_string()),
             chunk_id: ChunkId(format!("{}#{}", path, i)),
@@ -203,7 +263,12 @@ pub fn chunk_pdf_file_with_file_record(path: &str, params: &PdfChunkParams) -> (
             extracted_at: String::new(),
             text,
             section_path: None,
-            meta: BTreeMap::new(),
+            meta: {
+                let mut m = BTreeMap::new();
+                if let Some(ps) = pstart { m.insert("page_start".into(), ps.to_string()); }
+                if let Some(pe) = pend { m.insert("page_end".into(), pe.to_string()); }
+                m
+            },
             extra: BTreeMap::new(),
         })
         .collect();

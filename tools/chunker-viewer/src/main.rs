@@ -1,4 +1,5 @@
 use eframe::egui;
+use egui_extras::{StripBuilder, Size};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -96,44 +97,48 @@ impl eframe::App for AppState {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading(format!("Chunks ({}):", self.chunks.len()));
-            ui.separator();
-
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                for (i, c) in self.chunks.iter().enumerate() {
-                    let preview = truncate_chars(&c.text, 80);
-                    let page_label = pages_label(c);
-                    let title = if page_label.is_empty() {
-                        format!("{}  {}", c.chunk_id.0, preview)
-                    } else {
-                        format!("{}  {}  {}", c.chunk_id.0, page_label, preview)
-                    };
-                    let click = ui.selectable_label(self.selected == Some(i), title);
-                    if click.clicked() { self.selected = Some(i); }
-                }
-            });
-        });
-
-        egui::TopBottomPanel::bottom("bottom")
-            .resizable(true)
-            .default_height(360.0) // roughly ~1.5x typical default
-            .min_height(120.0)
-            .show(ctx, |ui| {
-            ui.heading("Selected Chunk");
-            ui.separator();
-            if let Some(i) = self.selected { if let Some(c) = self.chunks.get(i) {
-                let text = if self.show_tab_escape { escape_text_for_view(&c.text) } else { c.text.clone() };
-                let page_label = pages_label(c);
-                if page_label.is_empty() {
-                    ui.monospace(format!("len={} bytes", c.text.len()));
-                } else {
-                    ui.monospace(format!("len={} bytes  |  {}", c.text.len(), page_label));
-                }
-                ui.separator();
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.monospace(text);
+            StripBuilder::new(ui)
+                .size(Size::relative(0.55)) // top list initial share
+                .size(Size::remainder())    // bottom selected chunk
+                .clip(true)
+                .vertical(|mut strip| {
+                    strip.cell(|ui| {
+                        ui.heading(format!("Chunks ({}):", self.chunks.len()));
+                        ui.separator();
+                        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                            for (i, c) in self.chunks.iter().enumerate() {
+                                let preview = truncate_chars(&c.text, 80);
+                                let page_label = pages_label(c);
+                                let title = if page_label.is_empty() {
+                                    format!("{}  {}", c.chunk_id.0, preview)
+                                } else {
+                                    format!("{}  {}  {}", c.chunk_id.0, page_label, preview)
+                                };
+                                let click = ui.selectable_label(self.selected == Some(i), title);
+                                if click.clicked() { self.selected = Some(i); }
+                            }
+                        });
+                    });
+                    strip.cell(|ui| {
+                        egui::Frame::default().show(ui, |ui| {
+                            ui.heading("Selected Chunk");
+                            ui.separator();
+                            if let Some(i) = self.selected { if let Some(c) = self.chunks.get(i) {
+                                let text = if self.show_tab_escape { escape_text_for_view(&c.text) } else { c.text.clone() };
+                                let page_label = pages_label(c);
+                                if page_label.is_empty() {
+                                    ui.monospace(format!("len={} bytes", c.text.len()));
+                                } else {
+                                    ui.monospace(format!("len={} bytes  |  {}", c.text.len(), page_label));
+                                }
+                                ui.separator();
+                                egui::ScrollArea::vertical().show(ui, |ui| {
+                                    ui.monospace(text);
+                                });
+                            }}
+                        });
+                    });
                 });
-            }}
         });
     }
 }
@@ -160,9 +165,9 @@ fn pages_label(c: &ChunkRecord) -> String {
     let ps = c.meta.get("page_start").and_then(|s| s.parse::<u32>().ok());
     let pe = c.meta.get("page_end").and_then(|s| s.parse::<u32>().ok());
     match (ps, pe) {
-        (Some(s), Some(e)) if s == e => format!("p. {}", s),
-        (Some(s), Some(e)) => format!("p. {}-{}", s, e),
-        (Some(s), None) => format!("p. {}", s),
+        (Some(s), Some(e)) if s == e => format!("{}", s),
+        (Some(s), Some(e)) => format!("{}-{}", s, e),
+        (Some(s), None) => format!("{}", s),
         _ => String::new(),
     }
 }
