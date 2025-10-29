@@ -326,7 +326,7 @@ impl App for AppState {
                     ui.horizontal(|ui| {
                         ui.label("Store Root");
                         if ui.add(TextEdit::singleline(&mut self.store_root).desired_width(400.0)).changed() { root_changed = true; }
-                        if ui.button("窶ｦ").clicked() { if let Some(p) = FileDialog::new().pick_folder() { self.store_root = p.display().to_string(); root_changed = true; } }
+                    if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().pick_folder() { self.store_root = p.display().to_string(); root_changed = true; } }
                         if ui.button("Reset").clicked() { self.store_root = "target/demo/store".into(); root_changed = true; }
                     });
                     if root_changed { self.refresh_store_paths(); }
@@ -344,9 +344,9 @@ impl App for AppState {
                         });
                     });
                     ui.separator();
-                    ui.horizontal(|ui| { ui.label("Model"); ui.add(TextEdit::singleline(&mut self.model_path).desired_width(400.0)); if ui.button("窶ｦ").clicked() { if let Some(p) = FileDialog::new().add_filter("ONNX", &["onnx"]).pick_file() { self.model_path = p.display().to_string(); } } });
-                    ui.horizontal(|ui| { ui.label("Tokenizer"); ui.add(TextEdit::singleline(&mut self.tokenizer_path).desired_width(400.0)); if ui.button("窶ｦ").clicked() { if let Some(p) = FileDialog::new().add_filter("JSON", &["json"]).pick_file() { self.tokenizer_path = p.display().to_string(); } } });
-                    ui.horizontal(|ui| { ui.label("Runtime DLL"); ui.add(TextEdit::singleline(&mut self.runtime_path).desired_width(400.0)); if ui.button("窶ｦ").clicked() { if let Some(p) = FileDialog::new().pick_file() { self.runtime_path = p.display().to_string(); } } });
+                ui.horizontal(|ui| { ui.label("Model"); ui.add(TextEdit::singleline(&mut self.model_path).desired_width(400.0)); if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().add_filter("ONNX", &["onnx"]).pick_file() { self.model_path = p.display().to_string(); } } });
+                ui.horizontal(|ui| { ui.label("Tokenizer"); ui.add(TextEdit::singleline(&mut self.tokenizer_path).desired_width(400.0)); if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().add_filter("JSON", &["json"]).pick_file() { self.tokenizer_path = p.display().to_string(); } } });
+                ui.horizontal(|ui| { ui.label("Runtime DLL"); ui.add(TextEdit::singleline(&mut self.runtime_path).desired_width(400.0)); if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().pick_file() { self.runtime_path = p.display().to_string(); } } });
                     ui.horizontal(|ui| {
                         ui.label("Dim"); ui.add(TextEdit::singleline(&mut self.embedding_dimension).desired_width(80.0));
                         ui.label("MaxTokens"); ui.add(TextEdit::singleline(&mut self.max_tokens).desired_width(80.0));
