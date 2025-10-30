@@ -36,6 +36,12 @@ enum ActiveTab {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InsertMode {
+    File,
+    Text,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SearchMode {
     Hybrid,
     Tantivy,
@@ -94,6 +100,13 @@ struct AppState {
     ingest_encoding: String,
     ingest_preview: String,
 
+    // Chunk params (unified for PDF/TXT)
+    chunk_min: String,
+    chunk_max: String,
+    chunk_cap: String,
+    chunk_penalize_short_line: bool,
+    chunk_penalize_page_no_nl: bool,
+
     // Ingest job (async)
     ingest_rx: Option<Receiver<ProgressEvent>>,
     ingest_cancel: Option<CancelToken>,
@@ -114,6 +127,7 @@ struct AppState {
 
     // UI
     tab: ActiveTab,
+    insert_mode: InsertMode,
     status: String,
     selected_cid: Option<String>,
     selected_text: String,
@@ -160,6 +174,17 @@ impl AppState {
             #[cfg(feature = "tantivy")]
             ui.horizontal(|ui| { ui.label("Tantivy"); ui.label(&self.tantivy_dir); });
             ui.separator();
+            // Chunking Params (always visible)
+            ui.horizontal(|ui| {
+                ui.label("Chunking Params");
+                ui.label("min"); ui.add(TextEdit::singleline(&mut self.chunk_min).desired_width(60.0));
+                ui.label("max"); ui.add(TextEdit::singleline(&mut self.chunk_max).desired_width(60.0));
+                ui.label("cap"); ui.add(TextEdit::singleline(&mut self.chunk_cap).desired_width(60.0));
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.chunk_penalize_short_line, "Penalize after short line");
+                ui.checkbox(&mut self.chunk_penalize_page_no_nl, "Penalize page-boundary without newline");
+            });
             ui.collapsing("Danger zone", |ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Deletes DB and indexes (HNSW/Tantivy)").color(egui::Color32::LIGHT_RED));
@@ -285,6 +310,12 @@ impl AppState {
             ingest_encoding: String::from("auto"),
             ingest_preview: String::new(),
 
+            chunk_min: String::from("400"),
+            chunk_max: String::from("600"),
+            chunk_cap: String::from("800"),
+            chunk_penalize_short_line: true,
+            chunk_penalize_page_no_nl: true,
+
             ingest_rx: None,
             ingest_cancel: None,
             ingest_running: false,
@@ -302,6 +333,7 @@ impl AppState {
             search_mode: SearchMode::Hybrid,
 
             tab: ActiveTab::Insert,
+            insert_mode: InsertMode::File,
             status: String::new(),
             selected_cid: None,
             selected_text: String::new(),
@@ -439,46 +471,55 @@ impl AppState {
     fn ui_insert(&mut self, ui: &mut egui::Ui) {
         ui.heading("Insert");
         ui.add_enabled_ui(!self.ingest_running, |ui| {
-            // Row 1: Choose File, [File path], Ingest File
+            // Sub-tabs for Insert
             ui.horizontal(|ui| {
-                if ui.button("Choose File").clicked() {
-                    if let Some(p) = FileDialog::new().pick_file() {
-                        self.ingest_file_path = p.display().to_string();
-                        // Reset encoding to auto and refresh preview when a new file is chosen
-                        self.ingest_encoding = String::from("auto");
-                        self.refresh_ingest_preview();
+                ui.selectable_value(&mut self.insert_mode, InsertMode::File, "Insert File");
+                ui.selectable_value(&mut self.insert_mode, InsertMode::Text, "Insert Text");
+            });
+
+            match self.insert_mode {
+                InsertMode::File => {
+                    // Row 1: Choose File, [File path], Ingest File
+                    ui.horizontal(|ui| {
+                        if ui.button("Choose File").clicked() {
+                            if let Some(p) = FileDialog::new().pick_file() {
+                                self.ingest_file_path = p.display().to_string();
+                                // Reset encoding to auto and refresh preview when a new file is chosen
+                                self.ingest_encoding = String::from("auto");
+                                self.refresh_ingest_preview();
+                            }
+                        }
+                        let resp = ui.add(TextEdit::singleline(&mut self.ingest_file_path).desired_width(400.0));
+                        if resp.changed() { self.refresh_ingest_preview(); }
+                        let ingest_btn = ui.add_enabled(!self.ingest_running, Button::new("Ingest File"));
+                        if ingest_btn.clicked() { self.do_ingest_file(); }
+                    });
+
+                    // Row 2: Encoding selector (for text-like files) and short preview
+                    if self.is_text_like_path(self.ingest_file_path.trim()) {
+                        ui.horizontal(|ui| {
+                            ui.label("Encoding");
+                            let encs = ["auto", "utf-8", "shift_jis", "windows-1252", "utf-16le", "utf-16be"];
+                            let before = self.ingest_encoding.clone();
+                            ComboBox::from_id_source("ingest_encoding_combo")
+                                .selected_text(self.ingest_encoding.clone())
+                                .show_ui(ui, |ui| {
+                                    for e in encs { ui.selectable_value(&mut self.ingest_encoding, e.to_string(), e); }
+                                });
+                            if self.ingest_encoding != before { self.refresh_ingest_preview(); }
+                            let mut preview_short: String = self.ingest_preview.chars().take(60).collect();
+                            if self.ingest_preview.chars().count() > 60 { preview_short.push('…'); }
+                            ui.label(format!("Preview: {}", preview_short.replace(['\n','\r','\t'], " ")));
+                        });
                     }
                 }
-                let resp = ui.add(TextEdit::singleline(&mut self.ingest_file_path).desired_width(400.0));
-                if resp.changed() { self.refresh_ingest_preview(); }
-                let ingest_btn = ui.add_enabled(!self.ingest_running, Button::new("Ingest File"));
-                if ingest_btn.clicked() { self.do_ingest_file(); }
-            });
-
-            // Row 2: Encoding selector (for text-like files) and short preview
-            if self.is_text_like_path(self.ingest_file_path.trim()) {
-                ui.horizontal(|ui| {
-                    ui.label("Encoding");
-                    let encs = ["auto", "utf-8", "shift_jis", "windows-1252", "utf-16le", "utf-16be"];
-                    let before = self.ingest_encoding.clone();
-                    ComboBox::from_id_source("ingest_encoding_combo")
-                        .selected_text(self.ingest_encoding.clone())
-                        .show_ui(ui, |ui| {
-                            for e in encs { ui.selectable_value(&mut self.ingest_encoding, e.to_string(), e); }
-                        });
-                    if self.ingest_encoding != before { self.refresh_ingest_preview(); }
-                    let mut preview_short: String = self.ingest_preview.chars().take(60).collect();
-                    if self.ingest_preview.chars().count() > 60 { preview_short.push('…'); }
-                    ui.label(format!("Preview: {}", preview_short.replace(['\n','\r','\t'], " ")));
-                });
+                InsertMode::Text => {
+                    // Text input with the action button placed below
+                    ui.label("Text");
+                    ui.add(TextEdit::multiline(&mut self.input_text).desired_rows(4).desired_width(600.0));
+                    if ui.add(Button::new("Insert Text")).clicked() { self.do_insert_text(); }
+                }
             }
-
-            // Row 3: Text input and Insert button horizontally
-            ui.horizontal(|ui| {
-                ui.label("Text");
-                ui.add(TextEdit::multiline(&mut self.input_text).desired_rows(4).desired_width(600.0));
-                if ui.add(Button::new("Insert Text")).clicked() { self.do_insert_text(); }
-            });
         });
         if self.ingest_running {
             ui.horizontal(|ui| {
@@ -577,18 +618,21 @@ impl AppState {
         // Remember the doc key used for Tantivy upsert after finish
         self.ingest_doc_key = Some(if self.doc_hint.trim().is_empty() { path_owned.clone() } else { self.doc_hint.trim().to_string() });
         self.status = format!("Ingesting file: {}", path_owned);
-        let enc_opt = {
-            let e = self.ingest_encoding.trim().to_string();
-            if e.is_empty() || e.eq_ignore_ascii_case("auto") { None } else { Some(e) }
-        };
+        let enc_opt = { let e = self.ingest_encoding.trim().to_string(); if e.is_empty() || e.eq_ignore_ascii_case("auto") { None } else { Some(e) } };
+        let min = self.chunk_min.trim().parse().unwrap_or(400);
+        let max = self.chunk_max.trim().parse().unwrap_or(600);
+        let cap = self.chunk_cap.trim().parse().unwrap_or(800);
+        let ps = self.chunk_penalize_short_line;
+        let pp = self.chunk_penalize_page_no_nl;
         std::thread::spawn(move || {
             let hint = doc_hint_opt.as_deref();
             let cb: Box<dyn FnMut(ProgressEvent) + Send> = Box::new(move |ev: ProgressEvent| { let _ = tx.send(ev); });
-            // Pass encoding only when specified
-            let _ = match enc_opt.as_deref() {
-                Some(enc) => svc.ingest_file_with_progress_with_encoding(&path_owned, hint, Some(enc), Some(&cancel), Some(cb)),
-                None => svc.ingest_file_with_progress(&path_owned, hint, Some(&cancel), Some(cb)),
-            };
+            let _ = svc.ingest_file_with_progress_custom(
+                &path_owned, hint,
+                enc_opt.as_deref(),
+                min, max, cap, ps, pp,
+                Some(&cancel), Some(cb)
+            );
             // The service emits Finished/Canceled; no-op here.
         });
     }

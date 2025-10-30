@@ -39,6 +39,16 @@ pub fn chunk_pdf_blocks_to_text(blocks: &[UnifiedBlock], params: &PdfChunkParams
         .collect()
 }
 
+/// Variant: produce segments using a provided TextChunkParams directly.
+pub fn chunk_pdf_blocks_to_segments_with_text_params(
+    blocks: &[UnifiedBlock],
+    tparams: &crate::text_segmenter::TextChunkParams,
+)
+    -> Vec<(String, Option<u32>, Option<u32>)>
+{
+    crate::text_segmenter::chunk_blocks_to_segments(blocks, tparams)
+}
+
 /// High-level: read PDF -> chunk -> return FileRecord and ChunkRecords
 pub fn chunk_pdf_file_with_file_record(path: &str, params: &PdfChunkParams) -> (FileRecord, Vec<ChunkRecord>) {
     let blocks = read_pdf_to_blocks(path);
@@ -98,4 +108,3 @@ pub fn chunk_pdf_file_with_file_record(path: &str, params: &PdfChunkParams) -> (
 
     (file, chunks)
 }
-

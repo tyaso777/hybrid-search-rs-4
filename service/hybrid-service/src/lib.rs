@@ -373,6 +373,72 @@ impl HybridService {
             })
     }
 
+    /// Ingest with explicit chunking parameters (min/max/cap and penalties) and optional encoding for text-like files.
+    pub fn ingest_file_with_progress_custom(
+        &self,
+        path: &str,
+        doc_id_hint: Option<&str>,
+        encoding: Option<&str>,
+        min_chars: usize,
+        max_chars: usize,
+        cap_chars: usize,
+        penalize_short_line: bool,
+        penalize_page_boundary_no_newline: bool,
+        cancel: Option<&CancelToken>,
+        mut progress: Option<Box<dyn FnMut(ProgressEvent) + Send>>,
+    ) -> Result<(), ServiceError> {
+        let tparams = file_chunker::text_segmenter::TextChunkParams {
+            min_chars,
+            max_chars,
+            cap_chars,
+            penalize_short_line,
+            penalize_page_boundary_no_newline,
+        };
+        let out = file_chunker::chunk_file_with_file_record_with_params(path, encoding, &tparams);
+        let mut records = out.chunks;
+
+        // Stamp timestamps and optional doc_id override
+        let now = Utc::now().to_rfc3339();
+        for rec in &mut records {
+            if let Some(h) = doc_id_hint { rec.doc_id = DocumentId(h.to_string()); }
+            rec.extracted_at = now.clone();
+        }
+
+        if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::Start { total_chunks: records.len() }); }
+        if let Some(ct) = cancel { if ct.is_canceled() { if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::Canceled); } return Err(ServiceError::Embed("canceled".into())); } }
+
+        // Embed
+        let texts: Vec<&str> = records.iter().map(|c| c.text.as_str()).collect();
+        let vecs = if self.cfg.embed_auto {
+            let cb_opt: Option<&mut (dyn FnMut(ProgressEvent) + Send)> =
+                progress.as_mut().map(|b| &mut **b as &mut (dyn FnMut(ProgressEvent) + Send));
+            self.embed_texts_auto(&texts, cancel, cb_opt)?
+        } else {
+            let cb_opt: Option<&mut (dyn FnMut(ProgressEvent) + Send)> =
+                progress.as_mut().map(|b| &mut **b as &mut (dyn FnMut(ProgressEvent) + Send));
+            self.embed_texts_batched(&texts, cancel, cb_opt)?
+        };
+        if vecs.iter().any(|v| v.len() != self.embedder.info().dimension) {
+            return Err(ServiceError::Embed("embedding dimension mismatch".into()));
+        }
+        let pairs: Vec<(ChunkId, Vec<f32>)> = records
+            .iter()
+            .zip(vecs.into_iter())
+            .map(|(r, v)| (r.chunk_id.clone(), v))
+            .collect();
+        if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::UpsertDb { total: records.len() }); }
+        self.ingest_chunks(&records, Some(&pairs))
+            .and_then(|_| {
+                if let Some(cb) = progress.as_deref_mut() {
+                    cb(ProgressEvent::IndexText { total: records.len() });
+                }
+                if let Some(cb) = progress.as_deref_mut() {
+                    cb(ProgressEvent::Finished { total: records.len() });
+                }
+                Ok(())
+            })
+    }
+
     /// Backwards compatible wrapper without progress/cancel.
     pub fn ingest_file(&self, path: &str, doc_id_hint: Option<&str>) -> Result<(), ServiceError> {
         self.ingest_file_with_progress(path, doc_id_hint, None, None)
