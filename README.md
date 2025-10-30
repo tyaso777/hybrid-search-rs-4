@@ -72,22 +72,26 @@ Rust workspace for a hybrid search pipeline.
 
 ## Quick Start
 
-Note (Windows): For high‑fidelity PDF parsing via PDFium, prepare `pdfium.dll` as described in [file-chunker/README.md](file-chunker/README.md) (PDFium Backend). This is effectively step 0.5 between steps 0 and 1.
+
 
 0) Prepare ONNX Runtime and Model (one‑time)
 - Follow the setup guide in [embedding_provider/README.md](embedding_provider/README.md) to place the ONNX Runtime shared library and the ONNX model/tokenizer.
 - If you use non‑default locations, either edit `embedding_provider/src/config.rs` or set the paths in the GUI fields when you run the tools.
 
-1) Prepare Lindera embedded IPADIC (one-time)
+1) Prepare PDFium (Windows; required for proper PDF parsing)
+   - Place `pdfium.dll` as documented in [file-chunker/README.md](file-chunker/README.md) (PDFium Backend section).
+   - Quick hint: copy the DLL under `file-chunker/bin/pdfium-win-x64/bin/pdfium.dll` or set `PDFIUM_DLL_PATH` / `PDFIUM_DIR`.
+
+2) Prepare Lindera embedded IPADIC (one-time)
    - This workspace uses Lindera for Japanese tokenization with the embedded IPADIC dictionary.
    - Online environment: simply run `cargo build` and the build script fetches the dictionary automatically.
    - Restricted/offline environment:
      - `$env:LINDERA_CACHE = (Resolve-Path .\\vendor\\lindera-cache).Path`
      - Place the tarball at: `.\\vendor\\lindera-cache\\1.4.1\\mecab-ipadic-2.7.0-20250920.tar.gz`
 
-2) Optional tests: `cargo test -p embedding-provider`
-3) Sanity check (CLI): `cargo run -p embedding-provider --bin embed_cli "your text"`
-4) Try the Hybrid Orchestrator GUI:
+3) Optional tests: `cargo test -p embedding-provider`
+4) Sanity check (CLI): `cargo run -p embedding-provider --bin embed_cli "your text"`
+5) Try the Hybrid Orchestrator GUI:
    - `cargo run -p hybrid-orchestrator-gui`
    - Configure model/tokenizer/runtime if you didn't use the defaults above; then Insert or Excel Ingest, and Search.
 ## Compliance / Security
