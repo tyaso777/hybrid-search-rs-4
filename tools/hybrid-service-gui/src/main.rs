@@ -10,7 +10,7 @@ use egui_extras::{Column, TableBuilder};
 use eframe::{App, CreationContext, Frame, NativeOptions};
 use rfd::FileDialog;
 
-use hybrid_service::{HybridService, ServiceConfig, CancelToken, ProgressEvent};
+use hybrid_service::{HybridService, ServiceConfig, CancelToken, ProgressEvent, HnswState};
 use embedding_provider::config::{default_stdio_config, ONNX_STDIO_DEFAULTS};
 use chunking_store::FilterClause;
 use chunking_store::ChunkStoreRead;
@@ -381,10 +381,11 @@ impl App for AppState {
                     ui.separator();
                     ui.separator();
                     let (model_status, index_status) = if self.svc.is_none() {
-                        if self.svc_task.is_some() { ("loading", "loading") } else { ("released", "released") }
+                        if self.svc_task.is_some() { ("loading", "absent") } else { ("released", "absent") }
                     } else {
-                        let idx_ready = self.svc.as_ref().map(|s| s.hnsw_ready()).unwrap_or(false);
-                        ("ready", if idx_ready { "ready" } else { "loading" })
+                        let st = self.svc.as_ref().map(|s| s.hnsw_state()).unwrap_or(HnswState::Error);
+                        let idx = match st { HnswState::Absent => "absent", HnswState::Loading => "loading", HnswState::Ready => "ready", HnswState::Error => "error" };
+                        ("ready", idx)
                     };
                     let status_text = format!("Model: {}, Index: {}", model_status, index_status);
                     ui.label(status_text);

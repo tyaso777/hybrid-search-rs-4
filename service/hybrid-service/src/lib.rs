@@ -58,7 +58,12 @@ pub struct HybridService {
     embedder: OnnxStdIoEmbedder,
     hnsw: Arc<RwLock<Option<HnswIndex>>>,
     warmed: AtomicBool,
+    hnsw_state: Arc<RwLock<HnswState>>,
 }
+
+/// State of the resident HNSW index in memory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HnswState { Absent, Loading, Ready, Error }
 
 /// Cooperative cancellation handle shared across long-running operations.
 #[derive(Clone, Default)]
@@ -90,18 +95,27 @@ impl HybridService {
         }
         let embedder = OnnxStdIoEmbedder::new(cfg.embedder.clone())
             .map_err(|e| ServiceError::Embed(e.to_string()))?;
-        let svc = Self { cfg, embedder, hnsw: Arc::new(RwLock::new(None)), warmed: AtomicBool::new(false) };
+        let svc = Self { cfg, embedder, hnsw: Arc::new(RwLock::new(None)), warmed: AtomicBool::new(false), hnsw_state: Arc::new(RwLock::new(HnswState::Absent)) };
         // Warm up ONNX session once (best-effort)
         let _ = svc.embedder.embed("warmup").map(|_| svc.warmed.store(true, Ordering::Relaxed));
         // Background preload HNSW (if index exists)
         let hdir = svc.hnsw_dir();
         let dim = svc.embedder.info().dimension;
         let cache = Arc::clone(&svc.hnsw);
+        let state = Arc::clone(&svc.hnsw_state);
         std::thread::spawn(move || {
-            if Path::new(&hdir).join("map.tsv").exists() {
-                if let Ok(h) = HnswIndex::load(&hdir, dim) {
+            let exists = Path::new(&hdir).join("map.tsv").exists();
+            if !exists {
+                if let Ok(mut s) = state.write() { *s = HnswState::Absent; }
+                return;
+            }
+            if let Ok(mut s) = state.write() { *s = HnswState::Loading; }
+            match HnswIndex::load(&hdir, dim) {
+                Ok(h) => {
                     if let Ok(mut guard) = cache.write() { *guard = Some(h); }
+                    if let Ok(mut s) = state.write() { *s = HnswState::Ready; }
                 }
+                Err(_) => { if let Ok(mut s) = state.write() { *s = HnswState::Error; } }
             }
         });
         Ok(svc)
@@ -121,6 +135,14 @@ impl HybridService {
             if self.embedder.embed("warmup").is_ok() {
                 self.warmed.store(true, Ordering::Relaxed);
             }
+        }
+    }
+
+    /// Current HNSW state (Absent/Loading/Ready/Error).
+    pub fn hnsw_state(&self) -> HnswState {
+        match self.hnsw_state.read() {
+            Ok(s) => s.clone(),
+            Err(_) => HnswState::Error,
         }
     }
 
@@ -162,8 +184,9 @@ impl HybridService {
         if vectors.is_some() {
             hnsw.save(&hdir).map_err(|e| ServiceError::Io(e.to_string()))?;
         }
-        // Refresh resident cache
+        // Refresh resident cache and state
         if let Ok(mut guard) = self.hnsw.write() { *guard = Some(hnsw); }
+        let _ = self.hnsw_state.write().map(|mut s| *s = HnswState::Ready);
         Ok(())
     }
 
@@ -289,15 +312,23 @@ impl HybridService {
         }
         if need_try_load {
             let hdir = self.hnsw_dir();
-            if Path::new(&hdir).join("map.tsv").exists() {
-                if let Ok(h) = HnswIndex::load(&hdir, qvec.len()) {
-                    if let Ok(mut w) = self.hnsw.write() { *w = Some(h); }
-                    if let Ok(r) = self.hnsw.read() {
-                        if let Some(h) = r.as_ref() {
-                            vec_matches = VectorSearcher::knn_ids(h, &repo, &qvec, filters, &opts);
+            let exists = Path::new(&hdir).join("map.tsv").exists();
+            if exists {
+                if let Ok(mut s) = self.hnsw_state.write() { *s = HnswState::Loading; }
+                match HnswIndex::load(&hdir, qvec.len()) {
+                    Ok(h) => {
+                        if let Ok(mut w) = self.hnsw.write() { *w = Some(h); }
+                        if let Ok(mut s) = self.hnsw_state.write() { *s = HnswState::Ready; }
+                        if let Ok(r) = self.hnsw.read() {
+                            if let Some(h) = r.as_ref() {
+                                vec_matches = VectorSearcher::knn_ids(h, &repo, &qvec, filters, &opts);
+                            }
                         }
                     }
+                    Err(_) => { let _ = self.hnsw_state.write().map(|mut s| *s = HnswState::Error); }
                 }
+            } else {
+                let _ = self.hnsw_state.write().map(|mut s| *s = HnswState::Absent);
             }
         }
 
@@ -349,6 +380,7 @@ impl HybridService {
         // Persist HNSW snapshot post-delete and refresh resident cache
         hnsw.save(&hdir).map_err(|e| ServiceError::Io(e.to_string()))?;
         if let Ok(mut guard) = self.hnsw.write() { *guard = Some(hnsw); }
+        let _ = self.hnsw_state.write().map(|mut s| *s = HnswState::Ready);
         Ok(rep)
     }
 
