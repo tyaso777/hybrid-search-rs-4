@@ -97,44 +97,50 @@ impl HybridService {
         if let Some(dir) = cfg.db_path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| ServiceError::Io(e.to_string()))?;
         }
+        // Prepare runtime paths and resident index/state first so we can load HNSW in parallel with model init
+        let db_path = Arc::new(RwLock::new(cfg.db_path.clone()));
+        let hnsw_dir_override = Arc::new(RwLock::new(cfg.hnsw_dir.clone()));
+        let hnsw = Arc::new(RwLock::new(None));
+        let hnsw_state = Arc::new(RwLock::new(HnswState::Absent));
+
+        // Derive HNSW dir from config and kick preload immediately using configured dimension
+        let hdir = match &cfg.hnsw_dir { Some(d) => d.clone(), None => derive_hnsw_dir(&cfg.db_path) };
+        let dim_cfg = cfg.embedder.dimension;
+        {
+            let cache = Arc::clone(&hnsw);
+            let state = Arc::clone(&hnsw_state);
+            std::thread::spawn(move || {
+                let exists = Path::new(&hdir).join("map.tsv").exists();
+                if !exists {
+                    let _ = state.write().map(|mut s| *s = HnswState::Absent);
+                    return;
+                }
+                let _ = state.write().map(|mut s| *s = HnswState::Loading);
+                match HnswIndex::load(&hdir, dim_cfg) {
+                    Ok(h) => {
+                        let _ = cache.write().map(|mut guard| *guard = Some(h));
+                        let _ = state.write().map(|mut s| *s = HnswState::Ready);
+                    }
+                    Err(_) => { let _ = state.write().map(|mut s| *s = HnswState::Error); }
+                }
+            });
+        }
+
+        // Initialize embedder (may run concurrently with HNSW loading)
         let embedder = OnnxStdIoEmbedder::new(cfg.embedder.clone())
             .map_err(|e| ServiceError::Embed(e.to_string()))?;
+
         let svc = Self {
             cfg,
             embedder,
-            db_path: Arc::new(RwLock::new(PathBuf::new())) ,
-            hnsw_dir_override: Arc::new(RwLock::new(None)),
-            hnsw: Arc::new(RwLock::new(None)),
+            db_path,
+            hnsw_dir_override,
+            hnsw,
             warmed: AtomicBool::new(false),
-            hnsw_state: Arc::new(RwLock::new(HnswState::Absent)),
+            hnsw_state,
         };
-        // Initialize active paths from config
-        {
-            let _ = svc.db_path.write().map(|mut w| *w = svc.cfg.db_path.clone());
-            let _ = svc.hnsw_dir_override.write().map(|mut w| *w = svc.cfg.hnsw_dir.clone());
-        }
         // Warm up ONNX session once (best-effort)
         let _ = svc.embedder.embed("warmup").map(|_| svc.warmed.store(true, Ordering::Relaxed));
-        // Background preload HNSW (if index exists)
-        let hdir = svc.hnsw_dir();
-        let dim = svc.embedder.info().dimension;
-        let cache = Arc::clone(&svc.hnsw);
-        let state = Arc::clone(&svc.hnsw_state);
-        std::thread::spawn(move || {
-            let exists = Path::new(&hdir).join("map.tsv").exists();
-            if !exists {
-                if let Ok(mut s) = state.write() { *s = HnswState::Absent; }
-                return;
-            }
-            if let Ok(mut s) = state.write() { *s = HnswState::Loading; }
-            match HnswIndex::load(&hdir, dim) {
-                Ok(h) => {
-                    if let Ok(mut guard) = cache.write() { *guard = Some(h); }
-                    if let Ok(mut s) = state.write() { *s = HnswState::Ready; }
-                }
-                Err(_) => { if let Ok(mut s) = state.write() { *s = HnswState::Error; } }
-            }
-        });
         Ok(svc)
     }
 
