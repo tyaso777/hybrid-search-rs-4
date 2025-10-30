@@ -759,16 +759,17 @@ impl AppState {
         // Sort by selected mode
         let mut items: Vec<(String, (Option<f32>, Option<f32>, Option<f32>, Option<f32>))> = agg.into_iter().collect();
         items.sort_by(|a, b| {
-            let (tv_a, vec_a) = (a.1.2.unwrap_or(0.0), a.1.3.unwrap_or(0.0));
-            let (tv_b, vec_b) = (b.1.2.unwrap_or(0.0), b.1.3.unwrap_or(0.0));
+            let (tv_a, tv_and_a, tv_or_a, vec_a) = (a.1.0.unwrap_or(0.0), a.1.1.unwrap_or(0.0), a.1.2.unwrap_or(0.0), a.1.3.unwrap_or(0.0));
+            let (tv_b, tv_and_b, tv_or_b, vec_b) = (b.1.0.unwrap_or(0.0), b.1.1.unwrap_or(0.0), b.1.2.unwrap_or(0.0), b.1.3.unwrap_or(0.0));
             let key_a = match self.search_mode {
                 SearchMode::Hybrid => {
+                    // Hybrid=fusion of TV(OR) and VEC with normalized weights
                     let denom = (self.w_text + self.w_vec).max(1e-6);
                     let wt = self.w_text / denom;
                     let wv = self.w_vec / denom;
-                    wt * tv_a + wv * vec_a
+                    wt * tv_or_a + wv * vec_a
                 }
-                SearchMode::Tantivy => tv_a,
+                SearchMode::Tantivy => tv_a.max(tv_and_a).max(tv_or_a),
                 SearchMode::Vec => vec_a,
             };
             let key_b = match self.search_mode {
@@ -776,9 +777,9 @@ impl AppState {
                     let denom = (self.w_text + self.w_vec).max(1e-6);
                     let wt = self.w_text / denom;
                     let wv = self.w_vec / denom;
-                    wt * tv_b + wv * vec_b
+                    wt * tv_or_b + wv * vec_b
                 }
-                SearchMode::Tantivy => tv_b,
+                SearchMode::Tantivy => tv_b.max(tv_and_b).max(tv_or_b),
                 SearchMode::Vec => vec_b,
             };
             key_b.partial_cmp(&key_a).unwrap_or(std::cmp::Ordering::Equal)
