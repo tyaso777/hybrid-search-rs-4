@@ -122,14 +122,38 @@ impl AppState {
     fn ui_config(&mut self, ui: &mut egui::Ui) {
         ui.heading("Model / Store Config");
         ui.add_enabled_ui(!self.ingest_running, |ui| {
-            let mut root_changed = false;
             ui.horizontal(|ui| {
                 ui.label("Store Root");
-                if ui.add(TextEdit::singleline(&mut self.store_root).desired_width(400.0)).changed() { root_changed = true; }
-                if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().pick_folder() { self.store_root = p.display().to_string(); root_changed = true; } }
-                if ui.button("Reset").clicked() { self.store_root = "target/demo/store".into(); root_changed = true; }
+                ui.add(TextEdit::singleline(&mut self.store_root).desired_width(400.0));
+                if ui.button("Set").clicked() {
+                    self.refresh_store_paths();
+                    let _ = fs::create_dir_all(self.store_root.trim());
+                    let _ = fs::create_dir_all(derive_hnsw_dir(self.store_root.trim()));
+                    #[cfg(feature = "tantivy")]
+                    let _ = fs::create_dir_all(derive_tantivy_dir(self.store_root.trim()));
+                    self.status = format!("Store root set to {}", self.store_root.trim());
+                }
+                if ui.button("Browse").clicked() {
+                    if let Some(p) = FileDialog::new().pick_folder() {
+                        self.store_root = p.display().to_string();
+                        self.refresh_store_paths();
+                        let _ = fs::create_dir_all(self.store_root.trim());
+                        let _ = fs::create_dir_all(derive_hnsw_dir(self.store_root.trim()));
+                        #[cfg(feature = "tantivy")]
+                        let _ = fs::create_dir_all(derive_tantivy_dir(self.store_root.trim()));
+                        self.status = format!("Store root set to {}", self.store_root.trim());
+                    }
+                }
+                if ui.button("Reset").clicked() {
+                    self.store_root = "target/demo/store".into();
+                    self.refresh_store_paths();
+                    let _ = fs::create_dir_all(self.store_root.trim());
+                    let _ = fs::create_dir_all(derive_hnsw_dir(self.store_root.trim()));
+                    #[cfg(feature = "tantivy")]
+                    let _ = fs::create_dir_all(derive_tantivy_dir(self.store_root.trim()));
+                    self.status = format!("Store root reset to {}", self.store_root.trim());
+                }
             });
-            if root_changed { self.refresh_store_paths(); }
             ui.horizontal(|ui| { ui.label("DB"); ui.label(&self.db_path); });
             ui.horizontal(|ui| { ui.label("HNSW"); ui.label(&self.hnsw_dir); });
             #[cfg(feature = "tantivy")]
