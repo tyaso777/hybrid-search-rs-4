@@ -427,9 +427,31 @@ impl App for AppState {
         CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.add_enabled_ui(!self.ingest_running, |ui| {
-                    ui.selectable_value(&mut self.tab, ActiveTab::Insert, "Insert");
-                    ui.selectable_value(&mut self.tab, ActiveTab::Search, "Search");
-                    ui.selectable_value(&mut self.tab, ActiveTab::Config, "Config");
+                    // Top-level tabs with underline accent
+                    let resp_insert = ui.selectable_value(&mut self.tab, ActiveTab::Insert, "Insert");
+                    let resp_search = ui.selectable_value(&mut self.tab, ActiveTab::Search, "Search");
+                    let resp_config = ui.selectable_value(&mut self.tab, ActiveTab::Config, "Config");
+                    let union12 = resp_insert.rect.union(resp_search.rect);
+                    let union_all = union12.union(resp_config.rect);
+                    let y = union_all.bottom() + 2.0;
+                    let painter = ui.painter();
+                    let base_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
+                    let accent = ui.visuals().selection.stroke.color;
+                    // Baseline across all tabs
+                    painter.line_segment(
+                        [egui::pos2(union_all.left(), y), egui::pos2(union_all.right(), y)],
+                        egui::Stroke { width: 1.0, color: base_color },
+                    );
+                    // Active tab underline
+                    let active_rect = match self.tab {
+                        ActiveTab::Insert => resp_insert.rect,
+                        ActiveTab::Search => resp_search.rect,
+                        ActiveTab::Config => resp_config.rect,
+                    };
+                    painter.line_segment(
+                        [egui::pos2(active_rect.left(), y), egui::pos2(active_rect.right(), y)],
+                        egui::Stroke { width: 2.0, color: accent },
+                    );
                     // stronger visual divider (double vertical separator)
                     ui.separator();
                     ui.separator();
@@ -482,9 +504,34 @@ impl AppState {
         ui.add_enabled_ui(!self.ingest_running, |ui| {
             // Sub-tabs for Insert
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.insert_mode, InsertMode::File, "Insert File");
-                ui.selectable_value(&mut self.insert_mode, InsertMode::Text, "Insert Text");
+                // Draw two tab-like buttons with an underline
+                let resp_file = ui.selectable_value(&mut self.insert_mode, InsertMode::File, "Insert File");
+                let resp_text = ui.selectable_value(&mut self.insert_mode, InsertMode::Text, "Insert Text");
+
+                // Compute a union rect spanning both buttons
+                let union = resp_file.rect.union(resp_text.rect);
+                let y = union.bottom() + 2.0;
+                let painter = ui.painter();
+                let base_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
+                let accent = ui.visuals().selection.stroke.color;
+
+                // Baseline under both tabs
+                painter.line_segment(
+                    [egui::pos2(union.left(), y), egui::pos2(union.right(), y)],
+                    egui::Stroke { width: 1.0, color: base_color },
+                );
+
+                // Accent underline under the active tab
+                let active_rect = match self.insert_mode {
+                    InsertMode::File => resp_file.rect,
+                    InsertMode::Text => resp_text.rect,
+                };
+                painter.line_segment(
+                    [egui::pos2(active_rect.left(), y), egui::pos2(active_rect.right(), y)],
+                    egui::Stroke { width: 2.0, color: accent },
+                );
             });
+            ui.add_space(6.0);
 
             match self.insert_mode {
                 InsertMode::File => {
