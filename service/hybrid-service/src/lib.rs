@@ -109,6 +109,7 @@ impl HybridService {
         {
             let cache = Arc::clone(&hnsw);
             let state = Arc::clone(&hnsw_state);
+            let dbp_for_warm = cfg.db_path.clone();
             std::thread::spawn(move || {
                 let exists = Path::new(&hdir).join("map.tsv").exists();
                 if !exists {
@@ -119,6 +120,16 @@ impl HybridService {
                 match HnswIndex::load(&hdir, dim_cfg) {
                     Ok(h) => {
                         let _ = cache.write().map(|mut guard| *guard = Some(h));
+                        // Optional KNN warm-up: open repo and run a trivial 1-NN to touch pages
+                        if let Ok(repo) = SqliteRepo::open(&dbp_for_warm) {
+                            let qvec = vec![0.0f32; dim_cfg];
+                            let opts = SearchOptions { top_k: 1, fetch_factor: 1 };
+                            if let Ok(guard) = cache.read() {
+                                if let Some(h) = guard.as_ref() {
+                                    let _ = VectorSearcher::knn_ids(h, &repo, &qvec, &[], &opts);
+                                }
+                            }
+                        }
                         let _ = state.write().map(|mut s| *s = HnswState::Ready);
                     }
                     Err(_) => { let _ = state.write().map(|mut s| *s = HnswState::Error); }
@@ -193,6 +204,7 @@ impl HybridService {
         let _ = self.hnsw.write().map(|mut w| *w = None);
         let hdir = self.hnsw_dir();
         let dim = self.embedder.info().dimension;
+        let db_for_warm = self.db_path.read().map(|p| p.clone()).unwrap_or_else(|_| self.cfg.db_path.clone());
         let cache = Arc::clone(&self.hnsw);
         let state = Arc::clone(&self.hnsw_state);
         std::thread::spawn(move || {
@@ -205,6 +217,16 @@ impl HybridService {
             match HnswIndex::load(&hdir, dim) {
                 Ok(h) => {
                     let _ = cache.write().map(|mut w| *w = Some(h));
+                    // KNN warm-up
+                    if let Ok(repo) = SqliteRepo::open(&db_for_warm) {
+                        let qvec = vec![0.0f32; dim];
+                        let opts = SearchOptions { top_k: 1, fetch_factor: 1 };
+                        if let Ok(guard) = cache.read() {
+                            if let Some(h) = guard.as_ref() {
+                                let _ = VectorSearcher::knn_ids(h, &repo, &qvec, &[], &opts);
+                            }
+                        }
+                    }
                     let _ = state.write().map(|mut s| *s = HnswState::Ready);
                 }
                 Err(_) => { let _ = state.write().map(|mut s| *s = HnswState::Error); }
