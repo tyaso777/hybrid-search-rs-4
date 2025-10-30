@@ -131,7 +131,7 @@ impl AppState {
                         let _ = fs::create_dir_all(self.store_root.trim());
                         let _ = fs::create_dir_all(derive_hnsw_dir(self.store_root.trim()));
                         #[cfg(feature = "tantivy")] let _ = fs::create_dir_all(derive_tantivy_dir(self.store_root.trim()));
-                        self.status = format!("Store root set to {}", self.store_root.trim());
+                        self.status = format!("Store root set to {}", self.store_root.trim()); if let Some(svc) = &self.svc { svc.set_store_paths(PathBuf::from(self.db_path.trim()), Some(PathBuf::from(self.hnsw_dir.trim()))); }
                     }
                 }
                 ui.add(TextEdit::singleline(&mut self.store_root).desired_width(400.0));
@@ -141,7 +141,7 @@ impl AppState {
                     let _ = fs::create_dir_all(derive_hnsw_dir(self.store_root.trim()));
                     #[cfg(feature = "tantivy")]
                     let _ = fs::create_dir_all(derive_tantivy_dir(self.store_root.trim()));
-                    self.status = format!("Store root set to {}", self.store_root.trim());
+                    self.status = format!("Store root set to {}", self.store_root.trim()); if let Some(svc) = &self.svc { svc.set_store_paths(PathBuf::from(self.db_path.trim()), Some(PathBuf::from(self.hnsw_dir.trim()))); }
                 }
                 if ui.button("Reset").clicked() {
                     self.store_root = "target/demo/store".into();

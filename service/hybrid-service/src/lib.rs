@@ -56,9 +56,13 @@ impl Default for ServiceConfig {
 pub struct HybridService {
     cfg: ServiceConfig,
     embedder: OnnxStdIoEmbedder,
+    // Active store paths (mutable at runtime)
+    db_path: Arc<RwLock<PathBuf>>,
+    hnsw_dir_override: Arc<RwLock<Option<PathBuf>>>,
+    // Resident index + state
     hnsw: Arc<RwLock<Option<HnswIndex>>>,
     warmed: AtomicBool,
-    hnsw_state: Arc<RwLock<HnswState>>,
+    hnsw_state: Arc<RwLock<HnswState>>, 
 }
 
 /// State of the resident HNSW index in memory.
@@ -95,7 +99,20 @@ impl HybridService {
         }
         let embedder = OnnxStdIoEmbedder::new(cfg.embedder.clone())
             .map_err(|e| ServiceError::Embed(e.to_string()))?;
-        let svc = Self { cfg, embedder, hnsw: Arc::new(RwLock::new(None)), warmed: AtomicBool::new(false), hnsw_state: Arc::new(RwLock::new(HnswState::Absent)) };
+        let svc = Self {
+            cfg,
+            embedder,
+            db_path: Arc::new(RwLock::new(PathBuf::new())) ,
+            hnsw_dir_override: Arc::new(RwLock::new(None)),
+            hnsw: Arc::new(RwLock::new(None)),
+            warmed: AtomicBool::new(false),
+            hnsw_state: Arc::new(RwLock::new(HnswState::Absent)),
+        };
+        // Initialize active paths from config
+        {
+            let _ = svc.db_path.write().map(|mut w| *w = svc.cfg.db_path.clone());
+            let _ = svc.hnsw_dir_override.write().map(|mut w| *w = svc.cfg.hnsw_dir.clone());
+        }
         // Warm up ONNX session once (best-effort)
         let _ = svc.embedder.embed("warmup").map(|_| svc.warmed.store(true, Ordering::Relaxed));
         // Background preload HNSW (if index exists)
@@ -147,16 +164,46 @@ impl HybridService {
     }
 
     fn open_repo(&self) -> Result<SqliteRepo, ServiceError> {
-        let repo = SqliteRepo::open(&self.cfg.db_path).map_err(|e| ServiceError::Repo(e.to_string()))?;
+        let path = self.db_path.read().map(|p| p.clone()).unwrap_or_else(|_| self.cfg.db_path.clone());
+        let repo = SqliteRepo::open(&path).map_err(|e| ServiceError::Repo(e.to_string()))?;
         let _ = repo.maybe_rebuild_fts();
         Ok(repo)
     }
 
     fn hnsw_dir(&self) -> PathBuf {
-        match &self.cfg.hnsw_dir {
-            Some(d) => d.clone(),
-            None => derive_hnsw_dir(&self.cfg.db_path),
+        // Prefer runtime override, otherwise derive from current db_path
+        if let Ok(ovr) = self.hnsw_dir_override.read() {
+            if let Some(d) = ovr.as_ref() { return d.clone(); }
         }
+        let dbp = self.db_path.read().map(|p| p.clone()).unwrap_or_else(|_| self.cfg.db_path.clone());
+        derive_hnsw_dir(&dbp)
+    }
+
+    /// Update active DB/HNSW paths at runtime and attempt to preload HNSW.
+    pub fn set_store_paths(&self, db_path: PathBuf, hnsw_dir: Option<PathBuf>) {
+        if let Ok(mut w) = self.db_path.write() { *w = db_path; }
+        if let Ok(mut w) = self.hnsw_dir_override.write() { *w = hnsw_dir; }
+        // Reset resident cache and state, and try loading if index exists
+        let _ = self.hnsw.write().map(|mut w| *w = None);
+        let hdir = self.hnsw_dir();
+        let dim = self.embedder.info().dimension;
+        let cache = Arc::clone(&self.hnsw);
+        let state = Arc::clone(&self.hnsw_state);
+        std::thread::spawn(move || {
+            let idx = Path::new(&hdir).join("map.tsv");
+            if !idx.exists() {
+                let _ = state.write().map(|mut s| *s = HnswState::Absent);
+                return;
+            }
+            let _ = state.write().map(|mut s| *s = HnswState::Loading);
+            match HnswIndex::load(&hdir, dim) {
+                Ok(h) => {
+                    let _ = cache.write().map(|mut w| *w = Some(h));
+                    let _ = state.write().map(|mut s| *s = HnswState::Ready);
+                }
+                Err(_) => { let _ = state.write().map(|mut s| *s = HnswState::Error); }
+            }
+        });
     }
 
     /// Ingest pre-built chunks with optional precomputed vectors.
