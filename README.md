@@ -72,6 +72,8 @@ Rust workspace for a hybrid search pipeline.
 
 ## Quick Start
 
+Note (Windows): For high‑fidelity PDF parsing via PDFium, prepare `pdfium.dll` as described in [file-chunker/README.md](file-chunker/README.md) (PDFium Backend). This is effectively step 0.5 between steps 0 and 1.
+
 0) Prepare ONNX Runtime and Model (one‑time)
 - Follow the setup guide in [embedding_provider/README.md](embedding_provider/README.md) to place the ONNX Runtime shared library and the ONNX model/tokenizer.
 - If you use non‑default locations, either edit `embedding_provider/src/config.rs` or set the paths in the GUI fields when you run the tools.
