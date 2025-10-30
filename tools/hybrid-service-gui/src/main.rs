@@ -9,6 +9,7 @@ use eframe::egui::ProgressBar;
 use egui_extras::{Column, TableBuilder, StripBuilder, Size};
 use eframe::{App, CreationContext, Frame, NativeOptions};
 use rfd::FileDialog;
+use serde::{Deserialize, Serialize};
 
 use hybrid_service::{HybridService, ServiceConfig, CancelToken, ProgressEvent, HnswState};
 use embedding_provider::config::{default_stdio_config, ONNX_STDIO_DEFAULTS};
@@ -142,12 +143,87 @@ struct AppState {
 
     // ONNX Runtime DLL lock (set after first successful Init)
     ort_runtime_committed: Option<String>,
+
+    // Suggested filename for config save dialog
+    config_last_name: String,
+    // Optional store name to include in suggested config filename
+    config_store_name: String,
+}
+
+// New (nested) config format: { store: {...}, chunk: {...}, model: {...} }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HybridGuiConfigV2 {
+    store: StoreCfg,
+    chunk: ChunkCfg,
+    model: ModelCfg,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoreCfg {
+    store_root: String,
+    #[serde(default)]
+    store_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChunkCfg {
+    chunk_min: usize,
+    chunk_max: usize,
+    chunk_cap: usize,
+    chunk_penalize_short_line: bool,
+    chunk_penalize_page_no_nl: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ModelCfg {
+    model_path: String,
+    tokenizer_path: String,
+    runtime_path: String,
+    embedding_dimension: usize,
+    max_tokens: usize,
+    embed_batch_size: usize,
+    embed_auto: bool,
+    embed_initial_batch: usize,
+    embed_min_batch: usize,
+}
+
+// Backward-compatible (flat) config format used previously
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HybridGuiConfigV1 {
+    // Store
+    store_root: String,
+    // Chunking params
+    chunk_min: usize,
+    chunk_max: usize,
+    chunk_cap: usize,
+    chunk_penalize_short_line: bool,
+    chunk_penalize_page_no_nl: bool,
+    // Embed/model/runtime
+    model_path: String,
+    tokenizer_path: String,
+    runtime_path: String,
+    embedding_dimension: usize,
+    max_tokens: usize,
+    embed_batch_size: usize,
+    embed_auto: bool,
+    embed_initial_batch: usize,
+    embed_min_batch: usize,
 }
 
 impl AppState {
     fn ui_config(&mut self, ui: &mut egui::Ui) {
         ui.heading("Model / Store Config");
         ui.add_enabled_ui(!self.ingest_running, |ui| {
+            // Config load/save row
+            ui.horizontal(|ui| {
+                if ui.button("Load Config").clicked() { self.load_config_via_dialog(); }
+                if ui.button("Save Config").clicked() { self.save_config_via_dialog(); }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Store Name (Optional)");
+                ui.add(TextEdit::singleline(&mut self.config_store_name).desired_width(200.0));
+            });
+            ui.separator();
             ui.horizontal(|ui| {
                 ui.label("Store Root");
                 if ui.button("Browse").clicked() {
@@ -233,6 +309,133 @@ impl AppState {
                 });
             });
         });
+    }
+    
+    fn to_ui_config_v2(&self) -> HybridGuiConfigV2 {
+        HybridGuiConfigV2 {
+            store: StoreCfg {
+                store_root: self.store_root.trim().to_string(),
+                store_name: {
+                    let n = self.config_store_name.trim();
+                    if n.is_empty() { None } else { Some(n.to_string()) }
+                },
+            },
+            chunk: ChunkCfg {
+                chunk_min: self.chunk_min.trim().parse().unwrap_or(400),
+                chunk_max: self.chunk_max.trim().parse().unwrap_or(600),
+                chunk_cap: self.chunk_cap.trim().parse().unwrap_or(800),
+                chunk_penalize_short_line: self.chunk_penalize_short_line,
+                chunk_penalize_page_no_nl: self.chunk_penalize_page_no_nl,
+            },
+            model: ModelCfg {
+                model_path: self.model_path.trim().to_string(),
+                tokenizer_path: self.tokenizer_path.trim().to_string(),
+                runtime_path: self.runtime_path.trim().to_string(),
+                embedding_dimension: self.embedding_dimension.trim().parse().unwrap_or_default(),
+                max_tokens: self.max_tokens.trim().parse().unwrap_or_default(),
+                embed_batch_size: self.embed_batch_size.trim().parse().unwrap_or(64),
+                embed_auto: self.embed_auto,
+                embed_initial_batch: self.embed_initial_batch.trim().parse().unwrap_or(128),
+                embed_min_batch: self.embed_min_batch.trim().parse().unwrap_or(8),
+            },
+        }
+    }
+
+    fn apply_ui_config_v2(&mut self, cfg: HybridGuiConfigV2) {
+        // Store
+        self.store_root = cfg.store.store_root;
+        self.refresh_store_paths();
+        self.config_store_name = cfg.store.store_name.unwrap_or_default();
+        // Chunking params
+        self.chunk_min = cfg.chunk.chunk_min.to_string();
+        self.chunk_max = cfg.chunk.chunk_max.to_string();
+        self.chunk_cap = cfg.chunk.chunk_cap.to_string();
+        self.chunk_penalize_short_line = cfg.chunk.chunk_penalize_short_line;
+        self.chunk_penalize_page_no_nl = cfg.chunk.chunk_penalize_page_no_nl;
+        // Model
+        self.model_path = cfg.model.model_path;
+        self.tokenizer_path = cfg.model.tokenizer_path;
+        self.runtime_path = cfg.model.runtime_path;
+        self.embedding_dimension = cfg.model.embedding_dimension.to_string();
+        self.max_tokens = cfg.model.max_tokens.to_string();
+        self.embed_batch_size = cfg.model.embed_batch_size.to_string();
+        self.embed_auto = cfg.model.embed_auto;
+        self.embed_initial_batch = cfg.model.embed_initial_batch.to_string();
+        self.embed_min_batch = cfg.model.embed_min_batch.to_string();
+    }
+
+    fn apply_ui_config_v1(&mut self, cfg: HybridGuiConfigV1) {
+        // Store
+        self.store_root = cfg.store_root;
+        self.refresh_store_paths();
+        // Chunking params
+        self.chunk_min = cfg.chunk_min.to_string();
+        self.chunk_max = cfg.chunk_max.to_string();
+        self.chunk_cap = cfg.chunk_cap.to_string();
+        self.chunk_penalize_short_line = cfg.chunk_penalize_short_line;
+        self.chunk_penalize_page_no_nl = cfg.chunk_penalize_page_no_nl;
+        // Model
+        self.model_path = cfg.model_path;
+        self.tokenizer_path = cfg.tokenizer_path;
+        self.runtime_path = cfg.runtime_path;
+        self.embedding_dimension = cfg.embedding_dimension.to_string();
+        self.max_tokens = cfg.max_tokens.to_string();
+        self.embed_batch_size = cfg.embed_batch_size.to_string();
+        self.embed_auto = cfg.embed_auto;
+        self.embed_initial_batch = cfg.embed_initial_batch.to_string();
+        self.embed_min_batch = cfg.embed_min_batch.to_string();
+    }
+
+    fn load_config_via_dialog(&mut self) {
+        if let Some(path) = FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
+            match std::fs::read_to_string(&path) {
+                Ok(s) => {
+                    // Try V2 first, then V1 for backward compatibility
+                    if let Ok(cfg2) = serde_json::from_str::<HybridGuiConfigV2>(&s) {
+                        self.apply_ui_config_v2(cfg2);
+                        self.status = format!("Loaded config (v2) from {}", path.display());
+                        if let Some(name) = std::path::Path::new(&path).file_name().and_then(|s| s.to_str()) { self.config_last_name = name.to_string(); }
+                    } else if let Ok(cfg1) = serde_json::from_str::<HybridGuiConfigV1>(&s) {
+                        self.apply_ui_config_v1(cfg1);
+                        self.status = format!("Loaded config (v1) from {}", path.display());
+                        if let Some(name) = std::path::Path::new(&path).file_name().and_then(|s| s.to_str()) { self.config_last_name = name.to_string(); }
+                    } else {
+                        self.status = format!("Load config failed: invalid JSON structure");
+                    }
+                }
+                Err(e) => { self.status = format!("Load config failed: {}", e); }
+            }
+        }
+    }
+
+    fn save_config_via_dialog(&mut self) {
+        let suggested = self.suggest_config_filename();
+        if let Some(path) = FileDialog::new().add_filter("JSON", &["json"]).set_file_name(&suggested).save_file() {
+            let cfg = self.to_ui_config_v2();
+            match serde_json::to_string_pretty(&cfg) {
+                Ok(body) => match std::fs::write(&path, body) {
+                    Ok(_) => {
+                        self.status = format!("Saved config to {}", path.display());
+                        if let Some(name) = std::path::Path::new(&path).file_name().and_then(|s| s.to_str()) {
+                            self.config_last_name = name.to_string();
+                        }
+                    }
+                    Err(e) => { self.status = format!("Save config failed: {}", e); }
+                }
+                Err(e) => { self.status = format!("Serialize config failed: {}", e); }
+            }
+        }
+    }
+
+    fn suggest_config_filename(&self) -> String {
+        let base = "hybrid-service-gui";
+        let name = self.config_store_name.trim();
+        if name.is_empty() {
+            format!("{}.json", base)
+        } else {
+            let safe = safe_filename_component(name);
+            format!("{}.{}.json", base, safe)
+        }
     }
     fn refresh_store_paths(&mut self) {
         let root = self.store_root.trim();
@@ -366,6 +569,9 @@ impl AppState {
             preview_show_tab_escape: true,
 
             ort_runtime_committed: None,
+
+            config_last_name: String::from("config.json"),
+            config_store_name: String::new(),
         }
     }
 
@@ -1265,4 +1471,34 @@ fn escape_tabs(s: &str) -> String {
         match ch { '\t' => out.push_str("\\t"), '\r' => { /* skip */ }, _ => out.push(ch) }
     }
     out
+}
+
+// Create a safe filename component while preserving Unicode characters.
+// Replaces forbidden characters (\\ / : * ? " < > |) and control chars with '-',
+// converts whitespace to '-', collapses repeated '-', and trims leading/trailing '-'.
+// Falls back to "store" if the result is empty.
+fn safe_filename_component(name: &str) -> String {
+    let forbidden: [char; 9] = ['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
+    let mut out = String::with_capacity(name.len());
+    let mut last_dash = false;
+    for ch in name.chars() {
+        let mapped = if forbidden.contains(&ch) || ch.is_control() {
+            '-'
+        } else if ch.is_whitespace() {
+            '-'
+        } else {
+            ch
+        };
+        if mapped == '-' {
+            if !last_dash {
+                out.push('-');
+                last_dash = true;
+            }
+        } else {
+            out.push(mapped);
+            last_dash = false;
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() { "store".to_string() } else { trimmed }
 }
