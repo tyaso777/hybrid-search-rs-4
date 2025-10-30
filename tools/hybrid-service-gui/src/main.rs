@@ -124,6 +124,16 @@ impl AppState {
         ui.add_enabled_ui(!self.ingest_running, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Store Root");
+                if ui.button("Browse").clicked() {
+                    if let Some(p) = FileDialog::new().pick_folder() {
+                        self.store_root = p.display().to_string();
+                        self.refresh_store_paths();
+                        let _ = fs::create_dir_all(self.store_root.trim());
+                        let _ = fs::create_dir_all(derive_hnsw_dir(self.store_root.trim()));
+                        #[cfg(feature = "tantivy")] let _ = fs::create_dir_all(derive_tantivy_dir(self.store_root.trim()));
+                        self.status = format!("Store root set to {}", self.store_root.trim());
+                    }
+                }
                 ui.add(TextEdit::singleline(&mut self.store_root).desired_width(400.0));
                 if ui.button("Set").clicked() {
                     self.refresh_store_paths();
@@ -132,17 +142,6 @@ impl AppState {
                     #[cfg(feature = "tantivy")]
                     let _ = fs::create_dir_all(derive_tantivy_dir(self.store_root.trim()));
                     self.status = format!("Store root set to {}", self.store_root.trim());
-                }
-                if ui.button("Browse").clicked() {
-                    if let Some(p) = FileDialog::new().pick_folder() {
-                        self.store_root = p.display().to_string();
-                        self.refresh_store_paths();
-                        let _ = fs::create_dir_all(self.store_root.trim());
-                        let _ = fs::create_dir_all(derive_hnsw_dir(self.store_root.trim()));
-                        #[cfg(feature = "tantivy")]
-                        let _ = fs::create_dir_all(derive_tantivy_dir(self.store_root.trim()));
-                        self.status = format!("Store root set to {}", self.store_root.trim());
-                    }
                 }
                 if ui.button("Reset").clicked() {
                     self.store_root = "target/demo/store".into();
@@ -158,21 +157,6 @@ impl AppState {
             ui.horizontal(|ui| { ui.label("HNSW"); ui.label(&self.hnsw_dir); });
             #[cfg(feature = "tantivy")]
             ui.horizontal(|ui| { ui.label("Tantivy"); ui.label(&self.tantivy_dir); });
-
-            ui.separator();
-            // Memory-only release: drop service (model + resident HNSW) and Tantivy handle (if any)
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Release in-memory model and indexes (no file deletion)").color(egui::Color32::LIGHT_BLUE));
-                if ui.button("Release Model & Indexes").clicked() {
-                    // Drop service to release ONNX session + resident HNSW
-                    self.svc = None;
-                    // Also drop Tantivy handle if opened; files remain intact
-                    #[cfg(feature = "tantivy")] {
-                        self.tantivy = None;
-                    }
-                    self.status = "Released model and resident indexes".into();
-                }
-            });
             ui.separator();
             ui.collapsing("Danger zone", |ui| {
                 ui.horizontal(|ui| {
