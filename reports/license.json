@@ -9,6 +9,15 @@
         "description":  "A simple clean-room implementation of the Adler-32 checksum"
     },
     {
+        "name":  "aes",
+        "version":  "0.8.4",
+        "authors":  "RustCrypto Developers",
+        "repository":  "https://github.com/RustCrypto/block-ciphers",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Pure Rust implementation of the Advanced Encryption Standard (a.k.a. Rijndael)"
+    },
+    {
         "name":  "android_system_properties",
         "version":  "0.1.5",
         "authors":  "Nicolas Silva \u003cnical@fastmail.com\u003e",
@@ -16,6 +25,24 @@
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
         "description":  "Minimal Android system properties wrapper"
+    },
+    {
+        "name":  "arrayref",
+        "version":  "0.3.9",
+        "authors":  "David Roundy \u003croundyd@physics.oregonstate.edu\u003e",
+        "repository":  "https://github.com/droundy/arrayref",
+        "license":  "BSD-2-Clause",
+        "license_file":  null,
+        "description":  "Macros to take array references of slices"
+    },
+    {
+        "name":  "arrayvec",
+        "version":  "0.7.6",
+        "authors":  "bluss",
+        "repository":  "https://github.com/bluss/arrayvec",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "A vector with fixed capacity, backed by an array (it can be stored on the stack too). Implements fixed capacity ArrayVec and ArrayString."
     },
     {
         "name":  "autocfg",
@@ -27,6 +54,15 @@
         "description":  "Automatic cfg for Rust compiler features"
     },
     {
+        "name":  "base64ct",
+        "version":  "1.8.0",
+        "authors":  "RustCrypto Developers",
+        "repository":  "https://github.com/RustCrypto/formats",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Pure Rust implementation of Base64 (RFC 4648) which avoids any usages of data-dependent branches/LUTs and thereby provides portable \"best effort\" constant-time operation and embedded-friendly no_std support"
+    },
+    {
         "name":  "bitflags",
         "version":  "2.10.0",
         "authors":  "The Rust Project Developers",
@@ -34,6 +70,24 @@
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
         "description":  "A macro to generate structures which behave like bitflags."
+    },
+    {
+        "name":  "blake3",
+        "version":  "1.8.2",
+        "authors":  "Jack O\u0027Connor \u003coconnor663@gmail.com\u003e|Samuel Neves",
+        "repository":  "https://github.com/BLAKE3-team/BLAKE3",
+        "license":  "Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR CC0-1.0",
+        "license_file":  null,
+        "description":  "the BLAKE3 hash function"
+    },
+    {
+        "name":  "block-buffer",
+        "version":  "0.10.4",
+        "authors":  "RustCrypto Developers",
+        "repository":  "https://github.com/RustCrypto/utils",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Buffer type for block processing of data"
     },
     {
         "name":  "bumpalo",
@@ -90,6 +144,24 @@
         "description":  "Types and traits for working with bytes"
     },
     {
+        "name":  "bzip2",
+        "version":  "0.4.4",
+        "authors":  "Alex Crichton \u003calex@alexcrichton.com\u003e",
+        "repository":  "https://github.com/alexcrichton/bzip2-rs",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Bindings to libbzip2 for bzip2 compression and decompression exposed as Reader/Writer streams."
+    },
+    {
+        "name":  "bzip2-sys",
+        "version":  "0.1.13+1.0.8",
+        "authors":  "Alex Crichton \u003calex@alexcrichton.com\u003e",
+        "repository":  "https://github.com/alexcrichton/bzip2-rs",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Bindings to libbzip2 for bzip2 compression and decompression exposed as Reader/Writer streams."
+    },
+    {
         "name":  "cc",
         "version":  "1.2.43",
         "authors":  "Alex Crichton \u003calex@alexcrichton.com\u003e",
@@ -126,6 +198,15 @@
         "description":  null
     },
     {
+        "name":  "cipher",
+        "version":  "0.4.4",
+        "authors":  "RustCrypto Developers",
+        "repository":  "https://github.com/RustCrypto/traits",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Traits for describing block ciphers and stream ciphers"
+    },
+    {
         "name":  "console_error_panic_hook",
         "version":  "0.1.7",
         "authors":  "Nick Fitzgerald \u003cfitzgen@gmail.com\u003e",
@@ -144,6 +225,24 @@
         "description":  "A logging facility that routes Rust log messages to the browser\u0027s console."
     },
     {
+        "name":  "constant_time_eq",
+        "version":  "0.1.5",
+        "authors":  "Cesar Eduardo Barros \u003ccesarb@cesarb.eti.br\u003e",
+        "repository":  "https://github.com/cesarb/constant_time_eq",
+        "license":  "CC0-1.0",
+        "license_file":  null,
+        "description":  "Compares two equal-sized byte strings in constant time."
+    },
+    {
+        "name":  "constant_time_eq",
+        "version":  "0.3.1",
+        "authors":  "Cesar Eduardo Barros \u003ccesarb@cesarb.eti.br\u003e",
+        "repository":  "https://github.com/cesarb/constant_time_eq",
+        "license":  "Apache-2.0 OR CC0-1.0 OR MIT-0",
+        "license_file":  null,
+        "description":  "Compares two equal-sized byte strings in constant time."
+    },
+    {
         "name":  "core-foundation-sys",
         "version":  "0.8.7",
         "authors":  "The Servo Project Developers",
@@ -151,6 +250,15 @@
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
         "description":  "Bindings to Core Foundation for macOS"
+    },
+    {
+        "name":  "cpufeatures",
+        "version":  "0.2.17",
+        "authors":  "RustCrypto Developers",
+        "repository":  "https://github.com/RustCrypto/utils",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Lightweight runtime CPU feature detection for aarch64, loongarch64, and x86/x86_64 targets,  with no_std support and support for mobile targets including Android and iOS"
     },
     {
         "name":  "crc32fast",
@@ -189,6 +297,15 @@
         "description":  "Utilities for concurrent programming"
     },
     {
+        "name":  "crypto-common",
+        "version":  "0.1.6",
+        "authors":  "RustCrypto Developers",
+        "repository":  "https://github.com/RustCrypto/traits",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Common cryptographic traits"
+    },
+    {
         "name":  "deranged",
         "version":  "0.5.5",
         "authors":  "Jacob Pratt \u003cjacob@jhpratt.dev\u003e",
@@ -196,6 +313,15 @@
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
         "description":  "Ranged integers"
+    },
+    {
+        "name":  "digest",
+        "version":  "0.10.7",
+        "authors":  "RustCrypto Developers",
+        "repository":  "https://github.com/RustCrypto/traits",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Traits for cryptographic hash functions and message authentication codes"
     },
     {
         "name":  "either",
@@ -243,6 +369,24 @@
         "description":  "DEFLATE compression and decompression exposed as Read/BufRead/Write streams. Supports miniz_oxide and multiple zlib implementations. Supports zlib, gzip, and raw deflate streams."
     },
     {
+        "name":  "generic-array",
+        "version":  "0.14.9",
+        "authors":  "Bartłomiej Kamiński \u003cfizyk20@gmail.com\u003e|Aaron Trent \u003cnovacrazy@gmail.com\u003e",
+        "repository":  "https://github.com/fizyk20/generic-array.git",
+        "license":  "MIT",
+        "license_file":  null,
+        "description":  "Generic types implementing functionality of arrays"
+    },
+    {
+        "name":  "getrandom",
+        "version":  "0.2.16",
+        "authors":  "The Rand Project Developers",
+        "repository":  "https://github.com/rust-random/getrandom",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "A small cross-platform library for retrieving random data from system source"
+    },
+    {
         "name":  "getrandom",
         "version":  "0.3.4",
         "authors":  "The Rand Project Developers",
@@ -250,6 +394,15 @@
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
         "description":  "A small cross-platform library for retrieving random data from system source"
+    },
+    {
+        "name":  "hmac",
+        "version":  "0.12.1",
+        "authors":  "RustCrypto Developers",
+        "repository":  "https://github.com/RustCrypto/MACs",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Generic implementation of Hash-based Message Authentication Code (HMAC)"
     },
     {
         "name":  "iana-time-zone",
@@ -277,6 +430,15 @@
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
         "description":  "Imaging library. Provides basic image processing and encoders/decoders for common image formats."
+    },
+    {
+        "name":  "inout",
+        "version":  "0.1.4",
+        "authors":  "RustCrypto Developers",
+        "repository":  "https://github.com/RustCrypto/utils",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Custom reference types for code generic over in-place and buffer-to-buffer modes of operation."
     },
     {
         "name":  "itertools",
@@ -468,6 +630,24 @@
         "description":  "Single assignment cells and lazy values."
     },
     {
+        "name":  "password-hash",
+        "version":  "0.4.2",
+        "authors":  "RustCrypto Developers",
+        "repository":  "https://github.com/RustCrypto/traits/tree/master/password-hash",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Traits which describe the functionality of password hashing algorithms, as well as a `no_std`-friendly implementation of the PHC string format (a well-defined subset of the Modular Crypt Format a.k.a. MCF)"
+    },
+    {
+        "name":  "pbkdf2",
+        "version":  "0.11.0",
+        "authors":  "RustCrypto Developers",
+        "repository":  "https://github.com/RustCrypto/password-hashes/tree/master/pbkdf2",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Generic implementation of PBKDF2"
+    },
+    {
         "name":  "pdfium-render",
         "version":  "0.8.35",
         "authors":  "Alastair Carey \u003calastair@alastaircarey.com\u003e",
@@ -484,6 +664,15 @@
         "license":  "MIT",
         "license_file":  null,
         "description":  "Traits for generic floats in game development"
+    },
+    {
+        "name":  "pkg-config",
+        "version":  "0.3.32",
+        "authors":  "Alex Crichton \u003calex@alexcrichton.com\u003e",
+        "repository":  "https://github.com/rust-lang/pkg-config-rs",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "A library to run the pkg-config system tool at build time in order to be used in Cargo build scripts."
     },
     {
         "name":  "powerfmt",
@@ -513,6 +702,15 @@
         "description":  "Fast and accurate math"
     },
     {
+        "name":  "quick-xml",
+        "version":  "0.31.0",
+        "authors":  null,
+        "repository":  "https://github.com/tafia/quick-xml",
+        "license":  "MIT",
+        "license_file":  null,
+        "description":  "High performance xml reader and writer"
+    },
+    {
         "name":  "quote",
         "version":  "1.0.41",
         "authors":  "David Tolnay \u003cdtolnay@gmail.com\u003e",
@@ -529,6 +727,15 @@
         "license":  "Apache-2.0 OR LGPL-2.1-or-later OR MIT",
         "license_file":  null,
         "description":  "UEFI Reference Specification Protocol Constants and Definitions"
+    },
+    {
+        "name":  "rand_core",
+        "version":  "0.6.4",
+        "authors":  "The Rand Project Developers|The Rust Project Developers",
+        "repository":  "https://github.com/rust-random/rand",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Core random number generator traits and tools for implementation."
     },
     {
         "name":  "rayon",
@@ -603,6 +810,24 @@
         "description":  "A JSON serialization file format"
     },
     {
+        "name":  "sha1",
+        "version":  "0.10.6",
+        "authors":  "RustCrypto Developers",
+        "repository":  "https://github.com/RustCrypto/hashes",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "SHA-1 hash function"
+    },
+    {
+        "name":  "sha2",
+        "version":  "0.10.9",
+        "authors":  "RustCrypto Developers",
+        "repository":  "https://github.com/RustCrypto/hashes",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Pure Rust implementation of the SHA-2 hash function family including SHA-224, SHA-256, SHA-384, and SHA-512."
+    },
+    {
         "name":  "shlex",
         "version":  "1.3.0",
         "authors":  "comex \u003ccomexk@gmail.com\u003e|Fenhl \u003cfenhl@fenhl.net\u003e|Adrian Taylor \u003cadetaylor@chromium.org\u003e|Alex Touchet \u003calextouchet@outlook.com\u003e|Daniel Parks \u003cdp+git@oxidized.org\u003e|Garrett Berg \u003cgoogberg@gmail.com\u003e",
@@ -619,6 +844,15 @@
         "license":  "MIT",
         "license_file":  null,
         "description":  "A SIMD-accelerated Adler-32 hash algorithm implementation."
+    },
+    {
+        "name":  "subtle",
+        "version":  "2.6.1",
+        "authors":  "Isis Lovecruft \u003cisis@patternsinthevoid.net\u003e|Henry de Valence \u003chdevalence@hdevalence.ca\u003e",
+        "repository":  "https://github.com/dalek-cryptography/subtle",
+        "license":  "BSD-3-Clause",
+        "license_file":  null,
+        "description":  "Pure-Rust traits and utilities for constant-time cryptographic implementations."
     },
     {
         "name":  "syn",
@@ -657,6 +891,15 @@
         "description":  "Procedural macros for the time crate.     This crate is an implementation detail and should not be relied upon directly."
     },
     {
+        "name":  "typenum",
+        "version":  "1.19.0",
+        "authors":  "Paho Lurie-Gregg \u003cpaho@paholg.com\u003e|Andre Bogus \u003cbogusandre@gmail.com\u003e",
+        "repository":  "https://github.com/paholg/typenum",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Typenum is a Rust library for type-level numbers evaluated at     compile time. It currently supports bits, unsigned integers, and signed     integers. It also provides a type-level array of type-level numbers, but its     implementation is incomplete."
+    },
+    {
         "name":  "unicode-ident",
         "version":  "1.0.20",
         "authors":  "David Tolnay \u003cdtolnay@gmail.com\u003e",
@@ -682,6 +925,24 @@
         "license":  "MIT",
         "license_file":  null,
         "description":  "A simple and type agnostic library for vector math designed for reexporting"
+    },
+    {
+        "name":  "version_check",
+        "version":  "0.9.5",
+        "authors":  "Sergio Benitez \u003csb@sergio.bz\u003e",
+        "repository":  "https://github.com/SergioBenitez/version_check",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Tiny crate to check the version of the installed/running rustc."
+    },
+    {
+        "name":  "wasi",
+        "version":  "0.11.1+wasi-snapshot-preview1",
+        "authors":  "The Cranelift Project Developers",
+        "repository":  "https://github.com/bytecodealliance/wasi",
+        "license":  "Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT",
+        "license_file":  null,
+        "description":  "Experimental WASI API bindings for Rust"
     },
     {
         "name":  "wasip2",
@@ -828,6 +1089,15 @@
         "description":  "Rust bindings generator and runtime support for WIT and the component model. Used when compiling Rust programs to the component model."
     },
     {
+        "name":  "zip",
+        "version":  "0.6.6",
+        "authors":  "Mathijs van de Nes \u003cgit@mathijs.vd-nes.nl\u003e|Marli Frost \u003cmarli@frost.red\u003e|Ryan Levick \u003cryan.levick@gmail.com\u003e",
+        "repository":  "https://github.com/zip-rs/zip.git",
+        "license":  "MIT",
+        "license_file":  null,
+        "description":  "Library to support the reading and writing of zip files."
+    },
+    {
         "name":  "zlib-rs",
         "version":  "0.5.2",
         "authors":  null,
@@ -835,6 +1105,33 @@
         "license":  "Zlib",
         "license_file":  null,
         "description":  "A memory-safe zlib implementation written in rust"
+    },
+    {
+        "name":  "zstd",
+        "version":  "0.11.2+zstd.1.5.2",
+        "authors":  "Alexandre Bury \u003calexandre.bury@gmail.com\u003e",
+        "repository":  "https://github.com/gyscos/zstd-rs",
+        "license":  "MIT",
+        "license_file":  null,
+        "description":  "Binding for the zstd compression library."
+    },
+    {
+        "name":  "zstd-safe",
+        "version":  "5.0.2+zstd.1.5.2",
+        "authors":  "Alexandre Bury \u003calexandre.bury@gmail.com\u003e",
+        "repository":  "https://github.com/gyscos/zstd-rs",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Safe low-level bindings for the zstd compression library."
+    },
+    {
+        "name":  "zstd-sys",
+        "version":  "2.0.16+zstd.1.5.7",
+        "authors":  "Alexandre Bury \u003calexandre.bury@gmail.com\u003e",
+        "repository":  "https://github.com/gyscos/zstd-rs",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Low-level bindings for the zstd compression library."
     },
     {
         "name":  "zune-core",
@@ -1494,15 +1791,6 @@
         "description":  "Common utilities and extension traits for the futures-rs library."
     },
     {
-        "name":  "getrandom",
-        "version":  "0.2.16",
-        "authors":  "The Rand Project Developers",
-        "repository":  "https://github.com/rust-random/getrandom",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "A small cross-platform library for retrieving random data from system source"
-    },
-    {
         "name":  "glob",
         "version":  "0.3.3",
         "authors":  "The Rust Project Developers",
@@ -2133,15 +2421,6 @@
         "description":  "Utilities for pinning"
     },
     {
-        "name":  "pkg-config",
-        "version":  "0.3.32",
-        "authors":  "Alex Crichton \u003calex@alexcrichton.com\u003e",
-        "repository":  "https://github.com/rust-lang/pkg-config-rs",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "A library to run the pkg-config system tool at build time in order to be used in Cargo build scripts."
-    },
-    {
         "name":  "portable-atomic",
         "version":  "1.11.1",
         "authors":  null,
@@ -2248,15 +2527,6 @@
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
         "description":  "ChaCha random number generator"
-    },
-    {
-        "name":  "rand_core",
-        "version":  "0.6.4",
-        "authors":  "The Rand Project Developers|The Rust Project Developers",
-        "repository":  "https://github.com/rust-random/rand",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "Core random number generator traits and tools for implementation."
     },
     {
         "name":  "rand_core",
@@ -2500,15 +2770,6 @@
         "license":  "MIT",
         "license_file":  null,
         "description":  "Helpful macros for working with enums and strings"
-    },
-    {
-        "name":  "subtle",
-        "version":  "2.6.1",
-        "authors":  "Isis Lovecruft \u003cisis@patternsinthevoid.net\u003e|Henry de Valence \u003chdevalence@hdevalence.ca\u003e",
-        "repository":  "https://github.com/dalek-cryptography/subtle",
-        "license":  "BSD-3-Clause",
-        "license_file":  null,
-        "description":  "Pure-Rust traits and utilities for constant-time cryptographic implementations."
     },
     {
         "name":  "syn",
@@ -2916,15 +3177,6 @@
         "description":  "A library to find native dependencies in a vcpkg tree at build time in order to be used in Cargo build scripts."
     },
     {
-        "name":  "version_check",
-        "version":  "0.9.5",
-        "authors":  "Sergio Benitez \u003csb@sergio.bz\u003e",
-        "repository":  "https://github.com/SergioBenitez/version_check",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "Tiny crate to check the version of the installed/running rustc."
-    },
-    {
         "name":  "virtue",
         "version":  "0.0.18",
         "authors":  null,
@@ -2950,15 +3202,6 @@
         "license":  "MIT",
         "license_file":  null,
         "description":  "Detect when another Future wants a result."
-    },
-    {
-        "name":  "wasi",
-        "version":  "0.11.1+wasi-snapshot-preview1",
-        "authors":  "The Cranelift Project Developers",
-        "repository":  "https://github.com/bytecodealliance/wasi",
-        "license":  "Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT",
-        "license_file":  null,
-        "description":  "Experimental WASI API bindings for Rust"
     },
     {
         "name":  "web-time",
@@ -3456,15 +3699,6 @@
         "description":  "Safe low-level bindings for the zstd compression library."
     },
     {
-        "name":  "zstd-sys",
-        "version":  "2.0.16+zstd.1.5.7",
-        "authors":  "Alexandre Bury \u003calexandre.bury@gmail.com\u003e",
-        "repository":  "https://github.com/gyscos/zstd-rs",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "Low-level bindings for the zstd compression library."
-    },
-    {
         "name":  "base64",
         "version":  "0.13.1",
         "authors":  "Alice Maz \u003calice@alicemaz.com\u003e|Marshall Pierce \u003cmarshall@mpierce.org\u003e",
@@ -3753,6 +3987,15 @@
         "description":  "Query Unicode category membership for chars"
     },
     {
+        "name":  "hybrid-service",
+        "version":  "0.1.0",
+        "authors":  null,
+        "repository":  null,
+        "license":  null,
+        "license_file":  null,
+        "description":  null
+    },
+    {
         "name":  "ab_glyph",
         "version":  "0.2.32",
         "authors":  "Alex Butler \u003calexheretic@gmail.com\u003e",
@@ -3859,24 +4102,6 @@
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
         "description":  "Image and text handling for the OS clipboard."
-    },
-    {
-        "name":  "arrayref",
-        "version":  "0.3.9",
-        "authors":  "David Roundy \u003croundyd@physics.oregonstate.edu\u003e",
-        "repository":  "https://github.com/droundy/arrayref",
-        "license":  "BSD-2-Clause",
-        "license_file":  null,
-        "description":  "Macros to take array references of slices"
-    },
-    {
-        "name":  "arrayvec",
-        "version":  "0.7.6",
-        "authors":  "bluss",
-        "repository":  "https://github.com/bluss/arrayvec",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "A vector with fixed capacity, backed by an array (it can be stored on the stack too). Implements fixed capacity ArrayVec and ArrayString."
     },
     {
         "name":  "as-raw-xcb-connection",
@@ -4131,15 +4356,6 @@
         "description":  "Rust interface for Apple\u0027s C language extension of blocks."
     },
     {
-        "name":  "block-buffer",
-        "version":  "0.10.4",
-        "authors":  "RustCrypto Developers",
-        "repository":  "https://github.com/RustCrypto/utils",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "Buffer type for block processing of data"
-    },
-    {
         "name":  "block-sys",
         "version":  "0.1.0-beta.1",
         "authors":  "Mads Marquart \u003cmads@marquart.dk\u003e",
@@ -4374,24 +4590,6 @@
         "description":  "Bindings for some fundamental Core Graphics types"
     },
     {
-        "name":  "cpufeatures",
-        "version":  "0.2.17",
-        "authors":  "RustCrypto Developers",
-        "repository":  "https://github.com/RustCrypto/utils",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "Lightweight runtime CPU feature detection for aarch64, loongarch64, and x86/x86_64 targets,  with no_std support and support for mobile targets including Android and iOS"
-    },
-    {
-        "name":  "crypto-common",
-        "version":  "0.1.6",
-        "authors":  "RustCrypto Developers",
-        "repository":  "https://github.com/RustCrypto/traits",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "Common cryptographic traits"
-    },
-    {
         "name":  "cursor-icon",
         "version":  "1.2.0",
         "authors":  "Kirill Chibisov \u003ccontact@kchibisov.com\u003e",
@@ -4426,15 +4624,6 @@
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
         "description":  "Derives arbitrary traits"
-    },
-    {
-        "name":  "digest",
-        "version":  "0.10.7",
-        "authors":  "RustCrypto Developers",
-        "repository":  "https://github.com/RustCrypto/traits",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "Traits for cryptographic hash functions and message authentication codes"
     },
     {
         "name":  "dispatch",
@@ -4714,15 +4903,6 @@
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
         "description":  "Futures, streams, and async I/O combinators"
-    },
-    {
-        "name":  "generic-array",
-        "version":  "0.14.9",
-        "authors":  "Bartłomiej Kamiński \u003cfizyk20@gmail.com\u003e|Aaron Trent \u003cnovacrazy@gmail.com\u003e",
-        "repository":  "https://github.com/fizyk20/generic-array.git",
-        "license":  "MIT",
-        "license_file":  null,
-        "description":  "Generic types implementing functionality of arrays"
     },
     {
         "name":  "gethostname",
@@ -5490,15 +5670,6 @@
         "description":  "Derive Serialize and Deserialize that delegates to the underlying repr of a C-like enum."
     },
     {
-        "name":  "sha1",
-        "version":  "0.10.6",
-        "authors":  "RustCrypto Developers",
-        "repository":  "https://github.com/RustCrypto/hashes",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "SHA-1 hash function"
-    },
-    {
         "name":  "signal-hook-registry",
         "version":  "1.4.6",
         "authors":  "Michal \u0027vorner\u0027 Vaner \u003cvorner@vorner.cz\u003e|Masaki Hara \u003cackie.h.gmai@gmail.com\u003e",
@@ -5668,15 +5839,6 @@
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
         "description":  "Provides a typemap container with FxHashMap"
-    },
-    {
-        "name":  "typenum",
-        "version":  "1.19.0",
-        "authors":  "Paho Lurie-Gregg \u003cpaho@paholg.com\u003e|Andre Bogus \u003cbogusandre@gmail.com\u003e",
-        "repository":  "https://github.com/paholg/typenum",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "Typenum is a Rust library for type-level numbers evaluated at     compile time. It currently supports bits, unsigned integers, and signed     integers. It also provides a type-level array of type-level numbers, but its     implementation is incomplete."
     },
     {
         "name":  "uds_windows",
@@ -6210,16 +6372,7 @@
         "description":  "Various utilities used internally by the zvariant crate."
     },
     {
-        "name":  "pdf-block-viewer",
-        "version":  "0.1.0",
-        "authors":  null,
-        "repository":  null,
-        "license":  null,
-        "license_file":  null,
-        "description":  null
-    },
-    {
-        "name":  "hybrid-orchestrator",
+        "name":  "chunker-viewer",
         "version":  "0.1.0",
         "authors":  null,
         "repository":  null,
@@ -6253,15 +6406,6 @@
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
         "description":  "Macros 1.1 implementation of #[derive(Enum)]"
-    },
-    {
-        "name":  "hybrid-orchestrator-gui",
-        "version":  "0.1.0",
-        "authors":  null,
-        "repository":  null,
-        "license":  "MIT",
-        "license_file":  null,
-        "description":  null
     },
     {
         "name":  "mime",
@@ -6336,7 +6480,43 @@
         "description":  "A case-insensitive wrapper around strings."
     },
     {
+        "name":  "pdf-block-viewer",
+        "version":  "0.1.0",
+        "authors":  null,
+        "repository":  null,
+        "license":  "MIT",
+        "license_file":  null,
+        "description":  null
+    },
+    {
+        "name":  "hybrid-orchestrator",
+        "version":  "0.1.0",
+        "authors":  null,
+        "repository":  null,
+        "license":  "MIT",
+        "license_file":  null,
+        "description":  null
+    },
+    {
+        "name":  "hybrid-orchestrator-gui",
+        "version":  "0.1.0",
+        "authors":  null,
+        "repository":  null,
+        "license":  "MIT",
+        "license_file":  null,
+        "description":  null
+    },
+    {
         "name":  "tokenize-lab",
+        "version":  "0.1.0",
+        "authors":  null,
+        "repository":  null,
+        "license":  "MIT",
+        "license_file":  null,
+        "description":  null
+    },
+    {
+        "name":  "hybrid-service-gui",
         "version":  "0.1.0",
         "authors":  null,
         "repository":  null,

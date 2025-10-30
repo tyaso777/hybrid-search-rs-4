@@ -1,6 +1,6 @@
 ﻿THIRD-PARTY LICENSES (cargo-about)
 
-Generated: 2025-10-27 14:46:30 UTC
+Generated: 2025-10-30 01:33:33 UTC
 This file contains license texts for third-party crates used by this project.
 Workspace/local crates are excluded.
 
@@ -326,6 +326,7 @@ Used by:
 - phf 0.11.3  https://github.com/rust-phf/rust-phf
 - phf_shared 0.11.3  https://github.com/rust-phf/rust-phf
 - piston-float 1.0.1  https://github.com/pistondevelopers/float.git
+- quick-xml 0.31.0  https://github.com/tafia/quick-xml
 - quick-xml 0.37.5  https://github.com/tafia/quick-xml
 - quick-xml 0.38.3  https://github.com/tafia/quick-xml
 - redox_syscall 0.3.5  https://gitlab.redox-os.org/redox-os/syscall
@@ -393,7 +394,9 @@ Used by:
 - zbus_macros 4.4.0  https://github.com/dbus2/zbus/
 - zbus_names 2.6.1  https://github.com/dbus2/zbus/
 - zbus_names 3.0.0  https://github.com/dbus2/zbus/
+- zip 0.6.6  https://github.com/zip-rs/zip.git
 - zip 4.6.1  https://github.com/zip-rs/zip2.git
+- zstd 0.11.2+zstd.1.5.2  https://github.com/gyscos/zstd-rs
 - zstd 0.13.3  https://github.com/gyscos/zstd-rs
 - zvariant 3.15.2  https://github.com/dbus2/zbus/
 - zvariant 4.2.0  https://github.com/dbus2/zbus/
@@ -495,6 +498,7 @@ authorization of the copyright holder.
 
 === Creative Commons Zero v1.0 Universal (CC0-1.0) ===
 Used by:
+- constant_time_eq 0.1.5  https://github.com/cesarb/constant_time_eq
 - encoding_index_tests 0.1.4  
 - encoding-index-japanese 1.20141219.5  
 - encoding-index-korean 1.20141219.5  

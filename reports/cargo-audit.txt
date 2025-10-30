@@ -17,8 +17,10 @@
     │   │                   └── eframe 0.27.2
     │   │                       ├── tokenize-lab 0.1.0
     │   │                       ├── pdf-block-viewer 0.1.0
+    │   │                       ├── hybrid-service-gui 0.1.0
     │   │                       ├── hybrid-orchestrator-gui 0.1.0
-    │   │                       └── embedder-demo 0.1.0
+    │   │                       ├── embedder-demo 0.1.0
+    │   │                       └── chunker-viewer 0.1.0
     │   └── atspi 0.19.0
     ├── atspi-connection 0.3.0
     ├── atspi-common 0.3.0
@@ -43,6 +45,9 @@
     │       ├── lindera-tantivy 1.1.0
     │       │   ├── tokenize-lab 0.1.0
     │       │   └── chunking-store 0.1.0
+    │       │       ├── hybrid-service-gui 0.1.0
+    │       │       ├── hybrid-service 0.1.0
+    │       │       │   └── hybrid-service-gui 0.1.0
     │       │       ├── hybrid-orchestrator-gui 0.1.0
     │       │       └── hybrid-orchestrator 0.1.0
     │       └── chunking-store 0.1.0
@@ -75,8 +80,10 @@
         │                   └── eframe 0.27.2
         │                       ├── tokenize-lab 0.1.0
         │                       ├── pdf-block-viewer 0.1.0
+        │                       ├── hybrid-service-gui 0.1.0
         │                       ├── hybrid-orchestrator-gui 0.1.0
-        │                       └── embedder-demo 0.1.0
+        │                       ├── embedder-demo 0.1.0
+        │                       └── chunker-viewer 0.1.0
         ├── async-process 1.8.1
         │   └── zbus 3.15.2
         │       ├── atspi-proxies 0.3.0
@@ -106,6 +113,9 @@
 [0mpaste 1.0.15
 ├── tokenizers 0.22.1
 │   └── embedding-provider 0.1.0
+│       ├── hybrid-service-gui 0.1.0
+│       ├── hybrid-service 0.1.0
+│       │   └── hybrid-service-gui 0.1.0
 │       ├── hybrid-orchestrator-gui 0.1.0
 │       ├── hybrid-orchestrator 0.1.0
 │       └── embedder-demo 0.1.0
@@ -117,8 +127,10 @@
 │       │       │   └── eframe 0.27.2
 │       │       │       ├── tokenize-lab 0.1.0
 │       │       │       ├── pdf-block-viewer 0.1.0
+│       │       │       ├── hybrid-service-gui 0.1.0
 │       │       │       ├── hybrid-orchestrator-gui 0.1.0
-│       │       │       └── embedder-demo 0.1.0
+│       │       │       ├── embedder-demo 0.1.0
+│       │       │       └── chunker-viewer 0.1.0
 │       │       └── eframe 0.27.2
 │       └── wgpu 0.19.4
 ├── macro_rules_attribute 0.2.2
