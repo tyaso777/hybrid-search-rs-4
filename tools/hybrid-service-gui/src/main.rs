@@ -132,6 +132,8 @@ struct AppState {
     selected_cid: Option<String>,
     selected_text: String,
     selected_display: String,
+    // Dangerous actions confirmation
+    delete_confirm: String,
 }
 
 impl AppState {
@@ -173,6 +175,18 @@ impl AppState {
             ui.horizontal(|ui| { ui.label("HNSW"); ui.label(&self.hnsw_dir); });
             #[cfg(feature = "tantivy")]
             ui.horizontal(|ui| { ui.label("Tantivy"); ui.label(&self.tantivy_dir); });
+            // Danger zone (always visible, requires typing 'Activate' and pressing 'Delete')
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Danger zone").color(egui::Color32::LIGHT_RED));
+                ui.label("Input \"Activate\" and Push \"Delete\" to Delete DB and Indexes");
+                ui.add(TextEdit::singleline(&mut self.delete_confirm).desired_width(140.0));
+                let enabled = self.delete_confirm.trim() == "Activate";
+                let btn = egui::RichText::new("Delete").color(egui::Color32::RED);
+                if ui.add_enabled(enabled, Button::new(btn)).clicked() {
+                    self.delete_store_files();
+                    self.delete_confirm.clear();
+                }
+            });
             ui.separator();
             // Chunking Params (always visible)
             ui.horizontal(|ui| {
@@ -185,13 +199,7 @@ impl AppState {
                 ui.checkbox(&mut self.chunk_penalize_short_line, "Penalize after short line");
                 ui.checkbox(&mut self.chunk_penalize_page_no_nl, "Penalize page-boundary without newline");
             });
-            ui.collapsing("Danger zone", |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Deletes DB and indexes (HNSW/Tantivy)").color(egui::Color32::LIGHT_RED));
-                    let btn = egui::RichText::new("Delete DB & Indexes").color(egui::Color32::RED);
-                    if ui.button(btn).clicked() { self.delete_store_files(); }
-                });
-            });
+            // (moved Danger zone above Chunking Params)
             ui.separator();
             ui.horizontal(|ui| { ui.label("Model"); ui.add(TextEdit::singleline(&mut self.model_path).desired_width(400.0)); if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().add_filter("ONNX", &["onnx"]).pick_file() { self.model_path = p.display().to_string(); } } });
             ui.horizontal(|ui| { ui.label("Tokenizer"); ui.add(TextEdit::singleline(&mut self.tokenizer_path).desired_width(400.0)); if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().add_filter("JSON", &["json"]).pick_file() { self.tokenizer_path = p.display().to_string(); } } });
@@ -338,6 +346,7 @@ impl AppState {
             selected_cid: None,
             selected_text: String::new(),
             selected_display: String::new(),
+            delete_confirm: String::new(),
         }
     }
 
