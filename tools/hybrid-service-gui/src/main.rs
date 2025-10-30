@@ -78,7 +78,6 @@ struct AppState {
     embed_auto: bool,
     embed_initial_batch: String,
     embed_min_batch: String,
-    preload_model_to_memory: bool,
 
     // Store/index config (root -> derive artifacts)
     store_root: String,
@@ -217,7 +216,7 @@ impl AppState {
                 ui.add(TextEdit::singleline(&mut self.runtime_path).desired_width(400.0));
                 if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().pick_file() { self.runtime_path = p.display().to_string(); } }
             });
-            let msg = "After Init, changing the Runtime DLL requires an app restart to take effect.";
+            let msg = "After the first Init, the Runtime DLL cannot be changed within this session. Restart the app to apply a different DLL.";
             ui.label(egui::RichText::new(msg).color(ui.visuals().warn_fg_color));
             ui.horizontal(|ui| {
                 ui.label("Dim"); ui.add(TextEdit::singleline(&mut self.embedding_dimension).desired_width(80.0));
@@ -225,7 +224,6 @@ impl AppState {
                 ui.label("Batch"); ui.add(TextEdit::singleline(&mut self.embed_batch_size).desired_width(60.0));
             });
             ui.horizontal(|ui| {
-                ui.checkbox(&mut self.preload_model_to_memory, "Preload model into memory");
                 ui.checkbox(&mut self.embed_auto, "Auto batch");
             });
             ui.collapsing("Auto batch settings", |ui| {
@@ -314,7 +312,6 @@ impl AppState {
             embed_auto: true,
             embed_initial_batch: String::from("128"),
             embed_min_batch: String::from("8"),
-            preload_model_to_memory: false,
 
             store_root: store_default.clone(),
             db_path: derive_db_path(&store_default),
@@ -401,7 +398,7 @@ impl AppState {
         cfg.embedder.runtime_library_path = PathBuf::from(self.runtime_path.trim());
         cfg.embedder.dimension = self.embedding_dimension.trim().parse().unwrap_or(ONNX_STDIO_DEFAULTS.embedding_dimension);
         cfg.embedder.max_input_length = self.max_tokens.trim().parse().unwrap_or(ONNX_STDIO_DEFAULTS.max_input_tokens);
-        cfg.embedder.preload_model_to_memory = self.preload_model_to_memory;
+        // Use default preload behavior from embedder config (no GUI override)
         // Embed batch size
         if let Ok(bs) = self.embed_batch_size.trim().parse::<usize>() { if bs > 0 { cfg.embed_batch_size = bs; } }
         // Auto batch params
