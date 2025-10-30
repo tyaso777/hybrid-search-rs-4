@@ -69,3 +69,17 @@ Recommended setup on Windows (PowerShell):
 Notes
 - Use the 64‑bit DLL for the default `x86_64-pc-windows-msvc` toolchain.
 - If no DLL is found, the code falls back to the pure‑Rust backend.
+
+#### Licenses / Notices (distribution)
+
+When you redistribute an app that uses PDFium, include the vendor licenses and notices alongside your binary.
+
+- Place the files next to your EXE (or in your app bundle) together with `pdfium.dll`.
+- Typical files from the PDFium binary archive:
+  - `LICENSE`
+  - `ThirdPartyNotices.txt` (or similar)
+- If you copy `pdfium.dll` under this repo (for development), keep the notices here as well:
+  - `file-chunker/bin/pdfium-win-x64/LICENSE`
+  - Optionally: `file-chunker/bin/pdfium-win-x64/ThirdPartyNotices.txt`
+
+See also: `docs/compliance.md` for generating third‑party license summaries/texts for this workspace.
