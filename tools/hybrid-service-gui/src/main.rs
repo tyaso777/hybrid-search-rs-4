@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use eframe::egui::{self, Button, CentralPanel, ComboBox, ScrollArea, Spinner, TextEdit};
 use eframe::egui::ProgressBar;
-use egui_extras::{Column, TableBuilder};
+use egui_extras::{Column, TableBuilder, StripBuilder, Size};
 use eframe::{App, CreationContext, Frame, NativeOptions};
 use rfd::FileDialog;
 
@@ -134,6 +134,12 @@ struct AppState {
     selected_display: String,
     // Dangerous actions confirmation
     delete_confirm: String,
+
+    // Preview Chunks popup
+    preview_visible: bool,
+    preview_chunks: Vec<ChunkRecord>,
+    preview_selected: Option<usize>,
+    preview_show_tab_escape: bool,
 }
 
 impl AppState {
@@ -347,6 +353,11 @@ impl AppState {
             selected_text: String::new(),
             selected_display: String::new(),
             delete_confirm: String::new(),
+
+            preview_visible: false,
+            preview_chunks: Vec::new(),
+            preview_selected: None,
+            preview_show_tab_escape: true,
         }
     }
 
@@ -535,7 +546,7 @@ impl AppState {
 
             match self.insert_mode {
                 InsertMode::File => {
-                    // Row 1: Choose File, [File path], Ingest File
+                    // Row 1: Choose File, [File path]
                     ui.horizontal(|ui| {
                         if ui.button("Choose File").clicked() {
                             if let Some(p) = FileDialog::new().pick_file() {
@@ -547,11 +558,9 @@ impl AppState {
                         }
                         let resp = ui.add(TextEdit::singleline(&mut self.ingest_file_path).desired_width(400.0));
                         if resp.changed() { self.refresh_ingest_preview(); }
-                        let ingest_btn = ui.add_enabled(!self.ingest_running, Button::new("Ingest File"));
-                        if ingest_btn.clicked() { self.do_ingest_file(); }
                     });
 
-                    // Row 2: Encoding selector (for text-like files) and short preview
+                    // Row 2: Encoding selector (for text-like files)
                     if self.is_text_like_path(self.ingest_file_path.trim()) {
                         ui.horizontal(|ui| {
                             ui.label("Encoding");
@@ -563,11 +572,20 @@ impl AppState {
                                     for e in encs { ui.selectable_value(&mut self.ingest_encoding, e.to_string(), e); }
                                 });
                             if self.ingest_encoding != before { self.refresh_ingest_preview(); }
-                            let mut preview_short: String = self.ingest_preview.chars().take(60).collect();
-                            if self.ingest_preview.chars().count() > 60 { preview_short.push('…'); }
-                            ui.label(format!("Preview: {}", preview_short.replace(['\n','\r','\t'], " ")));
                         });
+                        // Row 3: Preview text (separate line)
+                        let mut preview_short: String = self.ingest_preview.chars().take(60).collect();
+                        if self.ingest_preview.chars().count() > 60 { preview_short.push('…'); }
+                        ui.label(format!("Preview: {}", preview_short.replace(['\n','\r','\t'], " ")));
                     }
+
+                    // Row 4: [Preview Chunks] button
+                    if ui.add_enabled(!self.ingest_running, Button::new("Preview Chunks")).clicked() {
+                        self.do_preview_chunks();
+                    }
+
+                    // Row 5: Ingest File
+                    if ui.add_enabled(!self.ingest_running, Button::new("Ingest File")).clicked() { self.do_ingest_file(); }
                 }
                 InsertMode::Text => {
                     // Text input with the action button placed below
@@ -577,6 +595,8 @@ impl AppState {
                 }
             }
         });
+        // Draw the preview popup on top if requested
+        self.ui_preview_window(ui.ctx());
         if self.ingest_running {
             ui.horizontal(|ui| {
                 let frac = if self.ingest_total > 0 { (self.ingest_done as f32 / self.ingest_total as f32).clamp(0.0, 1.0) } else { 0.0 };
@@ -591,6 +611,115 @@ impl AppState {
                 }
             });
         }
+    }
+
+    fn do_preview_chunks(&mut self) {
+        let path = self.ingest_file_path.trim();
+        if path.is_empty() { self.status = "Pick a file to preview".into(); return; }
+        // Build params from UI
+        let mut params = file_chunker::text_segmenter::TextChunkParams::default();
+        if let Ok(v) = self.chunk_min.trim().parse::<usize>() { if v > 0 { params.min_chars = v; } }
+        if let Ok(v) = self.chunk_max.trim().parse::<usize>() { if v > 0 { params.max_chars = v; } }
+        if let Ok(v) = self.chunk_cap.trim().parse::<usize>() { if v > 0 { params.cap_chars = v; } }
+        params.penalize_short_line = self.chunk_penalize_short_line;
+        params.penalize_page_boundary_no_newline = self.chunk_penalize_page_no_nl;
+
+        // Encoding: None when auto, otherwise pass through
+        let enc_lower = self.ingest_encoding.to_ascii_lowercase();
+        let enc_opt: Option<String> = if enc_lower == "auto" { None } else { Some(enc_lower) };
+
+        // Compute chunks using file-chunker with unified text params
+        let out = file_chunker::chunk_file_with_file_record_with_params(path, enc_opt.as_deref(), &params);
+        self.preview_chunks = out.chunks;
+        self.preview_selected = None;
+        self.preview_visible = true;
+        self.status = format!("Preview loaded ({} chunks)", self.preview_chunks.len());
+    }
+
+    fn ui_preview_window(&mut self, ctx: &egui::Context) {
+        if !self.preview_visible { return; }
+        let mut open = self.preview_visible;
+        let mut request_close = false;
+        egui::Window::new("Preview Chunks")
+            .open(&mut open)
+            .collapsible(false)
+            .default_width(840.0)
+            .default_height(600.0)
+            .default_pos(egui::pos2(40.0, 40.0))
+            .show(ctx, |ui| {
+                // Toolbar
+                // Row 1: Close + checkbox
+                ui.horizontal(|ui| {
+                    let close_btn = Button::new(egui::RichText::new("Close Preview").color(egui::Color32::RED).strong());
+                    if ui.add(close_btn).clicked() { request_close = true; }
+                    ui.add_space(8.0);
+                    ui.checkbox(&mut self.preview_show_tab_escape, "Show \\t for tabs");
+                });
+                // Row 2: File path
+                ui.horizontal(|ui| {
+                    ui.label(format!("File: {}", self.ingest_file_path.trim()));
+                });
+                ui.separator();
+                // Keyboard: ESC to close
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) { request_close = true; }
+
+                // Two-row layout: list (top) / selected (bottom)
+                StripBuilder::new(ui)
+                    .size(Size::relative(0.55))
+                    .size(Size::remainder())
+                    .clip(true)
+                    .vertical(|mut strip| {
+                        // Top: chunks list
+                        strip.cell(|ui| {
+                            ui.heading(format!("Chunks ({}):", self.preview_chunks.len()));
+                            ui.separator();
+                            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                                for (i, c) in self.preview_chunks.iter().enumerate() {
+                                    let preview = truncate_for_preview(&c.text, 80);
+                                    let page_label = match (c.page_start, c.page_end) {
+                                        (Some(s), Some(e)) if s == e => format!("{}", s),
+                                        (Some(s), Some(e)) => format!("{}-{}", s, e),
+                                        (Some(s), None) => format!("{}", s),
+                                        _ => String::new(),
+                                    };
+                                    let title = if page_label.is_empty() {
+                                        format!("{}", preview)
+                                    } else {
+                                        format!("#{}  {}", page_label, preview)
+                                    };
+                                    let click = ui.selectable_label(self.preview_selected == Some(i), title);
+                                    if click.clicked() { self.preview_selected = Some(i); }
+                                }
+                            });
+                        });
+
+                        // Bottom: selected chunk detail
+                        strip.cell(|ui| {
+                            egui::Frame::default().show(ui, |ui| {
+                                ui.heading("Selected Chunk");
+                                ui.separator();
+                                if let Some(i) = self.preview_selected { if let Some(c) = self.preview_chunks.get(i) {
+                                    let text = if self.preview_show_tab_escape { escape_tabs(&c.text) } else { c.text.clone() };
+                                    let page_label = match (c.page_start, c.page_end) {
+                                        (Some(s), Some(e)) if s == e => format!("{}", s),
+                                        (Some(s), Some(e)) => format!("{}-{}", s, e),
+                                        (Some(s), None) => format!("{}", s),
+                                        _ => String::new(),
+                                    };
+                                    if page_label.is_empty() {
+                                        ui.monospace(format!("len={} bytes", c.text.len()));
+                                    } else {
+                                        ui.monospace(format!("len={} bytes  |  {}", c.text.len(), page_label));
+                                    }
+                                    ui.separator();
+                                    egui::ScrollArea::vertical().show(ui, |ui| { ui.monospace(text); });
+                                }}
+                            });
+                        });
+                    });
+            });
+        if request_close { open = false; }
+        self.preview_visible = open;
     }
 
     fn is_text_like_path(&self, path: &str) -> bool {
@@ -1109,4 +1238,19 @@ fn candidate_font_paths() -> Vec<PathBuf> {
 
 fn opt_fmt(v: Option<f32>) -> String {
     match v { Some(x) => format!("{:.4}", x), None => String::from("-") }
+}
+
+fn truncate_for_preview(s: &str, max_chars: usize) -> String {
+    if max_chars == 0 { return String::new(); }
+    let mut it = s.chars();
+    let truncated: String = it.by_ref().take(max_chars).collect();
+    if it.next().is_some() { format!("{}…", truncated.replace(['\n', '\r', '\t'], " ")) } else { truncated.replace(['\n', '\r', '\t'], " ") }
+}
+
+fn escape_tabs(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch { '\t' => out.push_str("\\t"), '\r' => { /* skip */ }, _ => out.push(ch) }
+    }
+    out
 }
