@@ -38,7 +38,12 @@ See also:
 
 ## Creating an ONNX Model
 
-Export a Hugging Face encoder model to ONNX with Optimum. Example steps:
+Export a Hugging Face encoder model to ONNX with Optimum.
+
+- Official guide (Hugging Face Optimum ONNX):
+  - https://huggingface.co/docs/optimum-onnx/onnx/usage_guides/export_a_model
+
+Example steps:
 
 1) Environment
 ```
@@ -48,12 +53,26 @@ pip install --upgrade pip
 pip install optimum[onnxruntime] transformers torch
 ```
 
-2) Export
+2) Export (optimum‑cli)
+
+Generic (replace the model id):
 ```
-python -m optimum.exporters.onnx --model <huggingface-model-id> ./onnx-model
+optimum-cli export onnx \
+  --model <huggingface-model-id> \
+  --task feature-extraction \
+  ./onnx-model
 ```
-- For sentence-embedding models, ensure the exported graph is the encoder and outputs token hidden states.
-- Copy `model.onnx` and tokenizer assets (`tokenizer.json`, `tokenizer.model` if any) into `models/<your-name>/`.
+
+Specific example (cl-nagoya/ruri-v3-310m):
+```
+optimum-cli export onnx \
+  --model cl-nagoya/ruri-v3-310m \
+  --task feature-extraction \
+  ./onnx-model
+```
+
+- For sentence‑embedding models, export the encoder and ensure the model outputs token hidden states.
+- Copy `model.onnx` and tokenizer assets (`tokenizer.json`, and optionally `tokenizer.model`, `tokenizer_config.json`) into `models/<your-name>/`.
 
 3) Optional quick validation (Python)
 ```
