@@ -140,6 +140,9 @@ struct AppState {
     preview_chunks: Vec<ChunkRecord>,
     preview_selected: Option<usize>,
     preview_show_tab_escape: bool,
+
+    // ONNX Runtime DLL lock (set after first successful Init)
+    ort_runtime_committed: Option<String>,
 }
 
 impl AppState {
@@ -209,7 +212,13 @@ impl AppState {
             ui.separator();
             ui.horizontal(|ui| { ui.label("Model"); ui.add(TextEdit::singleline(&mut self.model_path).desired_width(400.0)); if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().add_filter("ONNX", &["onnx"]).pick_file() { self.model_path = p.display().to_string(); } } });
             ui.horizontal(|ui| { ui.label("Tokenizer"); ui.add(TextEdit::singleline(&mut self.tokenizer_path).desired_width(400.0)); if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().add_filter("JSON", &["json"]).pick_file() { self.tokenizer_path = p.display().to_string(); } } });
-            ui.horizontal(|ui| { ui.label("Runtime DLL"); ui.add(TextEdit::singleline(&mut self.runtime_path).desired_width(400.0)); if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().pick_file() { self.runtime_path = p.display().to_string(); } } });
+            ui.horizontal(|ui| {
+                ui.label("Runtime DLL");
+                ui.add(TextEdit::singleline(&mut self.runtime_path).desired_width(400.0));
+                if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().pick_file() { self.runtime_path = p.display().to_string(); } }
+            });
+            let msg = "After Init, changing the Runtime DLL requires an app restart to take effect.";
+            ui.label(egui::RichText::new(msg).color(ui.visuals().warn_fg_color));
             ui.horizontal(|ui| {
                 ui.label("Dim"); ui.add(TextEdit::singleline(&mut self.embedding_dimension).desired_width(80.0));
                 ui.label("MaxTokens"); ui.add(TextEdit::singleline(&mut self.max_tokens).desired_width(80.0));
@@ -358,6 +367,8 @@ impl AppState {
             preview_chunks: Vec::new(),
             preview_selected: None,
             preview_show_tab_escape: true,
+
+            ort_runtime_committed: None,
         }
     }
 
@@ -413,6 +424,9 @@ impl AppState {
                 Ok(Ok(svc)) => {
                     self.svc = Some(svc);
                     self.status = format!("Model ready in {:.1}s", task.started.elapsed().as_secs_f32());
+                    if self.ort_runtime_committed.is_none() {
+                        self.ort_runtime_committed = Some(self.runtime_path.trim().to_string());
+                    }
                     self.svc_task = None;
                 }
                 Ok(Err(err)) => {
@@ -473,7 +487,8 @@ impl App for AppState {
                         let idx = match st { HnswState::Absent => "absent", HnswState::Loading => "loading", HnswState::Ready => "ready", HnswState::Error => "error" };
                         ("ready", idx)
                     };
-                    let status_text = format!("Model: {}, Index: {}", model_status, index_status);
+                    let dll_status = if self.ort_runtime_committed.is_some() { "fixed" } else { "editable" };
+                    let status_text = format!("Model: {}, RuntimeDLL: {}, Index: {}", model_status, dll_status, index_status);
                     ui.label(status_text);
                     // compact controls with a clear right-side divider as well
                     ui.add_space(8.0);
