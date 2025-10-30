@@ -88,6 +88,11 @@ Rust workspace for a hybrid search pipeline.
    - Restricted/offline environment:
      - `$env:LINDERA_CACHE = (Resolve-Path .\\vendor\\lindera-cache).Path`
      - Place the tarball at: `.\\vendor\\lindera-cache\\1.4.1\\mecab-ipadic-2.7.0-20250920.tar.gz`
+     - Then build with a single job (per shell):
+       - Windows (PowerShell): `$env:CARGO_BUILD_JOBS = "1"; cargo build`
+       - Windows (cmd.exe): `set CARGO_BUILD_JOBS=1 && cargo build`
+       - Linux/macOS (bash/zsh): `CARGO_BUILD_JOBS=1 cargo build`
+       - Note: If you are fully offline, you can add `--offline` to the `cargo build` command.
 
 3) Optional tests: `cargo test -p embedding-provider`
 4) Sanity check (CLI): `cargo run -p embedding-provider --bin embed_cli "your text"`
