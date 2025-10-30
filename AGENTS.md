@@ -14,3 +14,10 @@ Notes
 
 - Prefer minimal, focused diffs that respect the existing code style.
 - When in doubt about requirements or trade‑offs, ask clarifying questions before making changes.
+
+Build/Validation
+
+- After editing Rust code, run `cargo check` to validate builds quickly.
+- For focused changes, run `cargo check -p <crate>` (e.g., `cargo check -p hybrid-service-gui`).
+- If `cargo` isn’t available in the environment, skip and ask the user to run it locally.
+- Optional: if formatting is configured, run `cargo fmt -- --check` before committing.
