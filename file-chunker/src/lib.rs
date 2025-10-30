@@ -188,6 +188,127 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
     ChunkOutput { file, chunks }
 }
 
+/// Variant with an explicit encoding hint for text-like files.
+/// For non-text formats (PDF/DOCX), the behavior is identical to `chunk_file_with_file_record`.
+pub fn chunk_file_with_file_record_with_encoding(path: &str, encoding: Option<&str>) -> ChunkOutput {
+    // PDF
+    if path.ends_with(".pdf") {
+        let params = pdf_chunker::PdfChunkParams::default();
+        let (file, chunks) = pdf_chunker::chunk_pdf_file_with_file_record(path, &params);
+        return ChunkOutput { file, chunks };
+    }
+
+    // DOCX
+    if path.ends_with(".docx") {
+        let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
+        let params = text_segmenter::TextChunkParams::default();
+        let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
+
+        let chunks: Vec<ChunkRecord> = segs
+            .into_iter()
+            .enumerate()
+            .map(|(i, (text, ps, pe))| ChunkRecord {
+                schema_version: chunk_model::SCHEMA_MAJOR,
+                doc_id: DocumentId(path.to_string()),
+                chunk_id: ChunkId(format!("{}#{}", path, i)),
+                source_uri: path.to_string(),
+                source_mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
+                extracted_at: String::new(),
+                page_start: ps,
+                page_end: pe,
+                text,
+                section_path: None,
+                meta: BTreeMap::new(),
+                extra: BTreeMap::new(),
+            })
+            .collect();
+
+        let file = FileRecord {
+            schema_version: chunk_model::SCHEMA_MAJOR,
+            doc_id: DocumentId(path.to_string()),
+            doc_revision: Some(1),
+            source_uri: path.to_string(),
+            source_mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
+            file_size_bytes: None,
+            content_sha256: None,
+            page_count: None,
+            extracted_at: String::new(),
+            created_at_meta: None,
+            updated_at_meta: None,
+            title_guess: None,
+            author_guess: None,
+            dominant_lang: None,
+            tags: Vec::new(),
+            ingest_tool: Some("file-chunker".into()),
+            ingest_tool_version: Some(env!("CARGO_PKG_VERSION").into()),
+            reader_backend: Some("docx".into()),
+            ocr_used: None,
+            ocr_langs: Vec::new(),
+            chunk_count: Some(chunks.len() as u32),
+            total_tokens: None,
+            meta: BTreeMap::new(),
+            extra: BTreeMap::new(),
+        };
+        return ChunkOutput { file, chunks };
+    }
+
+    // Text-like with encoding hint
+    if is_text_like(path) {
+        let blocks: Vec<UnifiedBlock> = reader_txt::read_txt_to_blocks_with_encoding(path, encoding);
+        let params = text_segmenter::TextChunkParams::default();
+        let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
+        let chunks: Vec<ChunkRecord> = segs
+            .into_iter()
+            .enumerate()
+            .map(|(i, (text, _ps, _pe))| ChunkRecord {
+                schema_version: chunk_model::SCHEMA_MAJOR,
+                doc_id: DocumentId(path.to_string()),
+                chunk_id: ChunkId(format!("{}#{}", path, i)),
+                source_uri: path.to_string(),
+                source_mime: "text/plain".into(),
+                extracted_at: String::new(),
+                page_start: Some(1),
+                page_end: Some(1),
+                text,
+                section_path: None,
+                meta: BTreeMap::new(),
+                extra: BTreeMap::new(),
+            })
+            .collect();
+
+        let file = FileRecord {
+            schema_version: chunk_model::SCHEMA_MAJOR,
+            doc_id: DocumentId(path.to_string()),
+            doc_revision: Some(1),
+            source_uri: path.to_string(),
+            source_mime: "text/plain".into(),
+            file_size_bytes: None,
+            content_sha256: None,
+            page_count: None,
+            extracted_at: String::new(),
+            created_at_meta: None,
+            updated_at_meta: None,
+            title_guess: None,
+            author_guess: None,
+            dominant_lang: None,
+            tags: Vec::new(),
+            ingest_tool: Some("file-chunker".into()),
+            ingest_tool_version: Some(env!("CARGO_PKG_VERSION").into()),
+            reader_backend: Some("txt".into()),
+            ocr_used: None,
+            ocr_langs: Vec::new(),
+            chunk_count: Some(chunks.len() as u32),
+            total_tokens: None,
+            meta: BTreeMap::new(),
+            extra: BTreeMap::new(),
+        };
+        return ChunkOutput { file, chunks };
+    }
+
+    // Fallback stub
+    chunk_file_with_file_record(path)
+}
+
 /// Legacy helper returning only chunks for backward compatibility.
 pub fn chunk_file(path: &str) -> Vec<ChunkRecord> {
     chunk_file_with_file_record(path).chunks

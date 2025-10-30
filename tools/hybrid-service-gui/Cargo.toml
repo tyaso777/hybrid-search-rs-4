@@ -13,6 +13,7 @@ hybrid-service = { path = "../../service/hybrid-service" }
 embedding-provider = { path = "../../embedding_provider" }
 chunking-store = { path = "../../chunking-store" }
 chunk-model = { path = "../../chunk-model" }
+encoding_rs = "0.8"
 
 [features]
 default = ["tantivy"]

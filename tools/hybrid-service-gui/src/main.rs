@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::{mpsc::{self, Receiver, TryRecvError}, Arc};
 use std::time::Instant;
 
-use eframe::egui::{self, Button, CentralPanel, ScrollArea, Spinner, TextEdit};
+use eframe::egui::{self, Button, CentralPanel, ComboBox, ScrollArea, Spinner, TextEdit};
 use eframe::egui::ProgressBar;
 use egui_extras::{Column, TableBuilder};
 use eframe::{App, CreationContext, Frame, NativeOptions};
@@ -91,6 +91,8 @@ struct AppState {
     input_text: String,
     doc_hint: String,
     ingest_file_path: String,
+    ingest_encoding: String,
+    ingest_preview: String,
 
     // Ingest job (async)
     ingest_rx: Option<Receiver<ProgressEvent>>,
@@ -280,6 +282,8 @@ impl AppState {
             input_text: String::new(),
             doc_hint: String::new(),
             ingest_file_path: String::new(),
+            ingest_encoding: String::from("auto"),
+            ingest_preview: String::new(),
 
             ingest_rx: None,
             ingest_cancel: None,
@@ -435,21 +439,45 @@ impl AppState {
     fn ui_insert(&mut self, ui: &mut egui::Ui) {
         ui.heading("Insert");
         ui.add_enabled_ui(!self.ingest_running, |ui| {
+            // Row 1: Choose File, [File path], Ingest File
             ui.horizontal(|ui| {
-                ui.label("Doc Hint");
-                ui.add(TextEdit::singleline(&mut self.doc_hint).desired_width(200.0));
+                if ui.button("Choose File").clicked() {
+                    if let Some(p) = FileDialog::new().pick_file() {
+                        self.ingest_file_path = p.display().to_string();
+                        // Reset encoding to auto and refresh preview when a new file is chosen
+                        self.ingest_encoding = String::from("auto");
+                        self.refresh_ingest_preview();
+                    }
+                }
+                let resp = ui.add(TextEdit::singleline(&mut self.ingest_file_path).desired_width(400.0));
+                if resp.changed() { self.refresh_ingest_preview(); }
+                let ingest_btn = ui.add_enabled(!self.ingest_running, Button::new("Ingest File"));
+                if ingest_btn.clicked() { self.do_ingest_file(); }
             });
+
+            // Row 2: Encoding selector (for text-like files) and short preview
+            if self.is_text_like_path(self.ingest_file_path.trim()) {
+                ui.horizontal(|ui| {
+                    ui.label("Encoding");
+                    let encs = ["auto", "utf-8", "shift_jis", "windows-1252", "utf-16le", "utf-16be"];
+                    let before = self.ingest_encoding.clone();
+                    ComboBox::from_id_source("ingest_encoding_combo")
+                        .selected_text(self.ingest_encoding.clone())
+                        .show_ui(ui, |ui| {
+                            for e in encs { ui.selectable_value(&mut self.ingest_encoding, e.to_string(), e); }
+                        });
+                    if self.ingest_encoding != before { self.refresh_ingest_preview(); }
+                    let mut preview_short: String = self.ingest_preview.chars().take(60).collect();
+                    if self.ingest_preview.chars().count() > 60 { preview_short.push('…'); }
+                    ui.label(format!("Preview: {}", preview_short.replace(['\n','\r','\t'], " ")));
+                });
+            }
+
+            // Row 3: Text input and Insert button horizontally
             ui.horizontal(|ui| {
                 ui.label("Text");
                 ui.add(TextEdit::multiline(&mut self.input_text).desired_rows(4).desired_width(600.0));
-            });
-            ui.horizontal(|ui| {
                 if ui.add(Button::new("Insert Text")).clicked() { self.do_insert_text(); }
-                ui.separator();
-                ui.add(TextEdit::singleline(&mut self.ingest_file_path).desired_width(400.0));
-                if ui.button("Choose File").clicked() { if let Some(p) = FileDialog::new().pick_file() { self.ingest_file_path = p.display().to_string(); } }
-                let ingest_btn = ui.add_enabled(!self.ingest_running, Button::new("Ingest File"));
-                if ingest_btn.clicked() { self.do_ingest_file(); }
             });
         });
         if self.ingest_running {
@@ -466,6 +494,48 @@ impl AppState {
                 }
             });
         }
+    }
+
+    fn is_text_like_path(&self, path: &str) -> bool {
+        let lower = path.to_ascii_lowercase();
+        let exts = [
+            ".txt", ".md", ".markdown", ".csv", ".tsv", ".log", ".json", ".yaml", ".yml",
+            ".ini", ".toml", ".cfg", ".conf", ".rst", ".tex", ".srt", ".properties",
+        ];
+        exts.iter().any(|e| lower.ends_with(e))
+    }
+
+    fn refresh_ingest_preview(&mut self) {
+        use std::fs;
+        let path = self.ingest_file_path.trim();
+        self.ingest_preview.clear();
+        if path.is_empty() { return; }
+        let Ok(bytes) = fs::read(path) else { return; };
+        let enc = self.ingest_encoding.to_ascii_lowercase();
+        let mut text = match enc.as_str() {
+            "auto" => String::from_utf8_lossy(&bytes).to_string(),
+            "utf-8" | "utf8" => String::from_utf8_lossy(&bytes).to_string(),
+            "shift_jis" | "sjis" | "cp932" | "windows-31j" => {
+                let (cow, _, _) = encoding_rs::SHIFT_JIS.decode(&bytes); cow.into_owned()
+            }
+            "windows-1252" | "cp1252" => { let (cow, _, _) = encoding_rs::WINDOWS_1252.decode(&bytes); cow.into_owned() }
+            "utf-16le" | "utf16le" => {
+                let mut u16s: Vec<u16> = Vec::with_capacity(bytes.len()/2);
+                let mut i = 0usize; if bytes.len() >= 2 && bytes[0]==0xFF && bytes[1]==0xFE { i = 2; }
+                while i + 1 < bytes.len() { u16s.push(u16::from_le_bytes([bytes[i], bytes[i+1]])); i += 2; }
+                String::from_utf16_lossy(&u16s)
+            }
+            "utf-16be" | "utf16be" => {
+                let mut u16s: Vec<u16> = Vec::with_capacity(bytes.len()/2);
+                let mut i = 0usize; if bytes.len() >= 2 && bytes[0]==0xFE && bytes[1]==0xFF { i = 2; }
+                while i + 1 < bytes.len() { u16s.push(u16::from_be_bytes([bytes[i], bytes[i+1]])); i += 2; }
+                String::from_utf16_lossy(&u16s)
+            }
+            _ => String::from_utf8_lossy(&bytes).to_string(),
+        };
+        // normalize CRLF
+        text = text.replace('\r', "");
+        self.ingest_preview = text;
     }
 
     fn do_insert_text(&mut self) {
@@ -507,10 +577,18 @@ impl AppState {
         // Remember the doc key used for Tantivy upsert after finish
         self.ingest_doc_key = Some(if self.doc_hint.trim().is_empty() { path_owned.clone() } else { self.doc_hint.trim().to_string() });
         self.status = format!("Ingesting file: {}", path_owned);
+        let enc_opt = {
+            let e = self.ingest_encoding.trim().to_string();
+            if e.is_empty() || e.eq_ignore_ascii_case("auto") { None } else { Some(e) }
+        };
         std::thread::spawn(move || {
             let hint = doc_hint_opt.as_deref();
             let cb: Box<dyn FnMut(ProgressEvent) + Send> = Box::new(move |ev: ProgressEvent| { let _ = tx.send(ev); });
-            let _ = svc.ingest_file_with_progress(&path_owned, hint, Some(&cancel), Some(cb));
+            // Pass encoding only when specified
+            let _ = match enc_opt.as_deref() {
+                Some(enc) => svc.ingest_file_with_progress_with_encoding(&path_owned, hint, Some(enc), Some(&cancel), Some(cb)),
+                None => svc.ingest_file_with_progress(&path_owned, hint, Some(&cancel), Some(cb)),
+            };
             // The service emits Finished/Canceled; no-op here.
         });
     }
