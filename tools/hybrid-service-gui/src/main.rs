@@ -15,9 +15,9 @@ use hybrid_service::{HybridService, ServiceConfig, CancelToken, ProgressEvent, H
 use embedding_provider::config::{default_stdio_config, ONNX_STDIO_DEFAULTS};
 use chunking_store::FilterClause;
 use chunking_store::ChunkStoreRead;
-use chunking_store::{FilterKind, FilterOp};
+// Removed unused FilterKind/FilterOp after moving Tantivy ops into service
 #[cfg(feature = "tantivy")]
-use chunking_store::tantivy_index::{TantivyIndex, TokenCombine};
+use chunking_store::tantivy_index::TantivyIndex;
 use chunk_model::{ChunkId, DocumentId, ChunkRecord, SCHEMA_MAJOR};
 
 fn main() -> eframe::Result<()> {
@@ -88,6 +88,8 @@ struct AppState {
     tantivy_dir: String,
     #[cfg(feature = "tantivy")]
     tantivy: Option<TantivyIndex>,
+    #[cfg(feature = "tantivy")]
+    last_tantivy_dir_applied: Option<String>,
 
     // Service
     svc: Option<Arc<HybridService>>,
@@ -148,6 +150,9 @@ struct AppState {
     config_last_name: String,
     // Optional store name to include in suggested config filename
     config_store_name: String,
+
+    // Track last applied Store Root to auto-apply on Search/Insert
+    last_store_root_applied: Option<String>,
 }
 
 // New (nested) config format: { store: {...}, chunk: {...}, model: {...} }
@@ -230,28 +235,40 @@ impl AppState {
                     if let Some(p) = FileDialog::new().pick_folder() {
                         self.store_root = p.display().to_string();
                         self.refresh_store_paths();
+                        // Keep provider (service) and GUI in sync with new root
+                        std::env::set_var("HYBRID_STORE_ROOT", self.store_root.trim());
                         let _ = fs::create_dir_all(self.store_root.trim());
                         let _ = fs::create_dir_all(derive_hnsw_dir(self.store_root.trim()));
                         #[cfg(feature = "tantivy")] let _ = fs::create_dir_all(derive_tantivy_dir(self.store_root.trim()));
                         self.status = format!("Store root set to {}", self.store_root.trim()); if let Some(svc) = &self.svc { svc.set_store_paths(PathBuf::from(self.db_path.trim()), Some(PathBuf::from(self.hnsw_dir.trim()))); }
+                        // Avoid stale tantivy handle and ensure future auto-apply sees current
+                        #[cfg(feature = "tantivy")] { self.tantivy = None; }
+                        self.last_store_root_applied = Some(self.store_root.trim().to_string());
                     }
                 }
                 ui.add(TextEdit::singleline(&mut self.store_root).desired_width(400.0));
                 if ui.button("Set").clicked() {
                     self.refresh_store_paths();
+                    // update env for provider
+                    std::env::set_var("HYBRID_STORE_ROOT", self.store_root.trim());
                     let _ = fs::create_dir_all(self.store_root.trim());
                     let _ = fs::create_dir_all(derive_hnsw_dir(self.store_root.trim()));
                     #[cfg(feature = "tantivy")]
                     let _ = fs::create_dir_all(derive_tantivy_dir(self.store_root.trim()));
+                    #[cfg(feature = "tantivy")]
+                    { self.tantivy = None; }
                     self.status = format!("Store root set to {}", self.store_root.trim()); if let Some(svc) = &self.svc { svc.set_store_paths(PathBuf::from(self.db_path.trim()), Some(PathBuf::from(self.hnsw_dir.trim()))); }
                 }
                 if ui.button("Reset").clicked() {
                     self.store_root = "target/demo/store".into();
                     self.refresh_store_paths();
+                    std::env::set_var("HYBRID_STORE_ROOT", self.store_root.trim());
                     let _ = fs::create_dir_all(self.store_root.trim());
                     let _ = fs::create_dir_all(derive_hnsw_dir(self.store_root.trim()));
                     #[cfg(feature = "tantivy")]
                     let _ = fs::create_dir_all(derive_tantivy_dir(self.store_root.trim()));
+                    #[cfg(feature = "tantivy")]
+                    { self.tantivy = None; }
                     self.status = format!("Store root reset to {}", self.store_root.trim());
                 }
             });
@@ -345,6 +362,9 @@ impl AppState {
         // Store
         self.store_root = cfg.store.store_root;
         self.refresh_store_paths();
+        std::env::set_var("HYBRID_STORE_ROOT", self.store_root.trim());
+        #[cfg(feature = "tantivy")]
+        { self.tantivy = None; }
         self.config_store_name = cfg.store.store_name.unwrap_or_default();
         // Chunking params
         self.chunk_min = cfg.chunk.chunk_min.to_string();
@@ -447,11 +467,16 @@ impl AppState {
 
     #[cfg(feature = "tantivy")]
     fn ensure_tantivy_open(&mut self) -> Result<(), String> {
-        if self.tantivy.is_none() {
+        let need_reopen = match &self.last_tantivy_dir_applied {
+            Some(applied) => applied != &self.tantivy_dir,
+            None => true,
+        };
+        if self.tantivy.is_none() || need_reopen {
             let dir = &self.tantivy_dir;
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
             let idx = TantivyIndex::open_or_create_dir(dir).map_err(|e| e.to_string())?;
             self.tantivy = Some(idx);
+            self.last_tantivy_dir_applied = Some(self.tantivy_dir.clone());
         }
         Ok(())
     }
@@ -523,6 +548,8 @@ impl AppState {
             tantivy_dir: derive_tantivy_dir(&store_default),
             #[cfg(feature = "tantivy")]
             tantivy: None,
+            #[cfg(feature = "tantivy")]
+            last_tantivy_dir_applied: None,
 
             svc: None,
             svc_task: None,
@@ -572,6 +599,8 @@ impl AppState {
 
             config_last_name: String::from("config.json"),
             config_store_name: String::new(),
+
+            last_store_root_applied: None,
         }
     }
 
@@ -621,12 +650,48 @@ impl AppState {
         });
     }
 
+    // Ensure that DB/HNSW paths reflect the current Store Root before operations.
+    fn ensure_store_paths_current(&mut self) {
+        let current = self.store_root.trim().to_string();
+        let needs_apply = match &self.last_store_root_applied {
+            Some(prev) => prev != &current,
+            None => true,
+        };
+        if needs_apply {
+            self.refresh_store_paths();
+            std::env::set_var("HYBRID_STORE_ROOT", self.store_root.trim());
+            let _ = fs::create_dir_all(self.store_root.trim());
+            let _ = fs::create_dir_all(derive_hnsw_dir(self.store_root.trim()));
+            #[cfg(feature = "tantivy")]
+            let _ = fs::create_dir_all(derive_tantivy_dir(self.store_root.trim()));
+            // Drop Tantivy handle so next ensure_tantivy_open() reopens at new dir
+            #[cfg(feature = "tantivy")]
+            { self.tantivy = None; }
+            if let Some(svc) = &self.svc {
+                svc.set_store_paths(PathBuf::from(self.db_path.trim()), Some(PathBuf::from(self.hnsw_dir.trim())));
+            }
+            self.last_store_root_applied = Some(current);
+        }
+    }
+
     fn poll_service_task(&mut self) {
         if let Some(task) = &self.svc_task {
             match task.rx.try_recv() {
                 Ok(Ok(svc)) => {
                     self.svc = Some(svc);
                     self.status = format!("Model ready in {:.1}s", task.started.elapsed().as_secs_f32());
+                    // Install provider that reads current store root from environment.
+                    if let Some(svc) = &self.svc {
+                        let provider = Arc::new(|| {
+                            let root = std::env::var("HYBRID_STORE_ROOT").unwrap_or_else(|_| String::from("target/demo/store"));
+                            let db = std::path::PathBuf::from(derive_db_path(root.as_str()));
+                            let hnsw = Some(std::path::PathBuf::from(derive_hnsw_dir(root.as_str())));
+                            (db, hnsw)
+                        });
+                        svc.set_store_path_provider(provider);
+                    }
+                    // Seed env var right away
+                    std::env::set_var("HYBRID_STORE_ROOT", self.store_root.trim());
                     if self.ort_runtime_committed.is_none() {
                         self.ort_runtime_committed = Some(self.runtime_path.trim().to_string());
                     }
@@ -983,6 +1048,8 @@ impl AppState {
     }
 
     fn do_insert_text(&mut self) {
+        // Auto-apply Store Root before writing into the DB via service
+        self.ensure_store_paths_current();
         let text = self.input_text.trim().to_string();
         if text.is_empty() { self.status = "Enter some text to insert".into(); return; }
         let Some(svc) = self.svc.as_ref() else { self.status = "Model not initialized".into(); return; };
@@ -1004,6 +1071,8 @@ impl AppState {
     }
 
     fn do_ingest_file(&mut self) {
+        // Auto-apply Store Root before ingesting
+        self.ensure_store_paths_current();
         let path_owned = self.ingest_file_path.trim().to_string();
         if path_owned.is_empty() { self.status = "Choose a file to ingest".into(); return; }
         let Some(svc) = self.svc.as_ref() else { self.status = "Model not initialized".into(); return; };
@@ -1078,23 +1147,8 @@ impl AppState {
                                 let secs = self.ingest_started.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
                                 self.status = format!("Ingest finished ({} chunks) in {:.1}s.", total, secs);
                                 self.ingest_started = None;
-                                // After ingest, upsert into Tantivy (if enabled)
-                                #[cfg(feature = "tantivy")]
-                                {
-                                    if let Some(doc_key) = self.ingest_doc_key.clone() {
-                                        if let Err(err) = self.ensure_tantivy_open() { self.status = format!("Tantivy init failed: {err}"); break; }
-                                        use chunking_store::sqlite_repo::SqliteRepo;
-                                        let repo = match SqliteRepo::open(self.db_path.trim()) { Ok(r) => r, Err(e) => { self.status = format!("Open DB failed: {e}"); break; } };
-                                        let filter = FilterClause { kind: FilterKind::Must, op: FilterOp::DocIdEq(doc_key) };
-                                        let ids = match repo.list_chunk_ids_by_filter(&[filter], 50_000, 0) { Ok(v) => v, Err(_) => Vec::new() };
-                                        if !ids.is_empty() {
-                                            if let Ok(recs) = repo.get_chunks_by_ids(&ids) {
-                                                if let Some(idx) = &self.tantivy { let _ = idx.upsert_records(&recs); }
-                                            }
-                                        }
-                                    }
-                                    self.ingest_doc_key = None;
-                                }
+                                // Tantivy upsert is handled in the service now
+                                self.ingest_doc_key = None;
                                 break;
                             }
                             ProgressEvent::Canceled => {
@@ -1241,6 +1295,8 @@ impl AppState {
     }
 
     fn do_search_now(&mut self) {
+        // Auto-apply Store Root if user edited but didn't hit Set
+        self.ensure_store_paths_current();
         let q_owned = self.query.clone();
         let q = q_owned.trim();
         if q.is_empty() { self.status = "Enter query".into(); return; }
@@ -1249,22 +1305,19 @@ impl AppState {
         // Allow FTS-only search without model initialization
         // Build union of results from TV, TV(AND), TV(OR), VEC
         use chunking_store::sqlite_repo::SqliteRepo;
-        use chunking_store::SearchOptions;
         let repo = match SqliteRepo::open(self.db_path.trim()) { Ok(r) => r, Err(e) => { self.status = format!("Open DB failed: {e}"); return; } };
         // FTS5 is not used for search ranking here; skip any FTS maintenance.
-        let opts = SearchOptions { top_k, fetch_factor: 10 };
 
-        // Tantivy queries (skip when mode = VEC)
+        // Tantivy queries (skip when mode = VEC); now routed via service
         #[cfg(feature = "tantivy")]
         let (tv, tv_and, tv_or) = if matches!(self.search_mode, SearchMode::Vec) {
             (Vec::new(), Vec::new(), Vec::new())
         } else {
-            if let Err(err) = self.ensure_tantivy_open() { self.status = format!("Tantivy init failed: {err}"); return; }
-            if let Some(ti) = &self.tantivy {
-                let a = chunking_store::TextSearcher::search_ids(ti, &repo, q, filters, &opts);
-                let b = ti.search_ids_tokenized(&repo, q, filters, &opts, TokenCombine::AND);
-                let c = ti.search_ids_tokenized(&repo, q, filters, &opts, TokenCombine::OR);
-                (a, b, c)
+            if let Some(svc) = &self.svc {
+                match svc.tantivy_triple(q, top_k, filters) {
+                    Ok(t) => t,
+                    Err(e) => { self.status = format!("Tantivy search failed: {}", e); return; }
+                }
             } else { (Vec::new(), Vec::new(), Vec::new()) }
         };
         #[cfg(not(feature = "tantivy"))]

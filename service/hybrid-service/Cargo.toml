@@ -14,3 +14,7 @@ thiserror = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["clock", "serde"] }
+
+[features]
+default = []
+tantivy = ["chunking-store/tantivy-impl"]

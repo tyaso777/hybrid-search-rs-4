@@ -9,6 +9,8 @@ use chunking_store::hnsw_index::HnswIndex;
 use chunking_store::orchestrator::{delete_by_filter_orchestrated, ingest_chunks_orchestrated, DeleteReport};
 use chunking_store::{ChunkStoreRead, FilterClause, SearchHit, SearchOptions, TextSearcher, VectorSearcher};
 use chunking_store::sqlite_repo::SqliteRepo;
+#[cfg(feature = "tantivy")]
+use chunking_store::tantivy_index::{TantivyIndex, TokenCombine};
 use embedding_provider::config::default_stdio_config;
 use embedding_provider::embedder::{Embedder, OnnxStdIoConfig, OnnxStdIoEmbedder};
 
@@ -59,15 +61,26 @@ pub struct HybridService {
     // Active store paths (mutable at runtime)
     db_path: Arc<RwLock<PathBuf>>,
     hnsw_dir_override: Arc<RwLock<Option<PathBuf>>>,
+    // Optional dynamic provider for store paths. When set, operations will
+    // consult it and call set_store_paths if a change is detected.
+    store_provider: Arc<RwLock<Option<Arc<dyn Fn() -> (PathBuf, Option<PathBuf>) + Send + Sync>>>>,
     // Resident index + state
     hnsw: Arc<RwLock<Option<HnswIndex>>>,
     warmed: AtomicBool,
     hnsw_state: Arc<RwLock<HnswState>>, 
+    #[cfg(feature = "tantivy")]
+    tantivy: Arc<RwLock<Option<TantivyIndex>>>,
+    #[cfg(feature = "tantivy")]
+    tantivy_state: Arc<RwLock<TantivyState>>,
 }
 
 /// State of the resident HNSW index in memory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HnswState { Absent, Loading, Ready, Error }
+
+#[cfg(feature = "tantivy")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TantivyState { Absent, Loading, Ready, Error }
 
 /// Cooperative cancellation handle shared across long-running operations.
 #[derive(Clone, Default)]
@@ -92,6 +105,59 @@ pub enum ProgressEvent {
 }
 
 impl HybridService {
+    /// Guarded access to the primary SQLite repo with store-path consistency.
+    /// Ensures dynamic store paths are applied before opening and then
+    /// provides `&SqliteRepo` to the caller-supplied function.
+    pub fn with_repo<R, F>(&self, f: F) -> Result<R, ServiceError>
+    where
+        F: FnOnce(&SqliteRepo) -> Result<R, ServiceError>,
+    {
+        let repo = self.open_repo()?;
+        f(&repo)
+    }
+
+    /// Guarded access to the resident HNSW index and repo with store-path consistency.
+    /// If the HNSW snapshot exists at the current path but is not yet loaded,
+    /// this attempts a lazy load. Returns Ok(None) when no index is available.
+    pub fn with_hnsw<R, F>(&self, f: F) -> Result<Option<R>, ServiceError>
+    where
+        F: FnOnce(&HnswIndex, &SqliteRepo) -> R,
+    {
+        // Ensure we are pointing at up-to-date paths and open a repo
+        self.ensure_store_paths_from_provider();
+        let repo = self.open_repo()?;
+
+        // Fast path: already loaded
+        if let Ok(g) = self.hnsw.read() {
+            if let Some(h) = g.as_ref() {
+                return Ok(Some(f(h, &repo)));
+            }
+        }
+
+        // Try lazy-load from current directory
+        let hdir = self.hnsw_dir();
+        let exists = std::path::Path::new(&hdir).join("map.tsv").exists();
+        if exists {
+            if let Ok(mut s) = self.hnsw_state.write() { *s = HnswState::Loading; }
+            match HnswIndex::load(&hdir, self.embedder.info().dimension) {
+                Ok(h) => {
+                    let _ = self.hnsw.write().map(|mut w| *w = Some(h));
+                    if let Ok(mut s) = self.hnsw_state.write() { *s = HnswState::Ready; }
+                }
+                Err(_) => { let _ = self.hnsw_state.write().map(|mut s| *s = HnswState::Error); }
+            }
+        } else {
+            let _ = self.hnsw_state.write().map(|mut s| *s = HnswState::Absent);
+        }
+
+        // Re-check
+        if let Ok(g) = self.hnsw.read() {
+            if let Some(h) = g.as_ref() {
+                return Ok(Some(f(h, &repo)));
+            }
+        }
+        Ok(None)
+    }
     pub fn new(cfg: ServiceConfig) -> Result<Self, ServiceError> {
         // Ensure DB dir exists
         if let Some(dir) = cfg.db_path.parent() {
@@ -101,7 +167,12 @@ impl HybridService {
         let db_path = Arc::new(RwLock::new(cfg.db_path.clone()));
         let hnsw_dir_override = Arc::new(RwLock::new(cfg.hnsw_dir.clone()));
         let hnsw = Arc::new(RwLock::new(None));
+        let store_provider: Arc<RwLock<Option<Arc<dyn Fn() -> (PathBuf, Option<PathBuf>) + Send + Sync>>>> = Arc::new(RwLock::new(None));
         let hnsw_state = Arc::new(RwLock::new(HnswState::Absent));
+        #[cfg(feature = "tantivy")]
+        let tantivy: Arc<RwLock<Option<TantivyIndex>>> = Arc::new(RwLock::new(None));
+        #[cfg(feature = "tantivy")]
+        let tantivy_state: Arc<RwLock<TantivyState>> = Arc::new(RwLock::new(TantivyState::Absent));
 
         // Derive HNSW dir from config and kick preload immediately using configured dimension
         let hdir = match &cfg.hnsw_dir { Some(d) => d.clone(), None => derive_hnsw_dir(&cfg.db_path) };
@@ -148,7 +219,12 @@ impl HybridService {
             hnsw_dir_override,
             hnsw,
             warmed: AtomicBool::new(false),
+            store_provider,
             hnsw_state,
+            #[cfg(feature = "tantivy")]
+            tantivy,
+            #[cfg(feature = "tantivy")]
+            tantivy_state,
         };
         // Warm up ONNX session once (best-effort)
         let _ = svc.embedder.embed("warmup").map(|_| svc.warmed.store(true, Ordering::Relaxed));
@@ -181,10 +257,32 @@ impl HybridService {
     }
 
     fn open_repo(&self) -> Result<SqliteRepo, ServiceError> {
+        // Before opening, allow dynamic update of active paths.
+        self.ensure_store_paths_from_provider();
         let path = self.db_path.read().map(|p| p.clone()).unwrap_or_else(|_| self.cfg.db_path.clone());
         let repo = SqliteRepo::open(&path).map_err(|e| ServiceError::Repo(e.to_string()))?;
         let _ = repo.maybe_rebuild_fts();
         Ok(repo)
+    }
+
+    /// Install or replace the dynamic store path provider.
+    pub fn set_store_path_provider(&self, provider: Arc<dyn Fn() -> (PathBuf, Option<PathBuf>) + Send + Sync>) {
+        if let Ok(mut w) = self.store_provider.write() { *w = Some(provider); }
+    }
+
+    /// If a provider is installed, fetch current paths and apply when changed.
+    fn ensure_store_paths_from_provider(&self) {
+        let prov = match self.store_provider.read() { Ok(g) => g.clone(), Err(_) => None };
+        if let Some(cb) = prov {
+            let (new_db, new_hnsw) = cb();
+            let cur_db = self.db_path.read().map(|p| p.clone()).unwrap_or_else(|_| self.cfg.db_path.clone());
+            let cur_h = self.hnsw_dir_override.read().ok().and_then(|g| g.clone());
+            let same_db = new_db == cur_db;
+            let same_h = new_hnsw == cur_h;
+            if !same_db || !same_h {
+                self.set_store_paths(new_db, new_hnsw);
+            }
+        }
     }
 
     fn hnsw_dir(&self) -> PathBuf {
@@ -196,12 +294,68 @@ impl HybridService {
         derive_hnsw_dir(&dbp)
     }
 
+    #[cfg(feature = "tantivy")]
+    fn tantivy_dir(&self) -> PathBuf {
+        let dbp = self.db_path.read().map(|p| p.clone()).unwrap_or_else(|_| self.cfg.db_path.clone());
+        let base = dbp.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+        base.join("tantivy")
+    }
+
+    #[cfg(feature = "tantivy")]
+    pub fn with_tantivy<R, F>(&self, f: F) -> Result<Option<R>, ServiceError>
+    where
+        F: FnOnce(&TantivyIndex, &SqliteRepo) -> R,
+    {
+        self.ensure_store_paths_from_provider();
+        let repo = self.open_repo()?;
+        let need_open = match self.tantivy.read() { Ok(g) => g.is_none(), Err(_) => true };
+        if need_open {
+            let dir = self.tantivy_dir();
+            std::fs::create_dir_all(&dir).map_err(|e| ServiceError::Io(e.to_string()))?;
+            match TantivyIndex::open_or_create_dir(&dir) {
+                Ok(idx) => {
+                    let _ = self.tantivy.write().map(|mut w| *w = Some(idx));
+                    let _ = self.tantivy_state.write().map(|mut s| *s = TantivyState::Ready);
+                }
+                Err(_) => {
+                    let _ = self.tantivy_state.write().map(|mut s| *s = TantivyState::Error);
+                    return Ok(None);
+                }
+            }
+        }
+        if let Ok(g) = self.tantivy.read() {
+            if let Some(t) = g.as_ref() {
+                return Ok(Some(f(t, &repo)));
+            }
+        }
+        Ok(None)
+    }
+
+    #[cfg(feature = "tantivy")]
+    pub fn tantivy_triple(&self, query: &str, top_k: usize, filters: &[FilterClause]) -> Result<(Vec<chunking_store::TextMatch>, Vec<chunking_store::TextMatch>, Vec<chunking_store::TextMatch>), ServiceError> {
+        let opts = SearchOptions { top_k, fetch_factor: 10 };
+        match self.with_tantivy(|ti, repo| {
+            let a = chunking_store::TextSearcher::search_ids(ti, repo, query, filters, &opts);
+            let b = ti.search_ids_tokenized(repo, query, filters, &opts, TokenCombine::AND);
+            let c = ti.search_ids_tokenized(repo, query, filters, &opts, TokenCombine::OR);
+            (a, b, c)
+        })? {
+            Some(x) => Ok(x),
+            None => Ok((Vec::new(), Vec::new(), Vec::new())),
+        }
+    }
+
     /// Update active DB/HNSW paths at runtime and attempt to preload HNSW.
     pub fn set_store_paths(&self, db_path: PathBuf, hnsw_dir: Option<PathBuf>) {
         if let Ok(mut w) = self.db_path.write() { *w = db_path; }
         if let Ok(mut w) = self.hnsw_dir_override.write() { *w = hnsw_dir; }
         // Reset resident cache and state, and try loading if index exists
         let _ = self.hnsw.write().map(|mut w| *w = None);
+        #[cfg(feature = "tantivy")]
+        {
+            let _ = self.tantivy.write().map(|mut w| *w = None);
+            let _ = self.tantivy_state.write().map(|mut s| *s = TantivyState::Absent);
+        }
         let hdir = self.hnsw_dir();
         let dim = self.embedder.info().dimension;
         let db_for_warm = self.db_path.read().map(|p| p.clone()).unwrap_or_else(|_| self.cfg.db_path.clone());
@@ -308,6 +462,8 @@ impl HybridService {
         if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::UpsertDb { total: records.len() }); }
         self.ingest_chunks(&records, Some(&pairs))
             .and_then(|_| {
+                #[cfg(feature = "tantivy")]
+                { let _ = self.with_tantivy(|ti, _repo| { let _ = ti.upsert_records(&records); () }); }
                 if let Some(cb) = progress.as_deref_mut() {
                     cb(ProgressEvent::IndexText { total: records.len() });
                 }
@@ -363,12 +519,10 @@ impl HybridService {
         if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::UpsertDb { total: records.len() }); }
         self.ingest_chunks(&records, Some(&pairs))
             .and_then(|_| {
-                if let Some(cb) = progress.as_deref_mut() {
-                    cb(ProgressEvent::IndexText { total: records.len() });
-                }
-                if let Some(cb) = progress.as_deref_mut() {
-                    cb(ProgressEvent::Finished { total: records.len() });
-                }
+                #[cfg(feature = "tantivy")]
+                { let _ = self.with_tantivy(|ti, _repo| { let _ = ti.upsert_records(&records); () }); }
+                if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::IndexText { total: records.len() }); }
+                if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::Finished { total: records.len() }); }
                 Ok(())
             })
     }
@@ -429,6 +583,8 @@ impl HybridService {
         if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::UpsertDb { total: records.len() }); }
         self.ingest_chunks(&records, Some(&pairs))
             .and_then(|_| {
+                #[cfg(feature = "tantivy")]
+                { let _ = self.with_tantivy(|ti, _repo| { let _ = ti.upsert_records(&records); () }); }
                 if let Some(cb) = progress.as_deref_mut() {
                     cb(ProgressEvent::IndexText { total: records.len() });
                 }
@@ -470,83 +626,74 @@ impl HybridService {
         // Upsert
         let vectors = vec![(rec.chunk_id.clone(), vec)];
         self.ingest_chunks(&[rec], Some(&vectors))?;
+        #[cfg(feature = "tantivy")]
+        {
+            // Upsert just-inserted record into Tantivy at current path
+            let records: Vec<ChunkRecord> = {
+                let mut r = Vec::new();
+                // recreate minimal record for upsert
+                r.push(ChunkRecord {
+                    schema_version: chunk_model::SCHEMA_MAJOR,
+                    doc_id: doc_id.clone(),
+                    chunk_id: chunk_id.clone(),
+                    source_uri: "user://input".into(),
+                    source_mime: "text/plain".into(),
+                    extracted_at: Utc::now().to_rfc3339(),
+                    page_start: None,
+                    page_end: None,
+                    text: text.to_string(),
+                    section_path: None,
+                    meta: std::collections::BTreeMap::new(),
+                    extra: std::collections::BTreeMap::new(),
+                });
+                r
+            };
+            let _ = self.with_tantivy(|ti, _repo| { let _ = ti.upsert_records(&records); () });
+        }
         Ok((doc_id, chunk_id))
     }
 
     /// Text-only search via FTS5 with filters.
     pub fn search_text(&self, query: &str, top_k: usize, filters: &[FilterClause]) -> Result<Vec<SearchHit>, ServiceError> {
-        let repo = self.open_repo()?;
         let fts = Fts5Index::new();
         let opts = SearchOptions { top_k, fetch_factor: 10 };
-        Ok(fts.search(&repo, query, filters, &opts))
+        self.with_repo(|repo| Ok(fts.search(repo, query, filters, &opts)))
     }
 
     /// Hybrid search: fuse FTS (text) and HNSW (vector) with weighted sum.
     pub fn search_hybrid(&self, query: &str, top_k: usize, filters: &[FilterClause], w_text: f32, w_vec: f32) -> Result<Vec<SearchHit>, ServiceError> {
-        let repo = self.open_repo()?;
         let fts = Fts5Index::new();
         let opts = SearchOptions { top_k, fetch_factor: 10 };
 
-        let mut text_matches = TextSearcher::search_ids(&fts, &repo, query, filters, &opts);
+        // Text matches via FTS with repo guard
+        let mut text_matches = self.with_repo(|repo| Ok(TextSearcher::search_ids(&fts, repo, query, filters, &opts)))?;
 
-        // Vector query (ensure model warm)
+        // Vector matches via HNSW guard (optional)
         self.ensure_warm();
         let qvec = self.embedder.embed(query).map_err(|e| ServiceError::Embed(e.to_string()))?;
-        // Use resident HNSW if available; lazily load once if missing
-        let mut vec_matches: Vec<chunking_store::TextMatch> = Vec::new();
-        let mut need_try_load = false;
-        {
-            if let Ok(guard) = self.hnsw.read() {
-                if let Some(h) = guard.as_ref() {
-                    vec_matches = VectorSearcher::knn_ids(h, &repo, &qvec, filters, &opts);
-                } else {
-                    need_try_load = true;
-                }
-            } else {
-                need_try_load = true;
-            }
-        }
-        if need_try_load {
-            let hdir = self.hnsw_dir();
-            let exists = Path::new(&hdir).join("map.tsv").exists();
-            if exists {
-                if let Ok(mut s) = self.hnsw_state.write() { *s = HnswState::Loading; }
-                match HnswIndex::load(&hdir, qvec.len()) {
-                    Ok(h) => {
-                        if let Ok(mut w) = self.hnsw.write() { *w = Some(h); }
-                        if let Ok(mut s) = self.hnsw_state.write() { *s = HnswState::Ready; }
-                        if let Ok(r) = self.hnsw.read() {
-                            if let Some(h) = r.as_ref() {
-                                vec_matches = VectorSearcher::knn_ids(h, &repo, &qvec, filters, &opts);
-                            }
-                        }
-                    }
-                    Err(_) => { let _ = self.hnsw_state.write().map(|mut s| *s = HnswState::Error); }
-                }
-            } else {
-                let _ = self.hnsw_state.write().map(|mut s| *s = HnswState::Absent);
-            }
-        }
+        let vec_matches: Vec<chunking_store::TextMatch> = match self.with_hnsw(|h, repo| VectorSearcher::knn_ids(h, repo, &qvec, filters, &opts))? {
+            Some(v) => v,
+            None => Vec::new(),
+        };
 
-        // Combine
+        // Combine scores
         let mut score_map: HashMap<String, f32> = HashMap::new();
         for m in text_matches.drain(..) {
             let e = score_map.entry(m.chunk_id.0).or_insert(0.0);
             *e += w_text * m.score;
         }
-        for m in vec_matches.drain(..) {
+        for m in vec_matches.into_iter() {
             let e = score_map.entry(m.chunk_id.0).or_insert(0.0);
             *e += w_vec * m.score;
         }
 
-        // Sort and materialize
+        // Rank and materialize
         let mut items: Vec<(String, f32)> = score_map.into_iter().collect();
         items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         if items.len() > top_k { items.truncate(top_k); }
 
         let ids: Vec<ChunkId> = items.iter().map(|(cid, _)| ChunkId(cid.clone())).collect();
-        let recs = repo.get_chunks_by_ids(&ids).map_err(|e| ServiceError::Repo(e.to_string()))?;
-        // Build score map for quick lookup
+        let recs = self.with_repo(|repo| repo.get_chunks_by_ids(&ids).map_err(|e| ServiceError::Repo(e.to_string())))?;
         let mut cscore: HashMap<String, f32> = HashMap::new();
         for (cid, s) in items { cscore.insert(cid, s); }
         let mut out: Vec<SearchHit> = Vec::with_capacity(recs.len());
