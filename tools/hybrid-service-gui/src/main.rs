@@ -153,6 +153,9 @@ struct AppState {
 
     // Track last applied Store Root to auto-apply on Search/Insert
     last_store_root_applied: Option<String>,
+
+    // Validation message for Store Root (shown under the field on failure)
+    store_root_error: String,
 }
 
 // New (nested) config format: { store: {...}, chunk: {...}, model: {...} }
@@ -216,6 +219,27 @@ struct HybridGuiConfigV1 {
 }
 
 impl AppState {
+    fn apply_store_root_now(&mut self, reason: &str) {
+        // Take an owned copy to avoid borrowing self across mutable calls
+        let root = self.store_root.trim().to_string();
+        let p = std::path::Path::new(root.as_str());
+        if !p.exists() || !p.is_dir() {
+            self.store_root_error = format!("Invalid Store Root (not an existing directory): {}", root);
+            return;
+        }
+        self.store_root_error.clear();
+        self.refresh_store_paths();
+        std::env::set_var("HYBRID_STORE_ROOT", root.as_str());
+        // Create derived subdirs if missing, but do not create the root here
+        let _ = fs::create_dir_all(derive_hnsw_dir(root.as_str()));
+        #[cfg(feature = "tantivy")] let _ = fs::create_dir_all(derive_tantivy_dir(root.as_str()));
+        #[cfg(feature = "tantivy")] { self.tantivy = None; }
+        if let Some(svc) = &self.svc {
+            svc.set_store_paths(PathBuf::from(self.db_path.trim()), Some(PathBuf::from(self.hnsw_dir.trim())));
+        }
+        self.last_store_root_applied = Some(root.clone());
+        self.status = format!("{}: {}", reason, root);
+    }
     fn ui_config(&mut self, ui: &mut egui::Ui) {
         ui.heading("Model / Store Config");
         ui.add_enabled_ui(!self.ingest_running, |ui| {
@@ -234,44 +258,18 @@ impl AppState {
                 if ui.button("Browse").clicked() {
                     if let Some(p) = FileDialog::new().pick_folder() {
                         self.store_root = p.display().to_string();
-                        self.refresh_store_paths();
-                        // Keep provider (service) and GUI in sync with new root
-                        std::env::set_var("HYBRID_STORE_ROOT", self.store_root.trim());
-                        let _ = fs::create_dir_all(self.store_root.trim());
-                        let _ = fs::create_dir_all(derive_hnsw_dir(self.store_root.trim()));
-                        #[cfg(feature = "tantivy")] let _ = fs::create_dir_all(derive_tantivy_dir(self.store_root.trim()));
-                        self.status = format!("Store root set to {}", self.store_root.trim()); if let Some(svc) = &self.svc { svc.set_store_paths(PathBuf::from(self.db_path.trim()), Some(PathBuf::from(self.hnsw_dir.trim()))); }
-                        // Avoid stale tantivy handle and ensure future auto-apply sees current
-                        #[cfg(feature = "tantivy")] { self.tantivy = None; }
-                        self.last_store_root_applied = Some(self.store_root.trim().to_string());
+                        self.apply_store_root_now("Store root set via Browse");
                     }
                 }
-                ui.add(TextEdit::singleline(&mut self.store_root).desired_width(400.0));
-                if ui.button("Set").clicked() {
-                    self.refresh_store_paths();
-                    // update env for provider
-                    std::env::set_var("HYBRID_STORE_ROOT", self.store_root.trim());
-                    let _ = fs::create_dir_all(self.store_root.trim());
-                    let _ = fs::create_dir_all(derive_hnsw_dir(self.store_root.trim()));
-                    #[cfg(feature = "tantivy")]
-                    let _ = fs::create_dir_all(derive_tantivy_dir(self.store_root.trim()));
-                    #[cfg(feature = "tantivy")]
-                    { self.tantivy = None; }
-                    self.status = format!("Store root set to {}", self.store_root.trim()); if let Some(svc) = &self.svc { svc.set_store_paths(PathBuf::from(self.db_path.trim()), Some(PathBuf::from(self.hnsw_dir.trim()))); }
-                }
-                if ui.button("Reset").clicked() {
-                    self.store_root = "target/demo/store".into();
-                    self.refresh_store_paths();
-                    std::env::set_var("HYBRID_STORE_ROOT", self.store_root.trim());
-                    let _ = fs::create_dir_all(self.store_root.trim());
-                    let _ = fs::create_dir_all(derive_hnsw_dir(self.store_root.trim()));
-                    #[cfg(feature = "tantivy")]
-                    let _ = fs::create_dir_all(derive_tantivy_dir(self.store_root.trim()));
-                    #[cfg(feature = "tantivy")]
-                    { self.tantivy = None; }
-                    self.status = format!("Store root reset to {}", self.store_root.trim());
+                let resp = ui.add(TextEdit::singleline(&mut self.store_root).desired_width(400.0));
+                let commit_enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if resp.lost_focus() || commit_enter {
+                    self.apply_store_root_now("Store root applied");
                 }
             });
+            if !self.store_root_error.is_empty() {
+                ui.label(egui::RichText::new(&self.store_root_error).color(ui.visuals().warn_fg_color));
+            }
             ui.horizontal(|ui| { ui.label("DB"); ui.label(&self.db_path); });
             ui.horizontal(|ui| { ui.label("HNSW"); ui.label(&self.hnsw_dir); });
             #[cfg(feature = "tantivy")]
@@ -601,6 +599,8 @@ impl AppState {
             config_store_name: String::new(),
 
             last_store_root_applied: None,
+
+            store_root_error: String::new(),
         }
     }
 
@@ -651,27 +651,29 @@ impl AppState {
     }
 
     // Ensure that DB/HNSW paths reflect the current Store Root before operations.
-    fn ensure_store_paths_current(&mut self) {
+    fn ensure_store_paths_current(&mut self) -> bool {
         let current = self.store_root.trim().to_string();
-        let needs_apply = match &self.last_store_root_applied {
-            Some(prev) => prev != &current,
-            None => true,
-        };
-        if needs_apply {
-            self.refresh_store_paths();
-            std::env::set_var("HYBRID_STORE_ROOT", self.store_root.trim());
-            let _ = fs::create_dir_all(self.store_root.trim());
-            let _ = fs::create_dir_all(derive_hnsw_dir(self.store_root.trim()));
-            #[cfg(feature = "tantivy")]
-            let _ = fs::create_dir_all(derive_tantivy_dir(self.store_root.trim()));
-            // Drop Tantivy handle so next ensure_tantivy_open() reopens at new dir
-            #[cfg(feature = "tantivy")]
-            { self.tantivy = None; }
-            if let Some(svc) = &self.svc {
-                svc.set_store_paths(PathBuf::from(self.db_path.trim()), Some(PathBuf::from(self.hnsw_dir.trim())));
-            }
-            self.last_store_root_applied = Some(current);
+        let needs_apply = match &self.last_store_root_applied { Some(prev) => prev != &current, None => true };
+        if !needs_apply { return true; }
+        // Validate existence first; do not auto-create root
+        let p = std::path::Path::new(&current);
+        if !p.exists() || !p.is_dir() {
+            self.store_root_error = format!("Invalid Store Root (not an existing directory): {}", current);
+            return false;
         }
+        self.store_root_error.clear();
+        self.refresh_store_paths();
+        std::env::set_var("HYBRID_STORE_ROOT", current.as_str());
+        let _ = fs::create_dir_all(derive_hnsw_dir(current.as_str()));
+        #[cfg(feature = "tantivy")]
+        let _ = fs::create_dir_all(derive_tantivy_dir(current.as_str()));
+        #[cfg(feature = "tantivy")]
+        { self.tantivy = None; }
+        if let Some(svc) = &self.svc {
+            svc.set_store_paths(PathBuf::from(self.db_path.trim()), Some(PathBuf::from(self.hnsw_dir.trim())));
+        }
+        self.last_store_root_applied = Some(current);
+        true
     }
 
     fn poll_service_task(&mut self) {
@@ -1049,7 +1051,7 @@ impl AppState {
 
     fn do_insert_text(&mut self) {
         // Auto-apply Store Root before writing into the DB via service
-        self.ensure_store_paths_current();
+        if !self.ensure_store_paths_current() { return; }
         let text = self.input_text.trim().to_string();
         if text.is_empty() { self.status = "Enter some text to insert".into(); return; }
         let Some(svc) = self.svc.as_ref() else { self.status = "Model not initialized".into(); return; };
@@ -1072,7 +1074,7 @@ impl AppState {
 
     fn do_ingest_file(&mut self) {
         // Auto-apply Store Root before ingesting
-        self.ensure_store_paths_current();
+        if !self.ensure_store_paths_current() { return; }
         let path_owned = self.ingest_file_path.trim().to_string();
         if path_owned.is_empty() { self.status = "Choose a file to ingest".into(); return; }
         let Some(svc) = self.svc.as_ref() else { self.status = "Model not initialized".into(); return; };
@@ -1295,8 +1297,8 @@ impl AppState {
     }
 
     fn do_search_now(&mut self) {
-        // Auto-apply Store Root if user edited but didn't hit Set
-        self.ensure_store_paths_current();
+        // Auto-apply Store Root if user edited
+        if !self.ensure_store_paths_current() { return; }
         let q_owned = self.query.clone();
         let q = q_owned.trim();
         if q.is_empty() { self.status = "Enter query".into(); return; }
