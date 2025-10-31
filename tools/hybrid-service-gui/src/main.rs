@@ -122,8 +122,12 @@ struct AppState {
     // Search
     query: String,
     top_k: usize,
-    w_text: f32,
-    w_vec: f32,
+    // Weights for result fusion (Hybrid)
+    // None means: treat as not provided (null) and hide corresponding score column in results
+    w_tv: Option<f32>,
+    w_tv_and: Option<f32>,
+    w_tv_or: Option<f32>,
+    w_vec: Option<f32>,
     results: Vec<HitRow>,
     search_mode: SearchMode,
 
@@ -575,8 +579,11 @@ impl AppState {
 
             query: String::new(),
             top_k: 10,
-            w_text: 0.5,
-            w_vec: 0.5,
+            // Default to OR/VEC enabled (1.0) to match previous behavior; TV/AND left unset
+            w_tv: None,
+            w_tv_and: None,
+            w_tv_or: Some(1.0),
+            w_vec: Some(1.0),
             results: Vec::new(),
             search_mode: SearchMode::Hybrid,
 
@@ -780,7 +787,7 @@ impl App for AppState {
                     }
                 }
             });
-
+            
             ui.separator();
             match self.tab {
                 ActiveTab::Insert => self.ui_insert(ui),
@@ -1202,82 +1209,117 @@ impl AppState {
                 }
                 let mode_name = match self.search_mode { SearchMode::Hybrid => "Hybrid", SearchMode::Tantivy => "Tantivy", SearchMode::Vec => "VEC" };
                 ui.label(mode_name);
-                if matches!(self.search_mode, SearchMode::Hybrid) {
-                    ui.separator();
-                    ui.label("w_TV(OR)");
-                    ui.add(egui::DragValue::new(&mut self.w_text).speed(0.1).clamp_range(0.0..=100.0));
-                    ui.label("w_VEC");
-                    ui.add(egui::DragValue::new(&mut self.w_vec).speed(0.1).clamp_range(0.0..=100.0));
-                    let denom = (self.w_text + self.w_vec).max(1e-6);
-                    let wt = self.w_text / denom;
-                    let wv = self.w_vec / denom;
-                    ui.label(format!("{:.0}%/{:.0}%", wt*100.0, wv*100.0));
-                }
             });
+
+            // Row 3: Weights (under TopK/Mode), only in Hybrid mode
+            if matches!(self.search_mode, SearchMode::Hybrid) {
+                ui.horizontal(|ui| {
+                    // Four weights (nullable). Empty input => None (hide column). 0 is valid.
+                    let mut tv_s = self.w_tv.map(|v| format!("{}", v)).unwrap_or_default();
+                    let mut tv_and_s = self.w_tv_and.map(|v| format!("{}", v)).unwrap_or_default();
+                    let mut tv_or_s = self.w_tv_or.map(|v| format!("{}", v)).unwrap_or_default();
+                    let mut vec_s = self.w_vec.map(|v| format!("{}", v)).unwrap_or_default();
+
+                    ui.label("w_TV");
+                    if ui.add(TextEdit::singleline(&mut tv_s).desired_width(60.0).id_source("w_tv")).changed() {
+                        let t = tv_s.trim(); self.w_tv = if t.is_empty() { None } else { t.parse::<f32>().ok() };
+                    }
+                    ui.label("w_TV(AND)");
+                    if ui.add(TextEdit::singleline(&mut tv_and_s).desired_width(60.0).id_source("w_tv_and")).changed() {
+                        let t = tv_and_s.trim(); self.w_tv_and = if t.is_empty() { None } else { t.parse::<f32>().ok() };
+                    }
+                    ui.label("w_TV(OR)");
+                    if ui.add(TextEdit::singleline(&mut tv_or_s).desired_width(60.0).id_source("w_tv_or")).changed() {
+                        let t = tv_or_s.trim(); self.w_tv_or = if t.is_empty() { None } else { t.parse::<f32>().ok() };
+                    }
+                    ui.label("w_VEC");
+                    if ui.add(TextEdit::singleline(&mut vec_s).desired_width(60.0).id_source("w_vec")).changed() {
+                        let t = vec_s.trim(); self.w_vec = if t.is_empty() { None } else { t.parse::<f32>().ok() };
+                    }
+
+                    // Show normalized percentages across the provided weights
+                    let wt = self.w_tv.unwrap_or(0.0);
+                    let wa = self.w_tv_and.unwrap_or(0.0);
+                    let wo = self.w_tv_or.unwrap_or(0.0);
+                    let wv = self.w_vec.unwrap_or(0.0);
+                    let denom = (wt + wa + wo + wv).max(1e-6);
+                    ui.label(format!("% TV:{:.0} AND:{:.0} OR:{:.0} VEC:{:.0}", (wt/denom)*100.0, (wa/denom)*100.0, (wo/denom)*100.0, (wv/denom)*100.0));
+                });
+            }
 
             ui.separator();
             ui.push_id("results_table", |ui| {
-                TableBuilder::new(ui)
-            .striped(true)
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::initial(36.0).at_least(30.0))
-            .column(Column::initial(220.0))   // file
-            .column(Column::initial(80.0))    // page
-            .column(Column::remainder())      // text
-            .column(Column::initial(70.0))    // TV
-            .column(Column::initial(80.0))    // TV(AND)
-            .column(Column::initial(80.0))    // TV(OR)
-            .column(Column::initial(70.0))    // VEC
-            .header(20.0, |mut header| {
-                header.col(|ui| { ui.label("#"); });
-                header.col(|ui| { ui.label("File"); });
-                header.col(|ui| { ui.label("Page"); });
-                header.col(|ui| { ui.label("Text"); });
-                header.col(|ui| { ui.label("TV"); });
-                header.col(|ui| { ui.label("TV(AND)"); });
-                header.col(|ui| { ui.label("TV(OR)"); });
-                header.col(|ui| { ui.label("VEC"); });
-            })
-            .body(|mut body| {
-                for (i, row) in self.results.iter().enumerate() {
-                    body.row(20.0, |mut row_ui| {
-                        row_ui.col(|ui| { ui.label(format!("{}", i+1)); });
-                        // Make file and page clickable to select the row
-                        row_ui.col(|ui| {
-                            if ui.link(&row.file).clicked() {
-                                self.selected_cid = Some(row.cid.clone());
-                                self.selected_text = row.text_full.clone();
-                                self.selected_display = format!("{} {}", &row.file, if row.page.is_empty() { String::new() } else { row.page.clone() });
+                {
+                    let show_tv = self.w_tv.is_some();
+                    let show_tv_and = self.w_tv_and.is_some();
+                    let show_tv_or = self.w_tv_or.is_some();
+                    let show_vec = self.w_vec.is_some();
+
+                    let mut table = TableBuilder::new(ui)
+                        .striped(true)
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        .column(Column::initial(36.0).at_least(30.0))
+                        .column(Column::initial(220.0))   // file
+                        .column(Column::initial(80.0));    // page
+
+                    if show_tv { table = table.column(Column::initial(70.0)); }
+                    if show_tv_and { table = table.column(Column::initial(80.0)); }
+                    if show_tv_or { table = table.column(Column::initial(80.0)); }
+                    if show_vec { table = table.column(Column::initial(70.0)); }
+
+                    table = table.column(Column::remainder()); // text (after scores)
+
+                    table
+                        .header(20.0, |mut header| {
+                            header.col(|ui| { ui.label("#"); });
+                            header.col(|ui| { ui.label("File"); });
+                            header.col(|ui| { ui.label("Page"); });
+                            if show_tv { header.col(|ui| { ui.label("TV"); }); }
+                            if show_tv_and { header.col(|ui| { ui.label("TV(AND)"); }); }
+                            if show_tv_or { header.col(|ui| { ui.label("TV(OR)"); }); }
+                            if show_vec { header.col(|ui| { ui.label("VEC"); }); }
+                            header.col(|ui| { ui.label("Text"); });
+                        })
+                        .body(|mut body| {
+                            for (i, row) in self.results.iter().enumerate() {
+                                body.row(20.0, |mut row_ui| {
+                                    row_ui.col(|ui| { ui.label(format!("{}", i+1)); });
+                                    // Make file and page clickable to select the row
+                                    row_ui.col(|ui| {
+                                        if ui.link(&row.file).clicked() {
+                                            self.selected_cid = Some(row.cid.clone());
+                                            self.selected_text = row.text_full.clone();
+                                            self.selected_display = format!("{} {}", &row.file, if row.page.is_empty() { String::new() } else { row.page.clone() });
+                                        }
+                                    });
+                                    row_ui.col(|ui| {
+                                        if !row.page.is_empty() {
+                                            if ui.link(&row.page).clicked() {
+                                                self.selected_cid = Some(row.cid.clone());
+                                                self.selected_text = row.text_full.clone();
+                                                self.selected_display = format!("{} {}", &row.file, &row.page);
+                                            }
+                                        } else {
+                                            ui.label(&row.page);
+                                        }
+                                    });
+                                    if show_tv { row_ui.col(|ui| { ui.label(opt_fmt(row.tv)); }); }
+                                    if show_tv_and { row_ui.col(|ui| { ui.label(opt_fmt(row.tv_and)); }); }
+                                    if show_tv_or { row_ui.col(|ui| { ui.label(opt_fmt(row.tv_or)); }); }
+                                    if show_vec { row_ui.col(|ui| { ui.label(opt_fmt(row.vec)); }); }
+                                    row_ui.col(|ui| {
+                                        ui.push_id(i, |ui| {
+                                            if ui.link(&row.text_preview).clicked() {
+                                                self.selected_cid = Some(row.cid.clone());
+                                                self.selected_text = row.text_full.clone();
+                                                self.selected_display = format!("{} {}", &row.file, if row.page.is_empty() { String::new() } else { row.page.clone() });
+                                            }
+                                        });
+                                    });
+                                });
                             }
                         });
-                        row_ui.col(|ui| {
-                            if !row.page.is_empty() {
-                                if ui.link(&row.page).clicked() {
-                                    self.selected_cid = Some(row.cid.clone());
-                                    self.selected_text = row.text_full.clone();
-                                    self.selected_display = format!("{} {}", &row.file, &row.page);
-                                }
-                            } else {
-                                ui.label(&row.page);
-                            }
-                        });
-                        row_ui.col(|ui| {
-                            ui.push_id(i, |ui| {
-                                // Clickable preview (remove chunk_id link display)
-                                if ui.link(&row.text_preview).clicked() {
-                                    self.selected_cid = Some(row.cid.clone());
-                                    self.selected_text = row.text_full.clone();
-                                    self.selected_display = format!("{} {}", &row.file, if row.page.is_empty() { String::new() } else { row.page.clone() });
-                                }
-                            });
-                        });
-                        row_ui.col(|ui| { ui.label(opt_fmt(row.tv)); });
-                        row_ui.col(|ui| { ui.label(opt_fmt(row.tv_and)); });
-                        row_ui.col(|ui| { ui.label(opt_fmt(row.tv_or)); });
-                        row_ui.col(|ui| { ui.label(opt_fmt(row.vec)); });
-                    });
                 }
-            });
             });
             });
 
@@ -1347,27 +1389,25 @@ impl AppState {
 
         // Sort by selected mode
         let mut items: Vec<(String, (Option<f32>, Option<f32>, Option<f32>, Option<f32>))> = agg.into_iter().collect();
+        let wt_raw = self.w_tv.unwrap_or(0.0);
+        let wa_raw = self.w_tv_and.unwrap_or(0.0);
+        let wo_raw = self.w_tv_or.unwrap_or(0.0);
+        let wv_raw = self.w_vec.unwrap_or(0.0);
+        let denom = (wt_raw + wa_raw + wo_raw + wv_raw).max(1e-6);
+        let wt = wt_raw / denom;
+        let wa = wa_raw / denom;
+        let wo = wo_raw / denom;
+        let wv = wv_raw / denom;
         items.sort_by(|a, b| {
             let (tv_a, tv_and_a, tv_or_a, vec_a) = (a.1.0.unwrap_or(0.0), a.1.1.unwrap_or(0.0), a.1.2.unwrap_or(0.0), a.1.3.unwrap_or(0.0));
             let (tv_b, tv_and_b, tv_or_b, vec_b) = (b.1.0.unwrap_or(0.0), b.1.1.unwrap_or(0.0), b.1.2.unwrap_or(0.0), b.1.3.unwrap_or(0.0));
             let key_a = match self.search_mode {
-                SearchMode::Hybrid => {
-                    // Hybrid=fusion of TV(OR) and VEC with normalized weights
-                    let denom = (self.w_text + self.w_vec).max(1e-6);
-                    let wt = self.w_text / denom;
-                    let wv = self.w_vec / denom;
-                    wt * tv_or_a + wv * vec_a
-                }
+                SearchMode::Hybrid => wt * tv_a + wa * tv_and_a + wo * tv_or_a + wv * vec_a,
                 SearchMode::Tantivy => tv_a.max(tv_and_a).max(tv_or_a),
                 SearchMode::Vec => vec_a,
             };
             let key_b = match self.search_mode {
-                SearchMode::Hybrid => {
-                    let denom = (self.w_text + self.w_vec).max(1e-6);
-                    let wt = self.w_text / denom;
-                    let wv = self.w_vec / denom;
-                    wt * tv_or_b + wv * vec_b
-                }
+                SearchMode::Hybrid => wt * tv_b + wa * tv_and_b + wo * tv_or_b + wv * vec_b,
                 SearchMode::Tantivy => tv_b.max(tv_and_b).max(tv_or_b),
                 SearchMode::Vec => vec_b,
             };
