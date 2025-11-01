@@ -355,9 +355,12 @@ impl AppState {
                 .column(Column::initial(260.0))   // doc id
                 .column(Column::initial(320.0))   // source uri
                 .column(Column::initial(120.0))   // mime
+                .column(Column::initial(90.0))    // size
                 .column(Column::initial(70.0))    // pages
                 .column(Column::initial(70.0))    // chunks
                 .column(Column::initial(170.0))   // extracted at
+                .column(Column::initial(170.0))   // updated at
+                .column(Column::initial(180.0))   // author
                 .column(Column::initial(90.0));   // actions
 
             table
@@ -365,12 +368,30 @@ impl AppState {
                     header.col(|ui| { ui.label("Doc ID"); });
                     header.col(|ui| { ui.label("File"); });
                     header.col(|ui| { ui.label("MIME"); });
+                    header.col(|ui| { ui.label("Size"); });
                     header.col(|ui| { ui.label("Pages"); });
                     header.col(|ui| { ui.label("Chunks"); });
                     header.col(|ui| { ui.label("Extracted"); });
+                    header.col(|ui| { ui.label("Updated"); });
+                    header.col(|ui| { ui.label("Author"); });
                     header.col(|ui| { ui.label("Actions"); });
                 })
                 .body(|mut body| {
+                    fn humanize_bytes_opt(v: Option<u64>) -> String {
+                        match v {
+                            Some(n) => {
+                                const KB: f64 = 1024.0;
+                                const MB: f64 = 1024.0 * 1024.0;
+                                const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+                                let nf = n as f64;
+                                if nf < KB { format!("{} B", n) }
+                                else if nf < MB { format!("{:.1} KB", nf/KB) }
+                                else if nf < GB { format!("{:.1} MB", nf/MB) }
+                                else { format!("{:.1} GB", nf/GB) }
+                            }
+                            None => String::from("-"),
+                        }
+                    }
                     fn trunc(s: &str, n: usize) -> String {
                         if s.chars().count() <= n { return s.to_string(); }
                         let mut out: String = s.chars().take(n).collect();
@@ -396,9 +417,12 @@ impl AppState {
                                 }
                             });
                             row_ui.col(|ui| { ui.label(&rec.source_mime); });
+                            row_ui.col(|ui| { ui.label(humanize_bytes_opt(rec.file_size_bytes)); });
                             row_ui.col(|ui| { ui.label(rec.page_count.map(|v| v.to_string()).unwrap_or_else(|| "-".into())); });
                             row_ui.col(|ui| { ui.label(rec.chunk_count.map(|v| v.to_string()).unwrap_or_else(|| "-".into())); });
                             row_ui.col(|ui| { ui.label(&rec.extracted_at); });
+                            row_ui.col(|ui| { ui.label(rec.updated_at_meta.clone().unwrap_or_else(|| String::from("-"))); });
+                            row_ui.col(|ui| { ui.label(rec.author_guess.clone().unwrap_or_else(|| String::from(""))); });
                             // Actions
                             row_ui.col(|ui| {
                                 let pending = self.files_delete_pending.as_ref().map(|s| s == &rec.doc_id.0).unwrap_or(false);

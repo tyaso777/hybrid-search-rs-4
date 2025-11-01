@@ -2,6 +2,10 @@ use crate::reader_pdf::{read_pdf_to_blocks, default_backend, PdfBackend};
 use crate::unified_blocks::UnifiedBlock;
 use chunk_model::{ChunkRecord, DocumentId, ChunkId, FileRecord, SCHEMA_MAJOR};
 use std::collections::BTreeMap;
+use chrono::{DateTime, Utc};
+use sha2::Digest;
+use std::fs::File as FsFile;
+use std::io::{BufReader, Read};
 
 #[derive(Debug, Clone, Copy)]
 pub struct PdfChunkParams {
@@ -60,7 +64,10 @@ pub fn chunk_pdf_file_with_file_record(path: &str, params: &PdfChunkParams) -> (
         PdfBackend::Stub => "stub.pdf",
     };
 
-    let file = FileRecord {
+    // Derive page count from segments' page_end
+    let page_count = segs.iter().filter_map(|(_, _ps, pe)| pe.copied()).max();
+
+    let mut file = FileRecord {
         schema_version: SCHEMA_MAJOR,
         doc_id: DocumentId(path.to_string()),
         doc_revision: Some(1),
@@ -68,7 +75,7 @@ pub fn chunk_pdf_file_with_file_record(path: &str, params: &PdfChunkParams) -> (
         source_mime: "application/pdf".into(),
         file_size_bytes: None,
         content_sha256: None,
-        page_count: None,
+        page_count,
         extracted_at: String::new(),
         created_at_meta: None,
         updated_at_meta: None,
@@ -86,6 +93,9 @@ pub fn chunk_pdf_file_with_file_record(path: &str, params: &PdfChunkParams) -> (
         meta: BTreeMap::new(),
         extra: BTreeMap::new(),
     };
+
+    // Basic FS metadata + SHA256
+    enrich_file_record_basic(&mut file, path);
 
     let chunks: Vec<ChunkRecord> = segs
         .into_iter()
@@ -107,4 +117,33 @@ pub fn chunk_pdf_file_with_file_record(path: &str, params: &PdfChunkParams) -> (
         .collect();
 
     (file, chunks)
+}
+
+// Reuse the same helpers as lib.rs (declare here to satisfy the compiler without extra pub exports)
+fn enrich_file_record_basic(file: &mut chunk_model::FileRecord, path: &str) {
+    if let Ok(md) = std::fs::metadata(path) {
+        file.file_size_bytes = Some(md.len());
+        if let Ok(ct) = md.created() { file.created_at_meta = Some(system_time_to_rfc3339(ct)); }
+        if let Ok(mt) = md.modified() { file.updated_at_meta = Some(system_time_to_rfc3339(mt)); }
+    }
+    if let Some(hex) = compute_sha256_hex(path) { file.content_sha256 = Some(hex); }
+}
+
+fn compute_sha256_hex(path: &str) -> Option<String> {
+    let f = FsFile::open(path).ok()?;
+    let mut reader = BufReader::new(f);
+    let mut hasher = sha2::Sha256::new();
+    let mut buf = [0u8; 32 * 1024];
+    loop {
+        let n = reader.read(&mut buf).ok()?;
+        if n == 0 { break; }
+        hasher.update(&buf[..n]);
+    }
+    let digest = hasher.finalize();
+    Some(hex::encode(digest))
+}
+
+fn system_time_to_rfc3339(t: std::time::SystemTime) -> String {
+    let dt: DateTime<Utc> = t.into();
+    dt.to_rfc3339()
 }

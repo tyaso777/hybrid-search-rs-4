@@ -9,6 +9,10 @@ pub mod text_segmenter;
 pub mod pdf_chunker;
 
 use chunk_model::{ChunkId, ChunkRecord, DocumentId, FileRecord};
+use std::fs::File;
+use std::io::{BufReader, Read};
+use chrono::{DateTime, Utc};
+use sha2::Digest;
 use std::collections::BTreeMap;
 use unified_blocks::{UnifiedBlock, BlockKind};
 use std::path::Path;
@@ -55,7 +59,7 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
             })
             .collect();
 
-        let file = FileRecord {
+        let mut file = FileRecord {
             schema_version: chunk_model::SCHEMA_MAJOR,
             doc_id: DocumentId(path.to_string()),
             doc_revision: Some(1),
@@ -63,7 +67,7 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
             source_mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
             file_size_bytes: None,
             content_sha256: None,
-            page_count: None,
+            page_count: segs.iter().filter_map(|(_, _ps, pe)| pe.copied()).max(),
             extracted_at: String::new(),
             created_at_meta: None,
             updated_at_meta: None,
@@ -81,6 +85,7 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
             meta: BTreeMap::new(),
             extra: BTreeMap::new(),
         };
+        enrich_file_record_basic(&mut file, path);
         return ChunkOutput { file, chunks };
     }
 
@@ -108,7 +113,7 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
             })
             .collect();
 
-        let file = FileRecord {
+        let mut file = FileRecord {
             schema_version: chunk_model::SCHEMA_MAJOR,
             doc_id: DocumentId(path.to_string()),
             doc_revision: Some(1),
@@ -116,7 +121,7 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
             source_mime: "text/plain".into(),
             file_size_bytes: None,
             content_sha256: None,
-            page_count: None,
+            page_count: Some(1),
             extracted_at: String::new(),
             created_at_meta: None,
             updated_at_meta: None,
@@ -134,6 +139,7 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
             meta: BTreeMap::new(),
             extra: BTreeMap::new(),
         };
+        enrich_file_record_basic(&mut file, path);
         return ChunkOutput { file, chunks };
     }
 
@@ -159,7 +165,7 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
         })
         .collect();
 
-    let file = FileRecord {
+    let mut file = FileRecord {
         schema_version: chunk_model::SCHEMA_MAJOR,
         doc_id: DocumentId(path.to_string()),
         doc_revision: Some(1),
@@ -185,6 +191,7 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
         meta: BTreeMap::new(),
         extra: BTreeMap::new(),
     };
+    enrich_file_record_basic(&mut file, path);
     ChunkOutput { file, chunks }
 }
 
@@ -223,7 +230,7 @@ pub fn chunk_file_with_file_record_with_encoding(path: &str, encoding: Option<&s
             })
             .collect();
 
-        let file = FileRecord {
+        let mut file = FileRecord {
             schema_version: chunk_model::SCHEMA_MAJOR,
             doc_id: DocumentId(path.to_string()),
             doc_revision: Some(1),
@@ -231,7 +238,7 @@ pub fn chunk_file_with_file_record_with_encoding(path: &str, encoding: Option<&s
             source_mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
             file_size_bytes: None,
             content_sha256: None,
-            page_count: None,
+            page_count: segs.iter().filter_map(|(_, _ps, pe)| pe.copied()).max(),
             extracted_at: String::new(),
             created_at_meta: None,
             updated_at_meta: None,
@@ -249,6 +256,7 @@ pub fn chunk_file_with_file_record_with_encoding(path: &str, encoding: Option<&s
             meta: BTreeMap::new(),
             extra: BTreeMap::new(),
         };
+        enrich_file_record_basic(&mut file, path);
         return ChunkOutput { file, chunks };
     }
 
@@ -276,7 +284,7 @@ pub fn chunk_file_with_file_record_with_encoding(path: &str, encoding: Option<&s
             })
             .collect();
 
-        let file = FileRecord {
+        let mut file = FileRecord {
             schema_version: chunk_model::SCHEMA_MAJOR,
             doc_id: DocumentId(path.to_string()),
             doc_revision: Some(1),
@@ -284,7 +292,7 @@ pub fn chunk_file_with_file_record_with_encoding(path: &str, encoding: Option<&s
             source_mime: "text/plain".into(),
             file_size_bytes: None,
             content_sha256: None,
-            page_count: None,
+            page_count: Some(1),
             extracted_at: String::new(),
             created_at_meta: None,
             updated_at_meta: None,
@@ -302,6 +310,7 @@ pub fn chunk_file_with_file_record_with_encoding(path: &str, encoding: Option<&s
             meta: BTreeMap::new(),
             extra: BTreeMap::new(),
         };
+        enrich_file_record_basic(&mut file, path);
         return ChunkOutput { file, chunks };
     }
 
@@ -499,5 +508,99 @@ fn is_text_like(path: &str) -> bool {
         }
     }
     false
+}
+
+// --- Metadata enrichment helpers --------------------------------------------------------------
+
+fn enrich_file_record_basic(file: &mut FileRecord, path: &str) {
+    // File size and timestamps
+    if let Ok(md) = std::fs::metadata(path) {
+        file.file_size_bytes = Some(md.len());
+        if let Ok(ct) = md.created() {
+            file.created_at_meta = Some(system_time_to_rfc3339(ct));
+        }
+        if let Ok(mt) = md.modified() {
+            file.updated_at_meta = Some(system_time_to_rfc3339(mt));
+        }
+    }
+    // SHA-256 of file content
+    if let Some(hex) = compute_sha256_hex(path) {
+        file.content_sha256 = Some(hex);
+    }
+    // Windows: fallback author from file owner when not present
+    #[cfg(target_os = "windows")]
+    {
+        if file.author_guess.is_none() {
+            if let Some(owner) = windows_file_owner(path) { file.author_guess = Some(owner); }
+        }
+    }
+}
+
+fn compute_sha256_hex(path: &str) -> Option<String> {
+    let f = File::open(path).ok()?;
+    let mut reader = BufReader::new(f);
+    let mut hasher = sha2::Sha256::new();
+    let mut buf = [0u8; 32 * 1024];
+    loop {
+        let n = reader.read(&mut buf).ok()?;
+        if n == 0 { break; }
+        hasher.update(&buf[..n]);
+    }
+    let digest = hasher.finalize();
+    Some(hex::encode(digest))
+}
+
+fn system_time_to_rfc3339(t: std::time::SystemTime) -> String {
+    let dt: DateTime<Utc> = t.into();
+    dt.to_rfc3339()
+}
+
+#[cfg(target_os = "windows")]
+fn windows_file_owner(path: &str) -> Option<String> {
+    use std::iter;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::{null, null_mut};
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Win32::Foundation::BOOL;
+    use windows::Win32::Security::{GetFileSecurityW, GetSecurityDescriptorOwner, LookupAccountSidW, OWNER_SECURITY_INFORMATION, SID_NAME_USE, PSID, PSECURITY_DESCRIPTOR};
+
+    let wide: Vec<u16> = std::ffi::OsStr::new(path).encode_wide().chain(iter::once(0)).collect();
+    unsafe {
+        let mut needed: u32 = 0;
+        // First call to get needed buffer length
+        let _ = GetFileSecurityW(PCWSTR(wide.as_ptr()), OWNER_SECURITY_INFORMATION.0, PSECURITY_DESCRIPTOR(null_mut()), 0, &mut needed);
+        if needed == 0 { return None; }
+        let mut buf: Vec<u8> = vec![0; needed as usize];
+        let ok = GetFileSecurityW(PCWSTR(wide.as_ptr()), OWNER_SECURITY_INFORMATION.0, PSECURITY_DESCRIPTOR(buf.as_mut_ptr() as *mut _), needed, &mut needed);
+        if !ok.as_bool() { return None; }
+        let mut owner_sid: PSID = PSID(null_mut());
+        let mut defaulted = BOOL(0);
+        let sd = PSECURITY_DESCRIPTOR(buf.as_mut_ptr() as *mut _);
+        if GetSecurityDescriptorOwner(sd, &mut owner_sid, &mut defaulted).is_err() || owner_sid.0.is_null() { return None; }
+
+        // Query sizes
+        let mut name_len: u32 = 0;
+        let mut domain_len: u32 = 0;
+        let mut use_: SID_NAME_USE = SID_NAME_USE(0);
+        let _ = LookupAccountSidW(PCWSTR(null()), owner_sid, PWSTR(null_mut()), &mut name_len, PWSTR(null_mut()), &mut domain_len, &mut use_);
+        if name_len == 0 { name_len = 256; }
+        if domain_len == 0 { domain_len = 256; }
+        let mut name_buf: Vec<u16> = vec![0u16; name_len as usize];
+        let mut domain_buf: Vec<u16> = vec![0u16; domain_len as usize];
+        let mut use2: SID_NAME_USE = SID_NAME_USE(0);
+        let ok3 = LookupAccountSidW(
+            PCWSTR(null()),
+            owner_sid,
+            PWSTR(name_buf.as_mut_ptr()),
+            &mut name_len,
+            PWSTR(domain_buf.as_mut_ptr()),
+            &mut domain_len,
+            &mut use2,
+        );
+        if !ok3.as_bool() { return None; }
+        let name = String::from_utf16_lossy(&name_buf[..name_len as usize]);
+        let domain = String::from_utf16_lossy(&domain_buf[..domain_len as usize]);
+        if domain.is_empty() { Some(name) } else { Some(format!("{}\\{}", domain, name)) }
+    }
 }
 
