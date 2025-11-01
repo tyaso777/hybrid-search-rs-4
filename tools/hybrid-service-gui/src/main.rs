@@ -1283,7 +1283,10 @@ impl AppState {
                         strip.cell(|ui| {
                             ui.heading(format!("Chunks ({}):", self.preview_chunks.len()));
                             ui.separator();
-                            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .id_source("preview_chunks_list")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
                                 for (i, c) in self.preview_chunks.iter().enumerate() {
                                     let preview = truncate_for_preview(&c.text, 80);
                                     let page_label = match (c.page_start, c.page_end) {
@@ -1322,12 +1325,56 @@ impl AppState {
                                         ui.monospace(format!("len={} bytes  |  {}", c.text.len(), page_label));
                                     }
                                     ui.separator();
-                                    egui::ScrollArea::vertical().show(ui, |ui| { ui.monospace(text); });
+                                    egui::ScrollArea::vertical()
+                                        .id_source("preview_selected_text")
+                                        .show(ui, |ui| { ui.monospace(text); });
+
+                                    ui.separator();
+                                    ui.heading("Metadata");
+                                    ui.horizontal(|ui| {
+                                        ui.label("meta:");
+                                        if c.meta.is_empty() {
+                                            ui.monospace("<empty>");
+                                        } else {
+                                            ui.vertical(|ui| {
+                                                for (k, v) in c.meta.iter() {
+                                                    ui.monospace(format!("{}: {}", k, v));
+                                                }
+                                            });
+                                        }
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("extra:");
+                                        if c.extra.is_empty() {
+                                            ui.monospace("<empty>");
+                                        } else {
+                                            let json = serde_json::to_string_pretty(&c.extra)
+                                                .unwrap_or_else(|_| String::from("<serde error>"));
+                                            egui::ScrollArea::vertical()
+                                                .id_source("preview_selected_extra_json")
+                                                .max_height(140.0)
+                                                .show(ui, |ui| {
+                                                ui.monospace(json);
+                                            });
+                                        }
+                                    });
+
+                                    ui.separator();
+                                    ui.heading("ChunkRecord (JSON)");
+                                    let whole = serde_json::to_string_pretty(&c)
+                                        .unwrap_or_else(|_| String::from("<serde error>"));
+                                    egui::ScrollArea::vertical()
+                                        .id_source("preview_selected_record_json")
+                                        .max_height(220.0)
+                                        .show(ui, |ui| {
+                                        ui.monospace(whole);
+                                    });
                                 }}
                             });
                         });
                     });
-            });
+                });
         if request_close { open = false; }
         self.preview_visible = open;
     }

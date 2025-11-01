@@ -50,11 +50,19 @@ pub fn read_docx_to_blocks(path: &str) -> Vec<UnifiedBlock> {
                 match local_name(e.name().as_ref()) {
                     b"p" => { in_p = true; cur_text.clear(); pending_heading_level = None; para_start_page = current_page; }
                     b"pStyle" => {
-                        // Heading style e.g., w:pStyle w:val="Heading1"
-                        if let Some(val) = attr_val(&e, b"val") {
-                            if let Some(num) = val.strip_prefix("Heading").and_then(|s| s.chars().next()).and_then(|c| c.to_digit(10)) {
-                                pending_heading_level = Some((num as u8).max(1));
+                        // Heading style, robust to variants like "Heading1", "Heading 1", case-insensitive
+                        if let Some(mut val) = attr_val(&e, b"val") {
+                            let lower = val.to_ascii_lowercase();
+                            if let Some(rest) = lower.strip_prefix("heading") {
+                                let digits: String = rest.chars().filter(|ch| ch.is_ascii_digit()).collect();
+                                if let Ok(n) = digits.parse::<u8>() { pending_heading_level = Some(n.max(1)); }
                             }
+                        }
+                    }
+                    b"outlineLvl" => {
+                        // Paragraph outline level: 0 => Heading1, 1 => Heading2, ...
+                        if let Some(vs) = attr_val(&e, b"val") {
+                            if let Ok(n) = vs.parse::<u8>() { pending_heading_level = Some(n.saturating_add(1)); }
                         }
                     }
                     b"t" => { in_t = true; }
@@ -89,7 +97,7 @@ pub fn read_docx_to_blocks(path: &str) -> Vec<UnifiedBlock> {
                             let text_s = cur_text.trim();
                             if !text_s.is_empty() {
                                 if let Some(level) = pending_heading_level {
-                                    let mut b = UnifiedBlock::new(BlockKind::Heading, text_s.to_string(), order, path, "docx");
+                                    let mut b = UnifiedBlock::new(BlockKind::Heading, format!("{}\n", text_s), order, path, "docx");
                                     b.heading_level = Some(level);
                                     b.page_start = Some(para_start_page);
                                     b.page_end = Some(current_page);

@@ -36,11 +36,11 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
         return ChunkOutput { file, chunks };
     }
 
-    // DOCX: read blocks, segment with text_segmenter (preserve page ranges from blocks/segmenter)
+    // DOCX: read blocks, segment with text_segmenter (hard-cut at top-level headings)
     if lower.ends_with(".docx") {
         let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
         let params = text_segmenter::TextChunkParams::default();
-        let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
+        let segs = chunk_blocks_grouped_by_h1(&blocks, &params);
         let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
 
         let chunks: Vec<ChunkRecord> = segs
@@ -92,11 +92,11 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
         return ChunkOutput { file, chunks };
     }
 
-    // Excel (.xlsx/.xls/.ods): read blocks and segment
+    // Excel (.xlsx/.xls/.ods): read blocks and segment (hard-cut at sheet = top-level heading)
     if lower.ends_with(".xlsx") || lower.ends_with(".xls") || lower.ends_with(".ods") {
         let blocks: Vec<UnifiedBlock> = reader_excel::read_excel_to_blocks(path);
         let params = text_segmenter::TextChunkParams::default();
-        let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
+        let segs = chunk_blocks_grouped_by_h1(&blocks, &params);
         let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
 
         let src_mime = if lower.ends_with(".xlsx") {
@@ -154,11 +154,11 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
         return ChunkOutput { file, chunks };
     }
 
-    // Text-like files: segment and set page to 1
+    // Text-like files: segment (hard-cut at top-level headings when present) and set page to 1
     if is_text_like(path) {
         let blocks: Vec<UnifiedBlock> = reader_txt::read_txt_to_blocks(path);
         let params = text_segmenter::TextChunkParams::default();
-        let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
+        let segs = chunk_blocks_grouped_by_h1(&blocks, &params);
         let chunks: Vec<ChunkRecord> = segs
             .into_iter()
             .enumerate()
@@ -271,11 +271,11 @@ pub fn chunk_file_with_file_record_with_encoding(path: &str, encoding: Option<&s
         return ChunkOutput { file, chunks };
     }
 
-    // DOCX
+    // DOCX (hard-cut at top-level headings)
     if lower.ends_with(".docx") {
         let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
         let params = text_segmenter::TextChunkParams::default();
-        let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
+        let segs = chunk_blocks_grouped_by_h1(&blocks, &params);
         let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
 
         let chunks: Vec<ChunkRecord> = segs
@@ -331,7 +331,7 @@ pub fn chunk_file_with_file_record_with_encoding(path: &str, encoding: Option<&s
     if lower.ends_with(".xlsx") || lower.ends_with(".xls") || lower.ends_with(".ods") {
         let blocks: Vec<UnifiedBlock> = reader_excel::read_excel_to_blocks(path);
         let params = text_segmenter::TextChunkParams::default();
-        let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
+        let segs = chunk_blocks_grouped_by_h1(&blocks, &params);
         let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
 
         let src_mime = if lower.ends_with(".xlsx") {
@@ -507,10 +507,10 @@ pub fn chunk_file_with_file_record_with_params(
         return ChunkOutput { file, chunks };
     }
 
-    // DOCX via unified text params
+    // DOCX via unified text params (hard-cut at top-level headings)
     if lower.ends_with(".docx") {
         let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
-        let segs = text_segmenter::chunk_blocks_to_segments(&blocks, params);
+        let segs = chunk_blocks_grouped_by_h1(&blocks, params);
         let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
         let chunks: Vec<ChunkRecord> = segs
             .into_iter()
@@ -560,10 +560,10 @@ pub fn chunk_file_with_file_record_with_params(
         return ChunkOutput { file, chunks };
     }
 
-    // Excel via unified text params
+    // Excel via unified text params (hard-cut at sheet = top-level heading)
     if lower.ends_with(".xlsx") || lower.ends_with(".xls") || lower.ends_with(".ods") {
         let blocks: Vec<UnifiedBlock> = reader_excel::read_excel_to_blocks(path);
-        let segs = text_segmenter::chunk_blocks_to_segments(&blocks, params);
+        let segs = chunk_blocks_grouped_by_h1(&blocks, params);
         let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
 
         let src_mime = if lower.ends_with(".xlsx") {
@@ -621,10 +621,10 @@ pub fn chunk_file_with_file_record_with_params(
         return ChunkOutput { file, chunks };
     }
 
-    // Text-like via unified text params
+    // Text-like via unified text params (hard-cut at top-level headings when present)
     if is_text_like(path) {
         let blocks: Vec<UnifiedBlock> = reader_txt::read_txt_to_blocks_with_encoding(path, encoding);
-        let segs = text_segmenter::chunk_blocks_to_segments(&blocks, params);
+        let segs = chunk_blocks_grouped_by_h1(&blocks, params);
         let chunks: Vec<ChunkRecord> = segs
             .into_iter()
             .enumerate()
@@ -704,6 +704,31 @@ fn is_text_like(path: &str) -> bool {
         }
     }
     false
+}
+
+/// Split blocks on top-level heading (Heading with level==1) and apply the generic text segmenter per group.
+/// This enforces that no chunk crosses a top-level heading boundary. If no such headings exist, the
+/// entire block list is treated as a single group.
+fn chunk_blocks_grouped_by_h1(
+    blocks: &[UnifiedBlock],
+    params: &text_segmenter::TextChunkParams,
+) -> Vec<(String, Option<u32>, Option<u32>)> {
+    let mut out: Vec<(String, Option<u32>, Option<u32>)> = Vec::new();
+    let mut cur: Vec<UnifiedBlock> = Vec::new();
+    for b in blocks.iter() {
+        let is_h1 = matches!(b.kind, BlockKind::Heading) && matches!(b.heading_level, Some(1));
+        if is_h1 && !cur.is_empty() {
+            let mut segs = text_segmenter::chunk_blocks_to_segments(&cur, params);
+            out.append(&mut segs);
+            cur.clear();
+        }
+        cur.push(b.clone());
+    }
+    if !cur.is_empty() {
+        let mut segs = text_segmenter::chunk_blocks_to_segments(&cur, params);
+        out.append(&mut segs);
+    }
+    out
 }
 
 // --- Metadata enrichment helpers --------------------------------------------------------------
