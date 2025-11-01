@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use chunk_model::{ChunkId, ChunkRecord, DocumentId};
+use chunk_model::{ChunkId, ChunkRecord, DocumentId, FileRecord};
+use serde_json::Value as JsonValue;
 use rusqlite::{params, Connection, TransactionBehavior};
 
 use crate::{ChunkPrimaryStore, ChunkStoreRead, StoreError, FilterClause, FilterOp};
@@ -80,12 +81,182 @@ impl SqliteRepo {
                 INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
                 INSERT INTO chunks_fts(rowid, text) VALUES (new.rowid, new.text);
             END;
+
+            -- File-level table to persist FileRecord (one row per doc_id)
+            CREATE TABLE IF NOT EXISTS files (
+                doc_id TEXT PRIMARY KEY,
+                schema_version INTEGER NOT NULL,
+                doc_revision INTEGER,
+                source_uri TEXT NOT NULL,
+                source_mime TEXT NOT NULL,
+                file_size_bytes INTEGER,
+                content_sha256 TEXT,
+                page_count INTEGER,
+                extracted_at TEXT NOT NULL,
+                created_at_meta TEXT,
+                updated_at_meta TEXT,
+                title_guess TEXT,
+                author_guess TEXT,
+                dominant_lang TEXT,
+                tags_json TEXT NOT NULL,
+                ingest_tool TEXT,
+                ingest_tool_version TEXT,
+                reader_backend TEXT,
+                ocr_used INTEGER,
+                ocr_langs_json TEXT NOT NULL,
+                chunk_count INTEGER,
+                total_tokens INTEGER,
+                meta_json TEXT NOT NULL,
+                extra_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_files_source_uri ON files(source_uri);
             "#,
         )?;
         // Best-effort migration for older tables missing page_start/page_end
         let _ = self.conn.execute("ALTER TABLE chunks ADD COLUMN page_start INTEGER", []);
         let _ = self.conn.execute("ALTER TABLE chunks ADD COLUMN page_end INTEGER", []);
         Ok(())
+    }
+
+    /// Upsert one FileRecord into the files table keyed by doc_id.
+    pub fn upsert_file(&self, file: &FileRecord) -> rusqlite::Result<()> {
+        let tags_json = serde_json::to_string(&file.tags).unwrap_or_else(|_| "[]".to_string());
+        let ocr_langs_json = serde_json::to_string(&file.ocr_langs).unwrap_or_else(|_| "[]".to_string());
+        let meta_json = serde_json::to_string(&file.meta).unwrap_or_else(|_| "{}".to_string());
+        let extra_json = serde_json::to_string(&file.extra).unwrap_or_else(|_| "{}".to_string());
+        self.conn
+            .execute(
+                r#"
+                INSERT INTO files (
+                    doc_id, schema_version, doc_revision, source_uri, source_mime,
+                    file_size_bytes, content_sha256, page_count, extracted_at, created_at_meta,
+                    updated_at_meta, title_guess, author_guess, dominant_lang, tags_json,
+                    ingest_tool, ingest_tool_version, reader_backend, ocr_used, ocr_langs_json,
+                    chunk_count, total_tokens, meta_json, extra_json
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
+                ON CONFLICT(doc_id) DO UPDATE SET
+                    schema_version=excluded.schema_version,
+                    doc_revision=excluded.doc_revision,
+                    source_uri=excluded.source_uri,
+                    source_mime=excluded.source_mime,
+                    file_size_bytes=excluded.file_size_bytes,
+                    content_sha256=excluded.content_sha256,
+                    page_count=excluded.page_count,
+                    extracted_at=excluded.extracted_at,
+                    created_at_meta=excluded.created_at_meta,
+                    updated_at_meta=excluded.updated_at_meta,
+                    title_guess=excluded.title_guess,
+                    author_guess=excluded.author_guess,
+                    dominant_lang=excluded.dominant_lang,
+                    tags_json=excluded.tags_json,
+                    ingest_tool=excluded.ingest_tool,
+                    ingest_tool_version=excluded.ingest_tool_version,
+                    reader_backend=excluded.reader_backend,
+                    ocr_used=excluded.ocr_used,
+                    ocr_langs_json=excluded.ocr_langs_json,
+                    chunk_count=excluded.chunk_count,
+                    total_tokens=excluded.total_tokens,
+                    meta_json=excluded.meta_json,
+                    extra_json=excluded.extra_json
+                ;
+                "#,
+                params![
+                    file.doc_id.0,
+                    file.schema_version as i64,
+                    file.doc_revision.map(|v| v as i64),
+                    file.source_uri,
+                    file.source_mime,
+                    file.file_size_bytes.map(|v| v as i64),
+                    file.content_sha256,
+                    file.page_count.map(|v| v as i64),
+                    file.extracted_at,
+                    file.created_at_meta,
+                    file.updated_at_meta,
+                    file.title_guess,
+                    file.author_guess,
+                    file.dominant_lang,
+                    tags_json,
+                    file.ingest_tool,
+                    file.ingest_tool_version,
+                    file.reader_backend,
+                    file.ocr_used.map(|b| if b { 1i64 } else { 0i64 }),
+                    ocr_langs_json,
+                    file.chunk_count.map(|v| v as i64),
+                    file.total_tokens.map(|v| v as i64),
+                    meta_json,
+                    extra_json,
+                ],
+            )?
+            ;
+        Ok(())
+    }
+
+    /// List FileRecords with pagination.
+    pub fn list_files(&self, limit: usize, offset: usize) -> rusqlite::Result<Vec<FileRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT doc_id, schema_version, doc_revision, source_uri, source_mime, file_size_bytes, content_sha256, page_count, extracted_at, created_at_meta, updated_at_meta, title_guess, author_guess, dominant_lang, tags_json, ingest_tool, ingest_tool_version, reader_backend, ocr_used, ocr_langs_json, chunk_count, total_tokens, meta_json, extra_json FROM files ORDER BY extracted_at DESC LIMIT ?1 OFFSET ?2"
+        )?;
+        let rows = stmt.query_map(params![limit as i64, offset as i64], |row| {
+            let doc_id: String = row.get(0)?;
+            let schema_version: i64 = row.get(1)?;
+            let doc_revision: Option<i64> = row.get(2).ok();
+            let source_uri: String = row.get(3)?;
+            let source_mime: String = row.get(4)?;
+            let file_size_bytes: Option<i64> = row.get(5).ok();
+            let content_sha256: Option<String> = row.get(6).ok();
+            let page_count: Option<i64> = row.get(7).ok();
+            let extracted_at: String = row.get(8)?;
+            let created_at_meta: Option<String> = row.get(9).ok();
+            let updated_at_meta: Option<String> = row.get(10).ok();
+            let title_guess: Option<String> = row.get(11).ok();
+            let author_guess: Option<String> = row.get(12).ok();
+            let dominant_lang: Option<String> = row.get(13).ok();
+            let tags_json: String = row.get(14)?;
+            let ingest_tool: Option<String> = row.get(15).ok();
+            let ingest_tool_version: Option<String> = row.get(16).ok();
+            let reader_backend: Option<String> = row.get(17).ok();
+            let ocr_used_opt: Option<i64> = row.get(18).ok();
+            let ocr_langs_json: String = row.get(19)?;
+            let chunk_count: Option<i64> = row.get(20).ok();
+            let total_tokens: Option<i64> = row.get(21).ok();
+            let meta_json: String = row.get(22)?;
+            let extra_json: String = row.get(23)?;
+
+            let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+            let ocr_langs: Vec<String> = serde_json::from_str(&ocr_langs_json).unwrap_or_default();
+            let meta: std::collections::BTreeMap<String, String> = serde_json::from_str(&meta_json).unwrap_or_default();
+            let extra: std::collections::BTreeMap<String, JsonValue> = serde_json::from_str(&extra_json).unwrap_or_default();
+
+            Ok(FileRecord {
+                schema_version: schema_version as u16,
+                doc_id: DocumentId(doc_id),
+                doc_revision: doc_revision.and_then(|v| u32::try_from(v).ok()),
+                source_uri,
+                source_mime,
+                file_size_bytes: file_size_bytes.and_then(|v| u64::try_from(v).ok()),
+                content_sha256,
+                page_count: page_count.and_then(|v| u32::try_from(v).ok()),
+                extracted_at,
+                created_at_meta,
+                updated_at_meta,
+                title_guess,
+                author_guess,
+                dominant_lang,
+                tags,
+                ingest_tool,
+                ingest_tool_version,
+                reader_backend,
+                ocr_used: ocr_used_opt.map(|v| v != 0),
+                ocr_langs,
+                chunk_count: chunk_count.and_then(|v| u32::try_from(v).ok()),
+                total_tokens: total_tokens.and_then(|v| u32::try_from(v).ok()),
+                meta,
+                extra,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows { out.push(r?); }
+        Ok(out)
     }
 
     /// Ensure FTS content table is populated; rebuild if empty while chunks has rows.

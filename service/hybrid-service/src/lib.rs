@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock, atomic::{AtomicBool, Ordering}};
 
 use chrono::Utc;
-use chunk_model::{ChunkId, ChunkRecord, DocumentId};
+use chunk_model::{ChunkId, ChunkRecord, DocumentId, FileRecord};
 use chunking_store::fts5_index::Fts5Index;
 use chunking_store::hnsw_index::HnswIndex;
 use chunking_store::orchestrator::{delete_by_filter_orchestrated, ingest_chunks_orchestrated, DeleteReport};
@@ -428,6 +428,7 @@ impl HybridService {
         mut progress: Option<Box<dyn FnMut(ProgressEvent) + Send>>,
     ) -> Result<(), ServiceError> {
         let out = file_chunker::chunk_file_with_file_record(path);
+        let mut file: FileRecord = out.file;
         let mut records = out.chunks;
 
         // Stamp timestamps and optional doc_id override
@@ -436,6 +437,13 @@ impl HybridService {
             if let Some(h) = doc_id_hint { rec.doc_id = DocumentId(h.to_string()); }
             rec.extracted_at = now.clone();
         }
+        // FileRecord stamps
+        if let Some(h) = doc_id_hint { file.doc_id = DocumentId(h.to_string()); }
+        file.extracted_at = now.clone();
+        file.chunk_count = Some(records.len() as u32);
+
+        // Upsert FileRecord before chunk/vectors
+        self.with_repo(|repo| repo.upsert_file(&file).map_err(|e| ServiceError::Repo(e.to_string())))?;
 
         if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::Start { total_chunks: records.len() }); }
         if let Some(ct) = cancel { if ct.is_canceled() { if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::Canceled); } return Err(ServiceError::Embed("canceled".into())); } }
@@ -485,6 +493,7 @@ impl HybridService {
     ) -> Result<(), ServiceError> {
         // Use encoding-aware path for text-like files; for others it's identical
         let out = file_chunker::chunk_file_with_file_record_with_encoding(path, encoding);
+        let mut file: FileRecord = out.file;
         let mut records = out.chunks;
 
         // Stamp timestamps and optional doc_id override
@@ -493,6 +502,11 @@ impl HybridService {
             if let Some(h) = doc_id_hint { rec.doc_id = DocumentId(h.to_string()); }
             rec.extracted_at = now.clone();
         }
+        if let Some(h) = doc_id_hint { file.doc_id = DocumentId(h.to_string()); }
+        file.extracted_at = now.clone();
+        file.chunk_count = Some(records.len() as u32);
+
+        self.with_repo(|repo| repo.upsert_file(&file).map_err(|e| ServiceError::Repo(e.to_string())))?;
 
         if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::Start { total_chunks: records.len() }); }
         if let Some(ct) = cancel { if ct.is_canceled() { if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::Canceled); } return Err(ServiceError::Embed("canceled".into())); } }
@@ -549,6 +563,7 @@ impl HybridService {
             penalize_page_boundary_no_newline,
         };
         let out = file_chunker::chunk_file_with_file_record_with_params(path, encoding, &tparams);
+        let mut file: FileRecord = out.file;
         let mut records = out.chunks;
 
         // Stamp timestamps and optional doc_id override
@@ -557,6 +572,12 @@ impl HybridService {
             if let Some(h) = doc_id_hint { rec.doc_id = DocumentId(h.to_string()); }
             rec.extracted_at = now.clone();
         }
+        if let Some(h) = doc_id_hint { file.doc_id = DocumentId(h.to_string()); }
+        file.extracted_at = now.clone();
+        file.chunk_count = Some(records.len() as u32);
+
+        self.with_repo(|repo| repo.upsert_file(&file).map_err(|e| ServiceError::Repo(e.to_string())))?;
+
 
         if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::Start { total_chunks: records.len() }); }
         if let Some(ct) = cancel { if ct.is_canceled() { if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::Canceled); } return Err(ServiceError::Embed("canceled".into())); } }
@@ -731,6 +752,11 @@ impl HybridService {
     pub fn repo_counts(&self) -> Result<(i64, i64), ServiceError> {
         let repo = self.open_repo()?;
         repo.counts().map_err(|e| ServiceError::Repo(e.to_string()))
+    }
+
+    /// List FileRecords with pagination (for GUI file list).
+    pub fn list_files(&self, limit: usize, offset: usize) -> Result<Vec<FileRecord>, ServiceError> {
+        self.with_repo(|repo| repo.list_files(limit, offset).map_err(|e| ServiceError::Repo(e.to_string())))
     }
 
     /// Helper: embed texts in smaller batches according to config to limit memory spikes.

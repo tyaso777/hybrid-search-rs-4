@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::{mpsc::{self, Receiver, TryRecvError}, Arc};
 use std::time::Instant;
 
-use eframe::egui::{self, Button, CentralPanel, ComboBox, ScrollArea, Spinner, TextEdit};
+use eframe::egui::{self, Button, CentralPanel, ComboBox, ScrollArea, Spinner, TextEdit, DragValue};
 use eframe::egui::ProgressBar;
 use egui_extras::{Column, TableBuilder, StripBuilder, Size};
 use eframe::{App, CreationContext, Frame, NativeOptions};
@@ -18,7 +18,7 @@ use chunking_store::ChunkStoreRead;
 // Removed unused FilterKind/FilterOp after moving Tantivy ops into service
 #[cfg(feature = "tantivy")]
 use chunking_store::tantivy_index::TantivyIndex;
-use chunk_model::{ChunkId, DocumentId, ChunkRecord, SCHEMA_MAJOR};
+use chunk_model::{ChunkId, DocumentId, ChunkRecord, FileRecord, SCHEMA_MAJOR};
 
 fn main() -> eframe::Result<()> {
     let options = NativeOptions::default();
@@ -33,6 +33,7 @@ fn main() -> eframe::Result<()> {
 enum ActiveTab {
     Insert,
     Search,
+    Files,
     Config,
 }
 
@@ -160,6 +161,15 @@ struct AppState {
 
     // Validation message for Store Root (shown under the field on failure)
     store_root_error: String,
+
+    // Files tab
+    files: Vec<FileRecord>,
+    files_loading: bool,
+    files_page: usize,
+    files_page_size: usize,
+    files_selected_doc: Option<String>,
+    files_selected_display: String,
+    files_selected_detail: String,
 }
 
 // New (nested) config format: { store: {...}, chunk: {...}, model: {...} }
@@ -223,6 +233,113 @@ struct HybridGuiConfigV1 {
 }
 
 impl AppState {
+    fn ui_files(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Files");
+        if self.files.is_empty() && !self.files_loading {
+            // Lazy-load first page on initial open
+            self.refresh_files();
+        }
+        // Controls row
+        ui.horizontal(|ui| {
+            if ui.add(Button::new("Refresh")).clicked() {
+                self.refresh_files();
+            }
+            ui.label("Page size");
+            ui.add(DragValue::new(&mut self.files_page_size).clamp_range(5..=200));
+            if ui.add(Button::new("Prev")).clicked() {
+                if self.files_page > 0 { self.files_page -= 1; self.refresh_files(); }
+            }
+            if ui.add(Button::new("Next")).clicked() {
+                // Optimistic paging; disable if last fetch was shorter than page size
+                if self.files.len() >= self.files_page_size { self.files_page += 1; self.refresh_files(); }
+            }
+            if self.files_loading { ui.add(Spinner::new()); }
+        });
+
+        ui.separator();
+        // Table
+        ui.push_id("files_table", |ui| {
+            let mut table = TableBuilder::new(ui)
+                .striped(true)
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .column(Column::initial(260.0))   // doc id
+                .column(Column::initial(320.0))   // source uri
+                .column(Column::initial(120.0))   // mime
+                .column(Column::initial(70.0))    // pages
+                .column(Column::initial(70.0))    // chunks
+                .column(Column::initial(170.0));  // extracted at
+
+            table
+                .header(20.0, |mut header| {
+                    header.col(|ui| { ui.label("Doc ID"); });
+                    header.col(|ui| { ui.label("File"); });
+                    header.col(|ui| { ui.label("MIME"); });
+                    header.col(|ui| { ui.label("Pages"); });
+                    header.col(|ui| { ui.label("Chunks"); });
+                    header.col(|ui| { ui.label("Extracted"); });
+                })
+                .body(|mut body| {
+                    fn trunc(s: &str, n: usize) -> String {
+                        if s.chars().count() <= n { return s.to_string(); }
+                        let mut out: String = s.chars().take(n).collect();
+                        out.push('…');
+                        out
+                    }
+                    for rec in &self.files {
+                        body.row(20.0, |mut row_ui| {
+                            let doc_disp = trunc(&rec.doc_id.0, 42);
+                            row_ui.col(|ui| {
+                                if ui.link(doc_disp).clicked() {
+                                    self.files_selected_doc = Some(rec.doc_id.0.clone());
+                                    self.files_selected_display = rec.doc_id.0.clone();
+                                    self.files_selected_detail = serde_json::to_string_pretty(rec).unwrap_or_else(|_| "<render error>".into());
+                                }
+                            });
+                            let file_disp = trunc(&rec.source_uri, 60);
+                            row_ui.col(|ui| {
+                                if ui.link(file_disp).clicked() {
+                                    self.files_selected_doc = Some(rec.doc_id.0.clone());
+                                    self.files_selected_display = rec.source_uri.clone();
+                                    self.files_selected_detail = serde_json::to_string_pretty(rec).unwrap_or_else(|_| "<render error>".into());
+                                }
+                            });
+                            row_ui.col(|ui| { ui.label(&rec.source_mime); });
+                            row_ui.col(|ui| { ui.label(rec.page_count.map(|v| v.to_string()).unwrap_or_else(|| "-".into())); });
+                            row_ui.col(|ui| { ui.label(rec.chunk_count.map(|v| v.to_string()).unwrap_or_else(|| "-".into())); });
+                            row_ui.col(|ui| { ui.label(&rec.extracted_at); });
+                        });
+                    }
+                });
+        });
+
+        if let Some(_doc) = &self.files_selected_doc {
+            ui.separator();
+            if self.files_selected_display.is_empty() {
+                ui.label("Selected:");
+            } else {
+                ui.label(format!("Selected: {}", self.files_selected_display));
+            }
+            ScrollArea::vertical().max_height(220.0).id_source("files_selected_scroll").show(ui, |ui| {
+                ui.add(TextEdit::multiline(&mut self.files_selected_detail).desired_rows(8).desired_width(800.0).id_source("files_selected_detail"));
+            });
+        }
+    }
+
+    fn refresh_files(&mut self) {
+        if self.svc.is_none() { self.status = "Service not initialized".into(); return; }
+        if !self.ensure_store_paths_current() { return; }
+        let offset = self.files_page.saturating_mul(self.files_page_size);
+        let limit = self.files_page_size;
+        self.files_loading = true;
+        // Synchronous fetch; can move to a thread if needed later
+        if let Some(svc) = &self.svc {
+            match svc.list_files(limit, offset) {
+                Ok(list) => { self.files = list; self.status = format!("Loaded files page {} ({} items)", self.files_page + 1, self.files.len()); }
+                Err(e) => { self.status = format!("List files failed: {e}"); }
+            }
+        }
+        self.files_loading = false;
+    }
     fn apply_store_root_now(&mut self, reason: &str) {
         // Take an owned copy to avoid borrowing self across mutable calls
         let root = self.store_root.trim().to_string();
@@ -608,6 +725,15 @@ impl AppState {
             last_store_root_applied: None,
 
             store_root_error: String::new(),
+
+            // Files tab
+            files: Vec::new(),
+            files_loading: false,
+            files_page: 0,
+            files_page_size: 20,
+            files_selected_doc: None,
+            files_selected_display: String::new(),
+            files_selected_detail: String::new(),
         }
     }
 
@@ -732,9 +858,11 @@ impl App for AppState {
                     // Top-level tabs with underline accent
                     let resp_insert = ui.selectable_value(&mut self.tab, ActiveTab::Insert, "Insert");
                     let resp_search = ui.selectable_value(&mut self.tab, ActiveTab::Search, "Search");
+                    let resp_files = ui.selectable_value(&mut self.tab, ActiveTab::Files, "Files");
                     let resp_config = ui.selectable_value(&mut self.tab, ActiveTab::Config, "Config");
                     let union12 = resp_insert.rect.union(resp_search.rect);
-                    let union_all = union12.union(resp_config.rect);
+                    let union123 = union12.union(resp_files.rect);
+                    let union_all = union123.union(resp_config.rect);
                     let y = union_all.bottom() + 2.0;
                     let painter = ui.painter();
                     let base_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
@@ -748,6 +876,7 @@ impl App for AppState {
                     let active_rect = match self.tab {
                         ActiveTab::Insert => resp_insert.rect,
                         ActiveTab::Search => resp_search.rect,
+                        ActiveTab::Files => resp_files.rect,
                         ActiveTab::Config => resp_config.rect,
                     };
                     painter.line_segment(
@@ -792,6 +921,7 @@ impl App for AppState {
             match self.tab {
                 ActiveTab::Insert => self.ui_insert(ui),
                 ActiveTab::Search => self.ui_search(ui),
+                ActiveTab::Files => self.ui_files(ui),
                 ActiveTab::Config => self.ui_config(ui),
             }
 
