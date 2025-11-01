@@ -191,10 +191,10 @@ impl HybridService {
                 match HnswIndex::load(&hdir, dim_cfg) {
                     Ok(h) => {
                         let _ = cache.write().map(|mut guard| *guard = Some(h));
-                        // Optional KNN warm-up: open repo and run a trivial 1-NN to touch pages
+                        // KNN warm-up: open repo and run a broader KNN to touch more pages
                         if let Ok(repo) = SqliteRepo::open(&dbp_for_warm) {
                             let qvec = vec![0.0f32; dim_cfg];
-                            let opts = SearchOptions { top_k: 1, fetch_factor: 1 };
+                            let opts = SearchOptions { top_k: 32, fetch_factor: 10 };
                             if let Ok(guard) = cache.read() {
                                 if let Some(h) = guard.as_ref() {
                                     let _ = VectorSearcher::knn_ids(h, &repo, &qvec, &[], &opts);
@@ -226,8 +226,13 @@ impl HybridService {
             #[cfg(feature = "tantivy")]
             tantivy_state,
         };
-        // Warm up ONNX session once (best-effort)
-        let _ = svc.embedder.embed("warmup").map(|_| svc.warmed.store(true, Ordering::Relaxed));
+        // Warm up ONNX session once (best-effort) with short and longer inputs
+        let _ = svc.embedder.embed("warmup");
+        let max_len = svc.cfg.embedder.max_input_length;
+        let approx = max_len.min(256).max(64);
+        let long = "x ".repeat(approx);
+        let _ = svc.embedder.embed(&long);
+        svc.warmed.store(true, Ordering::Relaxed);
         Ok(svc)
     }
 
@@ -242,9 +247,14 @@ impl HybridService {
 
     fn ensure_warm(&self) {
         if !self.warmed.load(Ordering::Relaxed) {
-            if self.embedder.embed("warmup").is_ok() {
-                self.warmed.store(true, Ordering::Relaxed);
-            }
+            // Short warm-up
+            let _ = self.embedder.embed("warmup");
+            // Longer input to exercise allocations and kernels for typical queries
+            let max_len = self.cfg.embedder.max_input_length;
+            let approx = max_len.min(256).max(64);
+            let long = "x ".repeat(approx);
+            let _ = self.embedder.embed(&long);
+            self.warmed.store(true, Ordering::Relaxed);
         }
     }
 
@@ -371,10 +381,10 @@ impl HybridService {
             match HnswIndex::load(&hdir, dim) {
                 Ok(h) => {
                     let _ = cache.write().map(|mut w| *w = Some(h));
-                    // KNN warm-up
+                    // KNN warm-up (touch more pages on first load)
                     if let Ok(repo) = SqliteRepo::open(&db_for_warm) {
                         let qvec = vec![0.0f32; dim];
-                        let opts = SearchOptions { top_k: 1, fetch_factor: 1 };
+                        let opts = SearchOptions { top_k: 32, fetch_factor: 10 };
                         if let Ok(guard) = cache.read() {
                             if let Some(h) = guard.as_ref() {
                                 let _ = VectorSearcher::knn_ids(h, &repo, &qvec, &[], &opts);
@@ -665,15 +675,27 @@ impl HybridService {
         let fts = Fts5Index::new();
         let opts = SearchOptions { top_k, fetch_factor: 10 };
 
-        // Text matches via FTS with repo guard
-        let mut text_matches = self.with_repo(|repo| Ok(TextSearcher::search_ids(&fts, repo, query, filters, &opts)))?;
+        // Short-circuit: skip FTS when w_text == 0, skip vector path when w_vec == 0
+        let do_text = w_text != 0.0;
+        let do_vec = w_vec != 0.0;
+
+        // Text matches via FTS with repo guard (optional)
+        let mut text_matches: Vec<chunking_store::TextMatch> = if do_text {
+            self.with_repo(|repo| Ok(TextSearcher::search_ids(&fts, repo, query, filters, &opts)))?
+        } else {
+            Vec::new()
+        };
 
         // Vector matches via HNSW guard (optional)
-        self.ensure_warm();
-        let qvec = self.embedder.embed(query).map_err(|e| ServiceError::Embed(e.to_string()))?;
-        let vec_matches: Vec<chunking_store::TextMatch> = match self.with_hnsw(|h, repo| VectorSearcher::knn_ids(h, repo, &qvec, filters, &opts))? {
-            Some(v) => v,
-            None => Vec::new(),
+        let vec_matches: Vec<chunking_store::TextMatch> = if do_vec {
+            self.ensure_warm();
+            let qvec = self.embedder.embed(query).map_err(|e| ServiceError::Embed(e.to_string()))?;
+            match self.with_hnsw(|h, repo| VectorSearcher::knn_ids(h, repo, &qvec, filters, &opts))? {
+                Some(v) => v,
+                None => Vec::new(),
+            }
+        } else {
+            Vec::new()
         };
 
         // Combine scores
