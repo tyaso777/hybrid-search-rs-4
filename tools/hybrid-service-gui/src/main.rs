@@ -60,6 +60,7 @@ struct ServiceInitTask {
 struct HitRow {
     cid: String,
     file: String,
+    file_path: String,
     page: String,
     text_preview: String,
     text_full: String,
@@ -139,6 +140,7 @@ struct AppState {
     selected_cid: Option<String>,
     selected_text: String,
     selected_display: String,
+    selected_source_path: Option<String>,
     // Dangerous actions confirmation
     delete_confirm: String,
 
@@ -351,6 +353,20 @@ impl AppState {
             ScrollArea::vertical().max_height(220.0).id_source("files_selected_scroll").show(ui, |ui| {
                 ui.add(TextEdit::multiline(&mut self.files_selected_detail).desired_rows(8).desired_width(800.0).id_source("files_selected_detail"));
             });
+            // Open original file for selected FileRecord
+            if let Some(doc_id) = &self.files_selected_doc {
+                if let Some(rec) = self.files.iter().find(|r| &r.doc_id.0 == doc_id) {
+                    let path = &rec.source_uri;
+                    let (is_local, disp) = normalize_local_path_display(path);
+                    ui.horizontal(|ui| {
+                        let btn = ui.add_enabled(is_local, Button::new("Open original file"));
+                        if btn.clicked() && is_local {
+                            if let Some(p) = normalize_local_path(path) { let _ = open_in_os(&p); }
+                        }
+                        if is_local { ui.monospace(disp); }
+                    });
+                }
+            }
         }
     }
 
@@ -761,6 +777,7 @@ impl AppState {
             selected_cid: None,
             selected_text: String::new(),
             selected_display: String::new(),
+            selected_source_path: None,
             delete_confirm: String::new(),
 
             preview_visible: false,
@@ -1473,6 +1490,7 @@ impl AppState {
                                             self.selected_cid = Some(row.cid.clone());
                                             self.selected_text = row.text_full.clone();
                                             self.selected_display = format!("{} {}", &row.file, if row.page.is_empty() { String::new() } else { row.page.clone() });
+                                            self.selected_source_path = Some(row.file_path.clone());
                                         }
                                     });
                                     row_ui.col(|ui| {
@@ -1481,6 +1499,7 @@ impl AppState {
                                                 self.selected_cid = Some(row.cid.clone());
                                                 self.selected_text = row.text_full.clone();
                                                 self.selected_display = format!("{} {}", &row.file, &row.page);
+                                                self.selected_source_path = Some(row.file_path.clone());
                                             }
                                         } else {
                                             ui.label(&row.page);
@@ -1496,6 +1515,7 @@ impl AppState {
                                                 self.selected_cid = Some(row.cid.clone());
                                                 self.selected_text = row.text_full.clone();
                                                 self.selected_display = format!("{} {}", &row.file, if row.page.is_empty() { String::new() } else { row.page.clone() });
+                                                self.selected_source_path = Some(row.file_path.clone());
                                             }
                                         });
                                     });
@@ -1517,6 +1537,16 @@ impl AppState {
                 ScrollArea::vertical().max_height(200.0).id_source("selected_scroll").show(ui, |ui| {
                     ui.add(TextEdit::multiline(&mut self.selected_text).desired_rows(8).desired_width(800.0).id_source("selected_text"));
                 });
+                if let Some(path) = &self.selected_source_path {
+                    let (is_local, disp) = normalize_local_path_display(path);
+                    ui.horizontal(|ui| {
+                        let btn = ui.add_enabled(is_local, Button::new("Open original file"));
+                        if btn.clicked() && is_local {
+                            if let Some(p) = normalize_local_path(path) { let _ = open_in_os(&p); }
+                        }
+                        if is_local { ui.monospace(disp); }
+                    });
+                }
             }
         });
     }
@@ -1618,7 +1648,7 @@ impl AppState {
                 let flat: String = rec.text.replace(['\n', '\r', '\t'], " ");
                 let mut text_preview: String = flat.chars().take(80).collect();
                 if flat.chars().count() > 80 { text_preview.push('…'); }
-                self.results.push(HitRow { cid: rec.chunk_id.0, file, page, text_preview, text_full: rec.text, tv: sc_tv, tv_and: sc_and, tv_or: sc_or, vec: sc_vec });
+                self.results.push(HitRow { cid: rec.chunk_id.0, file, file_path: rec.source_uri.clone(), page, text_preview, text_full: rec.text, tv: sc_tv, tv_and: sc_and, tv_or: sc_or, vec: sc_vec });
             }
         }
         self.status = format!("Results: {}", self.results.len());
@@ -1779,4 +1809,48 @@ fn safe_filename_component(name: &str) -> String {
     }
     let trimmed = out.trim_matches('-').to_string();
     if trimmed.is_empty() { "store".to_string() } else { trimmed }
+}
+
+// Normalize a potentially URI-formatted path to a local filesystem path when possible.
+fn normalize_local_path(uri: &str) -> Option<String> {
+    if uri.starts_with("file://") {
+        let mut p = uri.trim_start_matches("file://");
+        if cfg!(windows) {
+            // Strip leading slash from file:///C:/...
+            if p.starts_with('/') { p = &p[1..]; }
+        }
+        return Some(p.to_string());
+    }
+    if uri.contains("://") { return None; }
+    Some(uri.to_string())
+}
+
+fn normalize_local_path_display(uri: &str) -> (bool, String) {
+    match normalize_local_path(uri) {
+        Some(p) => (true, p),
+        None => (false, String::new()),
+    }
+}
+
+fn open_in_os(path: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        // Use cmd start with empty title argument
+        let quoted = format!("\"{}\"", path);
+        Command::new("cmd").args(["/C", "start", "", &quoted]).spawn().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        Command::new("open").arg(path).spawn().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        use std::process::Command;
+        Command::new("xdg-open").arg(path).spawn().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
 }
