@@ -24,7 +24,8 @@ pub fn read_excel_to_blocks(path: &str) -> Vec<UnifiedBlock> {
         let page = (sidx as u32) + 1;
         // Sheet heading
         {
-            let mut h = UnifiedBlock::new(BlockKind::Heading, format!("Sheet: {}", name), order, path, "excel");
+            // Include a trailing newline so the first row starts on a new line
+            let mut h = UnifiedBlock::new(BlockKind::Heading, format!("Sheet: {}\n", name), order, path, "excel");
             h.heading_level = Some(1);
             h.page_start = Some(page);
             h.page_end = Some(page);
@@ -44,16 +45,27 @@ pub fn read_excel_to_blocks(path: &str) -> Vec<UnifiedBlock> {
             }
         };
 
+        // Preserve leading empty columns that are outside the used range by prefixing tabs
+        let leading_empty_cols: usize = match range.start() {
+            Some((_row, col)) => col as usize,
+            None => 0,
+        };
+
         for row in range.rows() {
             // Convert cells to strings and trim trailing empties
-            let mut cells: Vec<String> = row.iter().map(cell_to_string).collect();
+            let mut cells: Vec<String> = Vec::with_capacity(leading_empty_cols + row.len());
+            // Prepend empties for columns before the used range start (A..start_col-1)
+            for _ in 0..leading_empty_cols { cells.push(String::new()); }
+            // Then add the actual row cells
+            cells.extend(row.iter().map(cell_to_string));
             while let Some(last) = cells.last() { if last.trim().is_empty() { cells.pop(); } else { break; } }
             if cells.is_empty() { continue; }
             let line = cells.join("\t");
-            let trimmed = line.trim();
-            if trimmed.is_empty() { continue; }
+            // Keep leading tabs to preserve empty leading columns; only skip if all cells are empty
+            let has_nonempty = cells.iter().any(|s| !s.trim().is_empty());
+            if !has_nonempty { continue; }
             // Append a newline so each row ends with an explicit line break in the concatenated text.
-            let mut p = UnifiedBlock::new(BlockKind::Paragraph, format!("{}\n", trimmed), order, path, "excel");
+            let mut p = UnifiedBlock::new(BlockKind::Paragraph, format!("{}\n", line), order, path, "excel");
             p.page_start = Some(page);
             p.page_end = Some(page);
             blocks.push(p);

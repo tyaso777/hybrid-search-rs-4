@@ -206,7 +206,7 @@ pub fn chunk_blocks_to_segments(blocks: &[UnifiedBlock], params: &TextChunkParam
         }
 
         if start + params.min_chars >= total {
-            let seg = text[start..total].trim();
+            let seg = text[start..total].trim_end();
             if !seg.is_empty() {
                 let (ps, pe) = page_range_for_segment(start, total, &spans);
                 out.push((seg.to_string(), ps, pe));
@@ -216,7 +216,7 @@ pub fn chunk_blocks_to_segments(blocks: &[UnifiedBlock], params: &TextChunkParam
 
         if let Some(cut) = pick_boundary_in_range(&scored, min, cap, max) {
             if cut > start {
-                let seg = text[start..cut].trim();
+                let seg = text[start..cut].trim_end();
                 if !seg.is_empty() {
                     let (ps, pe) = page_range_for_segment(start, cut, &spans);
                     out.push((seg.to_string(), ps, pe));
@@ -235,7 +235,7 @@ pub fn chunk_blocks_to_segments(blocks: &[UnifiedBlock], params: &TextChunkParam
         if cut > hard_cap { cut = hard_cap; }
         if cut <= start { cut = hard_cap; }
         if cut <= start { cut = total; } // safety to avoid infinite loop
-        let seg = text[start..cut].trim();
+        let seg = text[start..cut].trim_end();
         if !seg.is_empty() {
             let (ps, pe) = page_range_for_segment(start, cut, &spans);
             out.push((seg.to_string(), ps, pe));
