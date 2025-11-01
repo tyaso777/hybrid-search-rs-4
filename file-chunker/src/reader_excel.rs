@@ -50,9 +50,10 @@ pub fn read_excel_to_blocks(path: &str) -> Vec<UnifiedBlock> {
             while let Some(last) = cells.last() { if last.trim().is_empty() { cells.pop(); } else { break; } }
             if cells.is_empty() { continue; }
             let line = cells.join("\t");
-            let text = line.trim();
-            if text.is_empty() { continue; }
-            let mut p = UnifiedBlock::new(BlockKind::Paragraph, text.to_string(), order, path, "excel");
+            let trimmed = line.trim();
+            if trimmed.is_empty() { continue; }
+            // Append a newline so each row ends with an explicit line break in the concatenated text.
+            let mut p = UnifiedBlock::new(BlockKind::Paragraph, format!("{}\n", trimmed), order, path, "excel");
             p.page_start = Some(page);
             p.page_end = Some(page);
             blocks.push(p);
