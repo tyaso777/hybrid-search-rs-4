@@ -8,12 +8,12 @@ fn local_name<'a>(q: &'a [u8]) -> &'a [u8] {
     match q.iter().position(|&b| b == b':') { Some(i) => &q[i + 1..], None => q }
 }
 
-fn attr_val<'a>(e: &'a BytesStart<'a>, key_local: &[u8]) -> Option<String> {
+fn attr_val(e: &BytesStart<'_>, key_local: &[u8]) -> Option<String> {
     for a in e.attributes().with_checks(false) {
         if let Ok(attr) = a {
             let k = local_name(attr.key.as_ref());
             if k == key_local {
-                if let Ok(v) = attr.unescape_value() { return Some(v.into_owned()); }
+                return Some(String::from_utf8_lossy(&attr.value).into_owned());
             }
         }
     }

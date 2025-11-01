@@ -5,10 +5,13 @@
 Splits input files into logical text chunks for downstream indexing and retrieval.
 
 ### What It Does (current)
-- Infers content type by extension (stub)
-- Reads source into unified blocks (PDF/DOCX stubs)
-- Applies JP chunking rules (stub)
-- Emits `chunk_model::ChunkRecord` per chunk
+- Infers content type by extension
+- Reads source into unified blocks:
+  - PDF (pdfium or pure-pdf backends)
+  - DOCX (XML parse)
+  - TXT (UTF‑8 / optional encodings)
+  - Excel: XLSX/XLS/ODS (via calamine)
+- Segments text with a unified segmenter and emits `chunk_model::ChunkRecord` per chunk
 
 ### Status
 - Scaffolding only. Real parsers, robust rules, and metadata are to be added.

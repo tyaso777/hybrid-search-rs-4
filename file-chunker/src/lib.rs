@@ -1,6 +1,7 @@
 pub mod reader_pdf;
 pub mod reader_docx;
 pub mod reader_txt;
+pub mod reader_excel;
 pub mod unified_blocks;
 pub mod chunker_rules_jp;
 pub mod text_segmenter;
@@ -27,15 +28,16 @@ pub struct ChunkOutput {
 /// High-level entry to chunk a file by path and return file/chunks.
 /// This is a stubbed pipeline that returns a simple chunking for now.
 pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
+    let lower = path.to_lowercase();
     // PDF: delegate to dedicated chunker which already returns page ranges
-    if path.ends_with(".pdf") {
+    if lower.ends_with(".pdf") {
         let params = pdf_chunker::PdfChunkParams::default();
         let (file, chunks) = pdf_chunker::chunk_pdf_file_with_file_record(path, &params);
         return ChunkOutput { file, chunks };
     }
 
     // DOCX: read blocks, segment with text_segmenter (preserve page ranges from blocks/segmenter)
-    if path.ends_with(".docx") {
+    if lower.ends_with(".docx") {
         let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
         let params = text_segmenter::TextChunkParams::default();
         let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
@@ -79,6 +81,68 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
             ingest_tool: Some("file-chunker".into()),
             ingest_tool_version: Some(env!("CARGO_PKG_VERSION").into()),
             reader_backend: Some("docx".into()),
+            ocr_used: None,
+            ocr_langs: Vec::new(),
+            chunk_count: Some(chunks.len() as u32),
+            total_tokens: None,
+            meta: BTreeMap::new(),
+            extra: BTreeMap::new(),
+        };
+        enrich_file_record_basic(&mut file, path);
+        return ChunkOutput { file, chunks };
+    }
+
+    // Excel (.xlsx/.xls/.ods): read blocks and segment
+    if lower.ends_with(".xlsx") || lower.ends_with(".xls") || lower.ends_with(".ods") {
+        let blocks: Vec<UnifiedBlock> = reader_excel::read_excel_to_blocks(path);
+        let params = text_segmenter::TextChunkParams::default();
+        let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
+        let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
+
+        let src_mime = if lower.ends_with(".xlsx") {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        } else if lower.ends_with(".xls") {
+            "application/vnd.ms-excel"
+        } else { "application/vnd.oasis.opendocument.spreadsheet" };
+
+        let chunks: Vec<ChunkRecord> = segs
+            .into_iter()
+            .enumerate()
+            .map(|(i, (text, ps, pe))| ChunkRecord {
+                schema_version: chunk_model::SCHEMA_MAJOR,
+                doc_id: DocumentId(path.to_string()),
+                chunk_id: ChunkId(format!("{}#{}", path, i)),
+                source_uri: path.to_string(),
+                source_mime: src_mime.into(),
+                extracted_at: String::new(),
+                page_start: ps,
+                page_end: pe,
+                text,
+                section_path: None,
+                meta: BTreeMap::new(),
+                extra: BTreeMap::new(),
+            })
+            .collect();
+
+        let mut file = FileRecord {
+            schema_version: chunk_model::SCHEMA_MAJOR,
+            doc_id: DocumentId(path.to_string()),
+            doc_revision: Some(1),
+            source_uri: path.to_string(),
+            source_mime: src_mime.into(),
+            file_size_bytes: None,
+            content_sha256: None,
+            page_count,
+            extracted_at: String::new(),
+            created_at_meta: None,
+            updated_at_meta: None,
+            title_guess: None,
+            author_guess: None,
+            dominant_lang: None,
+            tags: Vec::new(),
+            ingest_tool: Some("file-chunker".into()),
+            ingest_tool_version: Some(env!("CARGO_PKG_VERSION").into()),
+            reader_backend: Some("excel".into()),
             ocr_used: None,
             ocr_langs: Vec::new(),
             chunk_count: Some(chunks.len() as u32),
@@ -199,15 +263,16 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
 /// Variant with an explicit encoding hint for text-like files.
 /// For non-text formats (PDF/DOCX), the behavior is identical to `chunk_file_with_file_record`.
 pub fn chunk_file_with_file_record_with_encoding(path: &str, encoding: Option<&str>) -> ChunkOutput {
+    let lower = path.to_lowercase();
     // PDF
-    if path.ends_with(".pdf") {
+    if lower.ends_with(".pdf") {
         let params = pdf_chunker::PdfChunkParams::default();
         let (file, chunks) = pdf_chunker::chunk_pdf_file_with_file_record(path, &params);
         return ChunkOutput { file, chunks };
     }
 
     // DOCX
-    if path.ends_with(".docx") {
+    if lower.ends_with(".docx") {
         let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
         let params = text_segmenter::TextChunkParams::default();
         let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
@@ -251,6 +316,68 @@ pub fn chunk_file_with_file_record_with_encoding(path: &str, encoding: Option<&s
             ingest_tool: Some("file-chunker".into()),
             ingest_tool_version: Some(env!("CARGO_PKG_VERSION").into()),
             reader_backend: Some("docx".into()),
+            ocr_used: None,
+            ocr_langs: Vec::new(),
+            chunk_count: Some(chunks.len() as u32),
+            total_tokens: None,
+            meta: BTreeMap::new(),
+            extra: BTreeMap::new(),
+        };
+        enrich_file_record_basic(&mut file, path);
+        return ChunkOutput { file, chunks };
+    }
+
+    // Excel (encoding ignored)
+    if lower.ends_with(".xlsx") || lower.ends_with(".xls") || lower.ends_with(".ods") {
+        let blocks: Vec<UnifiedBlock> = reader_excel::read_excel_to_blocks(path);
+        let params = text_segmenter::TextChunkParams::default();
+        let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
+        let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
+
+        let src_mime = if lower.ends_with(".xlsx") {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        } else if lower.ends_with(".xls") {
+            "application/vnd.ms-excel"
+        } else { "application/vnd.oasis.opendocument.spreadsheet" };
+
+        let chunks: Vec<ChunkRecord> = segs
+            .into_iter()
+            .enumerate()
+            .map(|(i, (text, ps, pe))| ChunkRecord {
+                schema_version: chunk_model::SCHEMA_MAJOR,
+                doc_id: DocumentId(path.to_string()),
+                chunk_id: ChunkId(format!("{}#{}", path, i)),
+                source_uri: path.to_string(),
+                source_mime: src_mime.into(),
+                extracted_at: String::new(),
+                page_start: ps,
+                page_end: pe,
+                text,
+                section_path: None,
+                meta: BTreeMap::new(),
+                extra: BTreeMap::new(),
+            })
+            .collect();
+
+        let mut file = FileRecord {
+            schema_version: chunk_model::SCHEMA_MAJOR,
+            doc_id: DocumentId(path.to_string()),
+            doc_revision: Some(1),
+            source_uri: path.to_string(),
+            source_mime: src_mime.into(),
+            file_size_bytes: None,
+            content_sha256: None,
+            page_count,
+            extracted_at: String::new(),
+            created_at_meta: None,
+            updated_at_meta: None,
+            title_guess: None,
+            author_guess: None,
+            dominant_lang: None,
+            tags: Vec::new(),
+            ingest_tool: Some("file-chunker".into()),
+            ingest_tool_version: Some(env!("CARGO_PKG_VERSION").into()),
+            reader_backend: Some("excel".into()),
             ocr_used: None,
             ocr_langs: Vec::new(),
             chunk_count: Some(chunks.len() as u32),
@@ -326,8 +453,9 @@ pub fn chunk_file_with_file_record_with_params(
     encoding: Option<&str>,
     params: &text_segmenter::TextChunkParams,
 ) -> ChunkOutput {
+    let lower = path.to_lowercase();
     // PDF via unified text params
-    if path.ends_with(".pdf") {
+    if lower.ends_with(".pdf") {
         let blocks: Vec<UnifiedBlock> = reader_pdf::read_pdf_to_blocks(path);
         let segs = pdf_chunker::chunk_pdf_blocks_to_segments_with_text_params(&blocks, params);
         let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
@@ -380,7 +508,7 @@ pub fn chunk_file_with_file_record_with_params(
     }
 
     // DOCX via unified text params
-    if path.ends_with(".docx") {
+    if lower.ends_with(".docx") {
         let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
         let segs = text_segmenter::chunk_blocks_to_segments(&blocks, params);
         let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
@@ -421,6 +549,67 @@ pub fn chunk_file_with_file_record_with_params(
             ingest_tool: Some("file-chunker".into()),
             ingest_tool_version: Some(env!("CARGO_PKG_VERSION").into()),
             reader_backend: Some("docx".into()),
+            ocr_used: None,
+            ocr_langs: Vec::new(),
+            chunk_count: Some(chunks.len() as u32),
+            total_tokens: None,
+            meta: BTreeMap::new(),
+            extra: BTreeMap::new(),
+        };
+        enrich_file_record_basic(&mut file, path);
+        return ChunkOutput { file, chunks };
+    }
+
+    // Excel via unified text params
+    if lower.ends_with(".xlsx") || lower.ends_with(".xls") || lower.ends_with(".ods") {
+        let blocks: Vec<UnifiedBlock> = reader_excel::read_excel_to_blocks(path);
+        let segs = text_segmenter::chunk_blocks_to_segments(&blocks, params);
+        let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
+
+        let src_mime = if lower.ends_with(".xlsx") {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        } else if lower.ends_with(".xls") {
+            "application/vnd.ms-excel"
+        } else { "application/vnd.oasis.opendocument.spreadsheet" };
+
+        let chunks: Vec<ChunkRecord> = segs
+            .into_iter()
+            .enumerate()
+            .map(|(i, (text, ps, pe))| ChunkRecord {
+                schema_version: chunk_model::SCHEMA_MAJOR,
+                doc_id: DocumentId(path.to_string()),
+                chunk_id: ChunkId(format!("{}#{}", path, i)),
+                source_uri: path.to_string(),
+                source_mime: src_mime.into(),
+                extracted_at: String::new(),
+                page_start: ps,
+                page_end: pe,
+                text,
+                section_path: None,
+                meta: BTreeMap::new(),
+                extra: BTreeMap::new(),
+            })
+            .collect();
+
+        let mut file = FileRecord {
+            schema_version: chunk_model::SCHEMA_MAJOR,
+            doc_id: DocumentId(path.to_string()),
+            doc_revision: Some(1),
+            source_uri: path.to_string(),
+            source_mime: src_mime.into(),
+            file_size_bytes: None,
+            content_sha256: None,
+            page_count,
+            extracted_at: String::new(),
+            created_at_meta: None,
+            updated_at_meta: None,
+            title_guess: None,
+            author_guess: None,
+            dominant_lang: None,
+            tags: Vec::new(),
+            ingest_tool: Some("file-chunker".into()),
+            ingest_tool_version: Some(env!("CARGO_PKG_VERSION").into()),
+            reader_backend: Some("excel".into()),
             ocr_used: None,
             ocr_langs: Vec::new(),
             chunk_count: Some(chunks.len() as u32),
