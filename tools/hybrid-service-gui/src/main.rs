@@ -353,15 +353,19 @@ impl AppState {
             ScrollArea::vertical().max_height(220.0).id_source("files_selected_scroll").show(ui, |ui| {
                 ui.add(TextEdit::multiline(&mut self.files_selected_detail).desired_rows(8).desired_width(800.0).id_source("files_selected_detail"));
             });
-            // Open original file for selected FileRecord
+            // Open file/folder for selected FileRecord
             if let Some(doc_id) = &self.files_selected_doc {
                 if let Some(rec) = self.files.iter().find(|r| &r.doc_id.0 == doc_id) {
                     let path = &rec.source_uri;
                     let (is_local, disp) = normalize_local_path_display(path);
                     ui.horizontal(|ui| {
-                        let btn = ui.add_enabled(is_local, Button::new("Open original file"));
-                        if btn.clicked() && is_local {
+                        let btn_open = ui.add_enabled(is_local, Button::new("Open file"));
+                        if btn_open.clicked() && is_local {
                             if let Some(p) = normalize_local_path(path) { let _ = open_in_os(&p); }
+                        }
+                        let btn_folder = ui.add_enabled(is_local, Button::new("Open folder"));
+                        if btn_folder.clicked() && is_local {
+                            if let Some(p) = normalize_local_path(path) { let _ = open_in_os_folder(&p); }
                         }
                         if is_local { ui.monospace(disp); }
                     });
@@ -1540,9 +1544,13 @@ impl AppState {
                 if let Some(path) = &self.selected_source_path {
                     let (is_local, disp) = normalize_local_path_display(path);
                     ui.horizontal(|ui| {
-                        let btn = ui.add_enabled(is_local, Button::new("Open original file"));
-                        if btn.clicked() && is_local {
+                        let btn_open = ui.add_enabled(is_local, Button::new("Open file"));
+                        if btn_open.clicked() && is_local {
                             if let Some(p) = normalize_local_path(path) { let _ = open_in_os(&p); }
+                        }
+                        let btn_folder = ui.add_enabled(is_local, Button::new("Open folder"));
+                        if btn_folder.clicked() && is_local {
+                            if let Some(p) = normalize_local_path(path) { let _ = open_in_os_folder(&p); }
                         }
                         if is_local { ui.monospace(disp); }
                     });
@@ -1813,16 +1821,27 @@ fn safe_filename_component(name: &str) -> String {
 
 // Normalize a potentially URI-formatted path to a local filesystem path when possible.
 fn normalize_local_path(uri: &str) -> Option<String> {
+    let mut out: String;
     if uri.starts_with("file://") {
         let mut p = uri.trim_start_matches("file://");
         if cfg!(windows) {
             // Strip leading slash from file:///C:/...
             if p.starts_with('/') { p = &p[1..]; }
         }
-        return Some(p.to_string());
+        out = p.to_string();
+    } else if uri.contains("://") {
+        return None;
+    } else {
+        out = uri.to_string();
     }
-    if uri.contains("://") { return None; }
-    Some(uri.to_string())
+    if cfg!(windows) {
+        // Best-effort: convert forward slashes and trim surrounding quotes if any
+        if out.starts_with('"') && out.ends_with('"') && out.len() >= 2 {
+            out = out.trim_matches('"').to_string();
+        }
+        out = out.replace('/', "\\");
+    }
+    Some(out)
 }
 
 fn normalize_local_path_display(uri: &str) -> (bool, String) {
@@ -1836,9 +1855,8 @@ fn open_in_os(path: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::process::Command;
-        // Use cmd start with empty title argument
-        let quoted = format!("\"{}\"", path);
-        Command::new("cmd").args(["/C", "start", "", &quoted]).spawn().map_err(|e| e.to_string())?;
+        // Use explorer to open with associated app; do not add extra quotes
+        Command::new("explorer").arg(path).spawn().map_err(|e| e.to_string())?;
         return Ok(());
     }
     #[cfg(target_os = "macos")]
@@ -1851,6 +1869,30 @@ fn open_in_os(path: &str) -> Result<(), String> {
     {
         use std::process::Command;
         Command::new("xdg-open").arg(path).spawn().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+}
+
+fn open_in_os_folder(path: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        // Reveal the file in Explorer
+        Command::new("explorer").args(["/select,", path]).spawn().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        // Reveal in Finder
+        Command::new("open").args(["-R", path]).spawn().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        use std::process::Command;
+        let parent = std::path::Path::new(path).parent().map(|p| p.to_path_buf()).ok_or_else(|| "no parent".to_string())?;
+        Command::new("xdg-open").arg(parent).spawn().map_err(|e| e.to_string())?;
         return Ok(());
     }
 }
