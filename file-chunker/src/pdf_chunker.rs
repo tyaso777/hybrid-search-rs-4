@@ -65,7 +65,7 @@ pub fn chunk_pdf_file_with_file_record(path: &str, params: &PdfChunkParams) -> (
     };
 
     // Derive page count from segments' page_end
-    let page_count = segs.iter().filter_map(|(_, _ps, pe)| pe.copied()).max();
+    let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
 
     let mut file = FileRecord {
         schema_version: SCHEMA_MAJOR,

@@ -39,6 +39,7 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
         let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
         let params = text_segmenter::TextChunkParams::default();
         let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
+        let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
 
         let chunks: Vec<ChunkRecord> = segs
             .into_iter()
@@ -67,7 +68,7 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
             source_mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
             file_size_bytes: None,
             content_sha256: None,
-            page_count: segs.iter().filter_map(|(_, _ps, pe)| pe.copied()).max(),
+            page_count,
             extracted_at: String::new(),
             created_at_meta: None,
             updated_at_meta: None,
@@ -210,6 +211,7 @@ pub fn chunk_file_with_file_record_with_encoding(path: &str, encoding: Option<&s
         let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
         let params = text_segmenter::TextChunkParams::default();
         let segs = text_segmenter::chunk_blocks_to_segments(&blocks, &params);
+        let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
 
         let chunks: Vec<ChunkRecord> = segs
             .into_iter()
@@ -238,7 +240,7 @@ pub fn chunk_file_with_file_record_with_encoding(path: &str, encoding: Option<&s
             source_mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
             file_size_bytes: None,
             content_sha256: None,
-            page_count: segs.iter().filter_map(|(_, _ps, pe)| pe.copied()).max(),
+            page_count,
             extracted_at: String::new(),
             created_at_meta: None,
             updated_at_meta: None,
@@ -328,6 +330,7 @@ pub fn chunk_file_with_file_record_with_params(
     if path.ends_with(".pdf") {
         let blocks: Vec<UnifiedBlock> = reader_pdf::read_pdf_to_blocks(path);
         let segs = pdf_chunker::chunk_pdf_blocks_to_segments_with_text_params(&blocks, params);
+        let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
         let chunks: Vec<ChunkRecord> = segs
             .into_iter()
             .enumerate()
@@ -346,7 +349,7 @@ pub fn chunk_file_with_file_record_with_params(
                 extra: BTreeMap::new(),
             })
             .collect();
-        let file = FileRecord {
+        let mut file = FileRecord {
             schema_version: chunk_model::SCHEMA_MAJOR,
             doc_id: DocumentId(path.to_string()),
             doc_revision: Some(1),
@@ -354,7 +357,7 @@ pub fn chunk_file_with_file_record_with_params(
             source_mime: "application/pdf".into(),
             file_size_bytes: None,
             content_sha256: None,
-            page_count: None,
+            page_count,
             extracted_at: String::new(),
             created_at_meta: None,
             updated_at_meta: None,
@@ -372,6 +375,7 @@ pub fn chunk_file_with_file_record_with_params(
             meta: BTreeMap::new(),
             extra: BTreeMap::new(),
         };
+        enrich_file_record_basic(&mut file, path);
         return ChunkOutput { file, chunks };
     }
 
@@ -379,6 +383,7 @@ pub fn chunk_file_with_file_record_with_params(
     if path.ends_with(".docx") {
         let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
         let segs = text_segmenter::chunk_blocks_to_segments(&blocks, params);
+        let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
         let chunks: Vec<ChunkRecord> = segs
             .into_iter()
             .enumerate()
@@ -397,7 +402,7 @@ pub fn chunk_file_with_file_record_with_params(
                 extra: BTreeMap::new(),
             })
             .collect();
-        let file = FileRecord {
+        let mut file = FileRecord {
             schema_version: chunk_model::SCHEMA_MAJOR,
             doc_id: DocumentId(path.to_string()),
             doc_revision: Some(1),
@@ -405,7 +410,7 @@ pub fn chunk_file_with_file_record_with_params(
             source_mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
             file_size_bytes: None,
             content_sha256: None,
-            page_count: None,
+            page_count,
             extracted_at: String::new(),
             created_at_meta: None,
             updated_at_meta: None,
@@ -423,6 +428,7 @@ pub fn chunk_file_with_file_record_with_params(
             meta: BTreeMap::new(),
             extra: BTreeMap::new(),
         };
+        enrich_file_record_basic(&mut file, path);
         return ChunkOutput { file, chunks };
     }
 
@@ -448,7 +454,7 @@ pub fn chunk_file_with_file_record_with_params(
                 extra: BTreeMap::new(),
             })
             .collect();
-        let file = FileRecord {
+        let mut file = FileRecord {
             schema_version: chunk_model::SCHEMA_MAJOR,
             doc_id: DocumentId(path.to_string()),
             doc_revision: Some(1),
@@ -456,7 +462,7 @@ pub fn chunk_file_with_file_record_with_params(
             source_mime: "text/plain".into(),
             file_size_bytes: None,
             content_sha256: None,
-            page_count: None,
+            page_count: Some(1),
             extracted_at: String::new(),
             created_at_meta: None,
             updated_at_meta: None,
@@ -474,6 +480,7 @@ pub fn chunk_file_with_file_record_with_params(
             meta: BTreeMap::new(),
             extra: BTreeMap::new(),
         };
+        enrich_file_record_basic(&mut file, path);
         return ChunkOutput { file, chunks };
     }
 
@@ -561,8 +568,8 @@ fn windows_file_owner(path: &str) -> Option<String> {
     use std::os::windows::ffi::OsStrExt;
     use std::ptr::{null, null_mut};
     use windows::core::{PCWSTR, PWSTR};
-    use windows::Win32::Foundation::BOOL;
-    use windows::Win32::Security::{GetFileSecurityW, GetSecurityDescriptorOwner, LookupAccountSidW, OWNER_SECURITY_INFORMATION, SID_NAME_USE, PSID, PSECURITY_DESCRIPTOR};
+    use windows::Win32::Foundation::{BOOL, PSID};
+    use windows::Win32::Security::{GetFileSecurityW, GetSecurityDescriptorOwner, LookupAccountSidW, OWNER_SECURITY_INFORMATION, SID_NAME_USE, PSECURITY_DESCRIPTOR};
 
     let wide: Vec<u16> = std::ffi::OsStr::new(path).encode_wide().chain(iter::once(0)).collect();
     unsafe {
@@ -572,7 +579,7 @@ fn windows_file_owner(path: &str) -> Option<String> {
         if needed == 0 { return None; }
         let mut buf: Vec<u8> = vec![0; needed as usize];
         let ok = GetFileSecurityW(PCWSTR(wide.as_ptr()), OWNER_SECURITY_INFORMATION.0, PSECURITY_DESCRIPTOR(buf.as_mut_ptr() as *mut _), needed, &mut needed);
-        if !ok.as_bool() { return None; }
+        if ok.0 == 0 { return None; }
         let mut owner_sid: PSID = PSID(null_mut());
         let mut defaulted = BOOL(0);
         let sd = PSECURITY_DESCRIPTOR(buf.as_mut_ptr() as *mut _);
@@ -597,7 +604,7 @@ fn windows_file_owner(path: &str) -> Option<String> {
             &mut domain_len,
             &mut use2,
         );
-        if !ok3.as_bool() { return None; }
+        if ok3.is_err() { return None; }
         let name = String::from_utf16_lossy(&name_buf[..name_len as usize]);
         let domain = String::from_utf16_lossy(&domain_buf[..domain_len as usize]);
         if domain.is_empty() { Some(name) } else { Some(format!("{}\\{}", domain, name)) }
