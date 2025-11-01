@@ -16,6 +16,17 @@ Notes
 - Prefer minimal, focused diffs that respect the existing code style.
 - When in doubt about requirements or trade‑offs, ask clarifying questions before making changes.
 
+Commit/Push Policy
+
+- Never create Git commits or push changes unless the user explicitly instructs you to. Implementation requests alone are not permission.
+- Recognized approval examples (non‑exhaustive): "commit", "please commit", "push", "please push". Treat each commit/push as requiring fresh approval.
+- After making code changes, pause and ask whether to commit. Provide in your prompt:
+  - A short summary of the changes
+  - The list of changed files
+  - A proposed commit message
+- Only after approval, run the commit/push. When you commit, include the short commit hash (e.g., 265ac03) in your reply. When you push, report the remote and branch (e.g., origin/main) and the pushed range.
+- Do not rewrite history or take destructive actions (e.g., reset, force‑push, mass rewrites) without explicit approval; prefer reversible steps and show a plan/dry‑run first.
+
 Build/Validation
 
 - After editing Rust code, run `cargo check` to validate builds quickly.
