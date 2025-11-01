@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use hybrid_service::{HybridService, ServiceConfig, CancelToken, ProgressEvent, HnswState};
 use embedding_provider::config::{default_stdio_config, ONNX_STDIO_DEFAULTS};
-use chunking_store::FilterClause;
+use chunking_store::{FilterClause, FilterKind, FilterOp};
 use chunking_store::ChunkStoreRead;
 // Removed unused FilterKind/FilterOp after moving Tantivy ops into service
 #[cfg(feature = "tantivy")]
@@ -170,6 +170,8 @@ struct AppState {
     files_selected_doc: Option<String>,
     files_selected_display: String,
     files_selected_detail: String,
+    files_delete_pending: Option<String>,
+    files_deleting: bool,
 }
 
 // New (nested) config format: { store: {...}, chunk: {...}, model: {...} }
@@ -258,6 +260,7 @@ impl AppState {
 
         ui.separator();
         // Table
+        let mut to_delete_doc: Option<String> = None;
         ui.push_id("files_table", |ui| {
             let mut table = TableBuilder::new(ui)
                 .striped(true)
@@ -267,7 +270,8 @@ impl AppState {
                 .column(Column::initial(120.0))   // mime
                 .column(Column::initial(70.0))    // pages
                 .column(Column::initial(70.0))    // chunks
-                .column(Column::initial(170.0));  // extracted at
+                .column(Column::initial(170.0))   // extracted at
+                .column(Column::initial(90.0));   // actions
 
             table
                 .header(20.0, |mut header| {
@@ -277,6 +281,7 @@ impl AppState {
                     header.col(|ui| { ui.label("Pages"); });
                     header.col(|ui| { ui.label("Chunks"); });
                     header.col(|ui| { ui.label("Extracted"); });
+                    header.col(|ui| { ui.label("Actions"); });
                 })
                 .body(|mut body| {
                     fn trunc(s: &str, n: usize) -> String {
@@ -286,7 +291,7 @@ impl AppState {
                         out
                     }
                     for rec in &self.files {
-                        body.row(20.0, |mut row_ui| {
+                        body.row(22.0, |mut row_ui| {
                             let doc_disp = trunc(&rec.doc_id.0, 42);
                             row_ui.col(|ui| {
                                 if ui.link(doc_disp).clicked() {
@@ -307,10 +312,32 @@ impl AppState {
                             row_ui.col(|ui| { ui.label(rec.page_count.map(|v| v.to_string()).unwrap_or_else(|| "-".into())); });
                             row_ui.col(|ui| { ui.label(rec.chunk_count.map(|v| v.to_string()).unwrap_or_else(|| "-".into())); });
                             row_ui.col(|ui| { ui.label(&rec.extracted_at); });
+                            // Actions
+                            row_ui.col(|ui| {
+                                let pending = self.files_delete_pending.as_ref().map(|s| s == &rec.doc_id.0).unwrap_or(false);
+                                if !pending {
+                                    let btn = egui::RichText::new("Delete").color(egui::Color32::RED);
+                                    if ui.add_enabled(!self.files_deleting, Button::new(btn)).clicked() {
+                                        self.files_delete_pending = Some(rec.doc_id.0.clone());
+                                    }
+                                } else {
+                                    ui.horizontal(|ui| {
+                                        let btn = egui::RichText::new("Confirm").color(egui::Color32::RED);
+                                        if ui.add_enabled(!self.files_deleting, Button::new(btn)).clicked() {
+                                            to_delete_doc = Some(rec.doc_id.0.clone());
+                                        }
+                                        if ui.button("Cancel").clicked() { self.files_delete_pending = None; }
+                                    });
+                                }
+                            });
                         });
                     }
                 });
         });
+
+        if let Some(doc) = to_delete_doc.take() {
+            self.delete_by_doc_id(&doc);
+        }
 
         if let Some(_doc) = &self.files_selected_doc {
             ui.separator();
@@ -323,6 +350,28 @@ impl AppState {
                 ui.add(TextEdit::multiline(&mut self.files_selected_detail).desired_rows(8).desired_width(800.0).id_source("files_selected_detail"));
             });
         }
+    }
+
+    fn delete_by_doc_id(&mut self, doc_id: &str) {
+        if self.svc.is_none() { self.status = "Service not initialized".into(); return; }
+        if !self.ensure_store_paths_current() { return; }
+        let filters = vec![FilterClause { kind: FilterKind::Must, op: FilterOp::DocIdEq(doc_id.to_string()) }];
+        self.files_deleting = true;
+        if let Some(svc) = &self.svc {
+            match svc.delete_by_filter(&filters, 1000) {
+                Ok(rep) => {
+                    self.status = format!("Deleted: db={} ids={}, batches={}", rep.db_deleted, rep.total_ids, rep.batches);
+                    self.files_delete_pending = None;
+                    self.files_selected_doc = None;
+                    self.files_selected_display.clear();
+                    self.files_selected_detail.clear();
+                    // Refresh current page
+                    self.refresh_files();
+                }
+                Err(e) => { self.status = format!("Delete failed: {e}"); }
+            }
+        }
+        self.files_deleting = false;
     }
 
     fn refresh_files(&mut self) {
@@ -734,6 +783,8 @@ impl AppState {
             files_selected_doc: None,
             files_selected_display: String::new(),
             files_selected_detail: String::new(),
+            files_delete_pending: None,
+            files_deleting: false,
         }
     }
 

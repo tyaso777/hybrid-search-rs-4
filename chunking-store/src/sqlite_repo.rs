@@ -259,6 +259,27 @@ impl SqliteRepo {
         Ok(out)
     }
 
+    /// Delete files rows by doc_id list. Returns affected rows.
+    pub fn delete_files_by_doc_ids(&self, doc_ids: &[String]) -> rusqlite::Result<usize> {
+        if doc_ids.is_empty() { return Ok(0); }
+        let mut placeholders = String::from("(");
+        for i in 0..doc_ids.len() { if i > 0 { placeholders.push(','); } placeholders.push('?'); }
+        placeholders.push(')');
+        let sql = format!("DELETE FROM files WHERE doc_id IN {}", placeholders);
+        let params: Vec<&str> = doc_ids.iter().map(|s| s.as_str()).collect();
+        let n = self.conn.execute(&sql, rusqlite::params_from_iter(params.iter()))?;
+        Ok(n)
+    }
+
+    /// Remove files that have no remaining chunks (best-effort cleanup).
+    pub fn cleanup_orphan_files(&self) -> rusqlite::Result<usize> {
+        let n = self.conn.execute(
+            "DELETE FROM files WHERE doc_id NOT IN (SELECT DISTINCT doc_id FROM chunks)",
+            [],
+        )?;
+        Ok(n)
+    }
+
     /// Ensure FTS content table is populated; rebuild if empty while chunks has rows.
     pub fn maybe_rebuild_fts(&self) -> rusqlite::Result<()> {
         let chunks_cnt: i64 = self.conn.query_row("SELECT count(*) FROM chunks", [], |r| r.get(0))?;

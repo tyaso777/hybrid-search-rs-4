@@ -745,6 +745,22 @@ impl HybridService {
         hnsw.save(&hdir).map_err(|e| ServiceError::Io(e.to_string()))?;
         if let Ok(mut guard) = self.hnsw.write() { *guard = Some(hnsw); }
         let _ = self.hnsw_state.write().map(|mut s| *s = HnswState::Ready);
+
+        // Keep files table in sync: targeted delete for DocId filters, then orphan cleanup
+        // Targeted deletes
+        let mut doc_ids: Vec<String> = Vec::new();
+        for f in filters {
+            match &f.op {
+                chunking_store::FilterOp::DocIdEq(v) => doc_ids.push(v.clone()),
+                chunking_store::FilterOp::DocIdIn(vs) => { for v in vs { doc_ids.push(v.clone()); } },
+                _ => {}
+            }
+        }
+        if !doc_ids.is_empty() {
+            let _ = repo.delete_files_by_doc_ids(&doc_ids);
+        }
+        // Best-effort orphan cleanup (ignore errors)
+        let _ = repo.cleanup_orphan_files();
         Ok(rep)
     }
 
