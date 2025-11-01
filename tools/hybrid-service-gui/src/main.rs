@@ -262,6 +262,7 @@ impl AppState {
         // Table
         let mut to_delete_doc: Option<String> = None;
         ui.push_id("files_table", |ui| {
+            egui::ScrollArea::horizontal().id_source("files_table_h").show(ui, |ui| {
             let mut table = TableBuilder::new(ui)
                 .striped(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
@@ -333,6 +334,7 @@ impl AppState {
                         });
                     }
                 });
+            });
         });
 
         if let Some(doc) = to_delete_doc.take() {
@@ -1430,7 +1432,7 @@ impl AppState {
 
             ui.separator();
             ui.push_id("results_table", |ui| {
-                {
+                egui::ScrollArea::horizontal().id_source("results_table_h").show(ui, |ui| {
                     let show_tv = self.w_tv.is_some();
                     let show_tv_and = self.w_tv_and.is_some();
                     let show_tv_or = self.w_tv_or.is_some();
@@ -1500,7 +1502,7 @@ impl AppState {
                                 });
                             }
                         });
-                }
+                });
             });
             });
 
