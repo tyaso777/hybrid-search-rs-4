@@ -350,10 +350,7 @@ impl AppState {
             } else {
                 ui.label(format!("Selected: {}", self.files_selected_display));
             }
-            ScrollArea::vertical().max_height(220.0).id_source("files_selected_scroll").show(ui, |ui| {
-                ui.add(TextEdit::multiline(&mut self.files_selected_detail).desired_rows(8).desired_width(800.0).id_source("files_selected_detail"));
-            });
-            // Open file/folder for selected FileRecord
+            // Open file/folder actions appear before the text content
             if let Some(doc_id) = &self.files_selected_doc {
                 if let Some(rec) = self.files.iter().find(|r| &r.doc_id.0 == doc_id) {
                     let path = &rec.source_uri;
@@ -371,6 +368,9 @@ impl AppState {
                     });
                 }
             }
+            ScrollArea::vertical().max_height(220.0).id_source("files_selected_scroll").show(ui, |ui| {
+                ui.add(TextEdit::multiline(&mut self.files_selected_detail).desired_rows(8).desired_width(800.0).id_source("files_selected_detail"));
+            });
         }
     }
 
@@ -1538,9 +1538,7 @@ impl AppState {
                 } else {
                     ui.label(format!("Selected: {}", self.selected_display));
                 }
-                ScrollArea::vertical().max_height(200.0).id_source("selected_scroll").show(ui, |ui| {
-                    ui.add(TextEdit::multiline(&mut self.selected_text).desired_rows(8).desired_width(800.0).id_source("selected_text"));
-                });
+                // Place open actions between the header and the text content
                 if let Some(path) = &self.selected_source_path {
                     let (is_local, disp) = normalize_local_path_display(path);
                     ui.horizontal(|ui| {
@@ -1555,6 +1553,10 @@ impl AppState {
                         if is_local { ui.monospace(disp); }
                     });
                 }
+                // Detail pane height: 150px
+                ScrollArea::vertical().max_height(150.0).id_source("selected_scroll").show(ui, |ui| {
+                    ui.add(TextEdit::multiline(&mut self.selected_text).desired_rows(8).desired_width(800.0).id_source("selected_text"));
+                });
             }
         });
     }
