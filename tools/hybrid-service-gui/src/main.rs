@@ -145,6 +145,9 @@ struct AppState {
     selected_base_text: String,
     selected_base_display: String,
     selected_base_source_path: Option<String>,
+    // Context window for detail view (progressive expand)
+    context_chunks: Vec<ContextChunk>,
+    context_expanded: bool,
     // Dangerous actions confirmation
     delete_confirm: String,
 
@@ -178,6 +181,13 @@ struct AppState {
     files_selected_detail: String,
     files_delete_pending: Option<String>,
     files_deleting: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ContextChunk {
+    cid: String,
+    text: String,
+    is_base: bool,
 }
 
 // New (nested) config format: { store: {...}, chunk: {...}, model: {...} }
@@ -248,40 +258,68 @@ impl AppState {
             self.selected_text = self.selected_base_text.clone();
             self.selected_display = self.selected_base_display.clone();
             self.selected_source_path = self.selected_base_source_path.clone();
+            // Reset context to default (prev/base/next)
+            self.rebuild_context_window_initial();
         }
     }
 
-    fn navigate_neighbor(&mut self, dir: i32) {
-        if self.svc.is_none() { self.status = "Service not initialized".into(); return; }
+    
+
+    // Initial 3-chunk context: prev/base/next around current base
+    fn rebuild_context_window_initial(&mut self) {
+        self.context_chunks.clear();
         if !self.ensure_store_paths_current() { return; }
-        let Some(cur) = self.selected_cid.clone() else { return; };
-        let Some(svc) = &self.svc else { return; };
-        match svc.neighbor_chunks(&cur) {
+        let Some(base_cid) = self.selected_base_cid.clone() else { return; };
+        let base_text = self.selected_base_text.clone();
+        match self.fetch_neighbor_chunks(&base_cid) {
             Ok((prev, next)) => {
-                let pick = if dir < 0 { prev } else { next };
-                if let Some(rec) = pick {
-                    self.apply_selection_from_record(&rec);
-                } else {
-                    self.status = if dir < 0 { "No previous chunk".into() } else { "No next chunk".into() };
-                }
+                if let Some(p) = prev { self.context_chunks.push(ContextChunk { cid: p.chunk_id.0.clone(), text: p.text.clone(), is_base: false }); }
+                self.context_chunks.push(ContextChunk { cid: base_cid.clone(), text: base_text, is_base: true });
+                if let Some(n) = next { self.context_chunks.push(ContextChunk { cid: n.chunk_id.0.clone(), text: n.text.clone(), is_base: false }); }
+            }
+            Err(e) => { self.status = format!("Neighbor fetch failed: {e}"); }
+        }
+        self.context_expanded = false;
+    }
+
+    // Expand upward by one chunk (prepend)
+    fn expand_context_prev(&mut self) {
+        if !self.ensure_store_paths_current() { return; }
+        let anchor = if let Some(first) = self.context_chunks.first() { first.cid.clone() } else if let Some(b) = &self.selected_base_cid { b.clone() } else { return; };
+        match self.fetch_neighbor_chunks(&anchor) {
+            Ok((prev, _)) => {
+                if let Some(p) = prev {
+                    self.context_chunks.insert(0, ContextChunk { cid: p.chunk_id.0.clone(), text: p.text.clone(), is_base: false });
+                    self.context_expanded = true;
+                } else { self.status = "No previous chunk".into(); }
             }
             Err(e) => { self.status = format!("Neighbor fetch failed: {e}"); }
         }
     }
 
-    fn apply_selection_from_record(&mut self, rec: &chunk_model::ChunkRecord) {
-        let file = match std::path::Path::new(&rec.source_uri).file_name().and_then(|s| s.to_str()) { Some(s) => s.to_string(), None => rec.source_uri.clone() };
-        let page = match (rec.page_start, rec.page_end) {
-            (Some(s), Some(e)) if s == e => format!("#{}", s),
-            (Some(s), Some(e)) => format!("#{}-{}", s, e),
-            (Some(s), None) => format!("#{}", s),
-            _ => page_label_from_chunk_id(&rec.chunk_id.0).unwrap_or_default(),
-        };
-        let display = if page.is_empty() { file.clone() } else { format!("{} {}", file, page) };
-        self.selected_cid = Some(rec.chunk_id.0.clone());
-        self.selected_text = rec.text.clone();
-        self.selected_display = display;
-        self.selected_source_path = Some(rec.source_uri.clone());
+    // Expand downward by one chunk (append)
+    fn expand_context_next(&mut self) {
+        if !self.ensure_store_paths_current() { return; }
+        let anchor = if let Some(last) = self.context_chunks.last() { last.cid.clone() } else if let Some(b) = &self.selected_base_cid { b.clone() } else { return; };
+        match self.fetch_neighbor_chunks(&anchor) {
+            Ok((_, next)) => {
+                if let Some(n) = next {
+                    self.context_chunks.push(ContextChunk { cid: n.chunk_id.0.clone(), text: n.text.clone(), is_base: false });
+                    self.context_expanded = true;
+                } else { self.status = "No next chunk".into(); }
+            }
+            Err(e) => { self.status = format!("Neighbor fetch failed: {e}"); }
+        }
+    }
+
+    // Get (prev, next) for a chunk id using service/repo
+    fn fetch_neighbor_chunks(&self, cid: &str) -> Result<(Option<ChunkRecord>, Option<ChunkRecord>), String> {
+        if let Some(svc) = &self.svc {
+            svc.neighbor_chunks(cid).map_err(|e| e.to_string())
+        } else {
+            let repo = chunking_store::sqlite_repo::SqliteRepo::open(self.db_path.trim()).map_err(|e| e.to_string())?;
+            repo.get_neighbor_chunks(&ChunkId(cid.to_string())).map_err(|e| e.to_string())
+        }
     }
     fn ui_files(&mut self, ui: &mut egui::Ui) {
         ui.heading("Files");
@@ -311,7 +349,7 @@ impl AppState {
         let mut to_delete_doc: Option<String> = None;
         ui.push_id("files_table", |ui| {
             egui::ScrollArea::horizontal().id_source("files_table_h").show(ui, |ui| {
-            let mut table = TableBuilder::new(ui)
+            let table = TableBuilder::new(ui)
                 .striped(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .column(Column::initial(260.0))   // doc id
@@ -832,6 +870,8 @@ impl AppState {
             selected_base_text: String::new(),
             selected_base_display: String::new(),
             selected_base_source_path: None,
+            context_chunks: Vec::new(),
+            context_expanded: false,
             delete_confirm: String::new(),
 
             preview_visible: false,
@@ -1504,6 +1544,7 @@ impl AppState {
             ui.separator();
             ui.push_id("results_table", |ui| {
                 egui::ScrollArea::horizontal().id_source("results_table_h").show(ui, |ui| {
+                    let results_snapshot = self.results.clone();
                     let show_tv = self.w_tv.is_some();
                     let show_tv_and = self.w_tv_and.is_some();
                     let show_tv_or = self.w_tv_or.is_some();
@@ -1535,7 +1576,7 @@ impl AppState {
                             header.col(|ui| { ui.label("Text"); });
                         })
                         .body(|mut body| {
-                            for (i, row) in self.results.iter().enumerate() {
+                            for (i, row) in results_snapshot.iter().enumerate() {
                                 body.row(20.0, |mut row_ui| {
                                     row_ui.col(|ui| { ui.label(format!("{}", i+1)); });
                                     // Make file and page clickable to select the row
@@ -1549,6 +1590,7 @@ impl AppState {
                                             self.selected_base_text = row.text_full.clone();
                                             self.selected_base_display = self.selected_display.clone();
                                             self.selected_base_source_path = Some(row.file_path.clone());
+                                            self.rebuild_context_window_initial();
                                         }
                                     });
                                     row_ui.col(|ui| {
@@ -1562,6 +1604,7 @@ impl AppState {
                                                 self.selected_base_text = row.text_full.clone();
                                                 self.selected_base_display = self.selected_display.clone();
                                                 self.selected_base_source_path = Some(row.file_path.clone());
+                                                self.rebuild_context_window_initial();
                                             }
                                         } else {
                                             ui.label(&row.page);
@@ -1582,6 +1625,7 @@ impl AppState {
                                                 self.selected_base_text = row.text_full.clone();
                                                 self.selected_base_display = self.selected_display.clone();
                                                 self.selected_base_source_path = Some(row.file_path.clone());
+                                                self.rebuild_context_window_initial();
                                             }
                                         });
                                     });
@@ -1603,10 +1647,10 @@ impl AppState {
                 // Place open actions between the header and the text content
                 // Navigation: prev / back-to-base / next
                 ui.horizontal(|ui| {
-                    if ui.button("<- prev chunk").clicked() { self.navigate_neighbor(-1); }
-                    let can_back = self.selected_base_cid.as_ref().map(|b| Some(b) != self.selected_cid.as_ref()).unwrap_or(false);
-                    if ui.add_enabled(can_back, Button::new("back to base chunk")).clicked() { self.navigate_back_to_base(); }
-                    if ui.button("next chunk ->").clicked() { self.navigate_neighbor(1); }
+                    if ui.button("<= add prev chunk").clicked() { self.expand_context_prev(); }
+                    let can_back = self.selected_base_cid.is_some() && (self.selected_base_cid != self.selected_cid || self.context_expanded);
+                    if ui.add_enabled(can_back, Button::new("reset")).clicked() { self.navigate_back_to_base(); }
+                    if ui.button("add next chunk =>").clicked() { self.expand_context_next(); }
                 });
                 ui.add_space(4.0);
                 if let Some(path) = &self.selected_source_path {
@@ -1625,7 +1669,23 @@ impl AppState {
                 }
                 // Detail pane height: 150px
                 ScrollArea::vertical().max_height(150.0).id_source("selected_scroll").show(ui, |ui| {
-                    ui.add(TextEdit::multiline(&mut self.selected_text).desired_rows(8).desired_width(800.0).id_source("selected_text"));
+                    let mut job = egui::text::LayoutJob::default();
+                    job.wrap.max_width = ui.available_width();
+                    let normal_color = ui.visuals().text_color();
+                    let weak_color = ui.visuals().weak_text_color();
+                    for (i, seg) in self.context_chunks.iter().enumerate() {
+                        let mut fmt = egui::text::TextFormat::default();
+                        fmt.color = if seg.is_base { normal_color } else { weak_color };
+                        fmt.italics = !seg.is_base;
+                        job.append(&seg.text, 0.0, fmt);
+                        if i + 1 < self.context_chunks.len() {
+                            let mut sep_fmt = egui::text::TextFormat::default();
+                            sep_fmt.color = weak_color;
+                            sep_fmt.italics = true;
+                            job.append("\n…\n", 0.0, sep_fmt);
+                        }
+                    }
+                    ui.add(egui::Label::new(egui::WidgetText::LayoutJob(job)));
                 });
             }
         });
