@@ -141,6 +141,10 @@ struct AppState {
     selected_text: String,
     selected_display: String,
     selected_source_path: Option<String>,
+    selected_base_cid: Option<String>,
+    selected_base_text: String,
+    selected_base_display: String,
+    selected_base_source_path: Option<String>,
     // Dangerous actions confirmation
     delete_confirm: String,
 
@@ -237,6 +241,48 @@ struct HybridGuiConfigV1 {
 }
 
 impl AppState {
+    fn navigate_back_to_base(&mut self) {
+        if let Some(cid) = self.selected_base_cid.clone() {
+            // Restore selection from stored base fields
+            self.selected_cid = Some(cid);
+            self.selected_text = self.selected_base_text.clone();
+            self.selected_display = self.selected_base_display.clone();
+            self.selected_source_path = self.selected_base_source_path.clone();
+        }
+    }
+
+    fn navigate_neighbor(&mut self, dir: i32) {
+        if self.svc.is_none() { self.status = "Service not initialized".into(); return; }
+        if !self.ensure_store_paths_current() { return; }
+        let Some(cur) = self.selected_cid.clone() else { return; };
+        let Some(svc) = &self.svc else { return; };
+        match svc.neighbor_chunks(&cur) {
+            Ok((prev, next)) => {
+                let pick = if dir < 0 { prev } else { next };
+                if let Some(rec) = pick {
+                    self.apply_selection_from_record(&rec);
+                } else {
+                    self.status = if dir < 0 { "No previous chunk".into() } else { "No next chunk".into() };
+                }
+            }
+            Err(e) => { self.status = format!("Neighbor fetch failed: {e}"); }
+        }
+    }
+
+    fn apply_selection_from_record(&mut self, rec: &chunk_model::ChunkRecord) {
+        let file = match std::path::Path::new(&rec.source_uri).file_name().and_then(|s| s.to_str()) { Some(s) => s.to_string(), None => rec.source_uri.clone() };
+        let page = match (rec.page_start, rec.page_end) {
+            (Some(s), Some(e)) if s == e => format!("#{}", s),
+            (Some(s), Some(e)) => format!("#{}-{}", s, e),
+            (Some(s), None) => format!("#{}", s),
+            _ => page_label_from_chunk_id(&rec.chunk_id.0).unwrap_or_default(),
+        };
+        let display = if page.is_empty() { file.clone() } else { format!("{} {}", file, page) };
+        self.selected_cid = Some(rec.chunk_id.0.clone());
+        self.selected_text = rec.text.clone();
+        self.selected_display = display;
+        self.selected_source_path = Some(rec.source_uri.clone());
+    }
     fn ui_files(&mut self, ui: &mut egui::Ui) {
         ui.heading("Files");
         if self.files.is_empty() && !self.files_loading {
@@ -782,6 +828,10 @@ impl AppState {
             selected_text: String::new(),
             selected_display: String::new(),
             selected_source_path: None,
+            selected_base_cid: None,
+            selected_base_text: String::new(),
+            selected_base_display: String::new(),
+            selected_base_source_path: None,
             delete_confirm: String::new(),
 
             preview_visible: false,
@@ -1495,6 +1545,10 @@ impl AppState {
                                             self.selected_text = row.text_full.clone();
                                             self.selected_display = format!("{} {}", &row.file, if row.page.is_empty() { String::new() } else { row.page.clone() });
                                             self.selected_source_path = Some(row.file_path.clone());
+                                            self.selected_base_cid = Some(row.cid.clone());
+                                            self.selected_base_text = row.text_full.clone();
+                                            self.selected_base_display = self.selected_display.clone();
+                                            self.selected_base_source_path = Some(row.file_path.clone());
                                         }
                                     });
                                     row_ui.col(|ui| {
@@ -1504,6 +1558,10 @@ impl AppState {
                                                 self.selected_text = row.text_full.clone();
                                                 self.selected_display = format!("{} {}", &row.file, &row.page);
                                                 self.selected_source_path = Some(row.file_path.clone());
+                                                self.selected_base_cid = Some(row.cid.clone());
+                                                self.selected_base_text = row.text_full.clone();
+                                                self.selected_base_display = self.selected_display.clone();
+                                                self.selected_base_source_path = Some(row.file_path.clone());
                                             }
                                         } else {
                                             ui.label(&row.page);
@@ -1520,6 +1578,10 @@ impl AppState {
                                                 self.selected_text = row.text_full.clone();
                                                 self.selected_display = format!("{} {}", &row.file, if row.page.is_empty() { String::new() } else { row.page.clone() });
                                                 self.selected_source_path = Some(row.file_path.clone());
+                                                self.selected_base_cid = Some(row.cid.clone());
+                                                self.selected_base_text = row.text_full.clone();
+                                                self.selected_base_display = self.selected_display.clone();
+                                                self.selected_base_source_path = Some(row.file_path.clone());
                                             }
                                         });
                                     });
@@ -1539,6 +1601,14 @@ impl AppState {
                     ui.label(format!("Selected: {}", self.selected_display));
                 }
                 // Place open actions between the header and the text content
+                // Navigation: prev / back-to-base / next
+                ui.horizontal(|ui| {
+                    if ui.button("<- prev chunk").clicked() { self.navigate_neighbor(-1); }
+                    let can_back = self.selected_base_cid.as_ref().map(|b| Some(b) != self.selected_cid.as_ref()).unwrap_or(false);
+                    if ui.add_enabled(can_back, Button::new("back to base chunk")).clicked() { self.navigate_back_to_base(); }
+                    if ui.button("next chunk ->").clicked() { self.navigate_neighbor(1); }
+                });
+                ui.add_space(4.0);
                 if let Some(path) = &self.selected_source_path {
                     let (is_local, disp) = normalize_local_path_display(path);
                     ui.horizontal(|ui| {

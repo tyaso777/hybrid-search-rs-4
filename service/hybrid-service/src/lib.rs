@@ -770,6 +770,13 @@ impl HybridService {
         repo.counts().map_err(|e| ServiceError::Repo(e.to_string()))
     }
 
+    /// Return previous and next chunks within the same document for navigation.
+    pub fn neighbor_chunks(&self, chunk_id: &str) -> Result<(Option<ChunkRecord>, Option<ChunkRecord>), ServiceError> {
+        self.with_repo(|repo| repo
+            .get_neighbor_chunks(&ChunkId(chunk_id.to_string()))
+            .map_err(|e| ServiceError::Repo(e.to_string())))
+    }
+
     /// List FileRecords with pagination (for GUI file list).
     pub fn list_files(&self, limit: usize, offset: usize) -> Result<Vec<FileRecord>, ServiceError> {
         self.with_repo(|repo| repo.list_files(limit, offset).map_err(|e| ServiceError::Repo(e.to_string())))

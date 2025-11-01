@@ -697,3 +697,150 @@ impl ChunkStoreRead for SqliteRepo {
     fn as_any(&self) -> &dyn std::any::Any { self }
 }
 
+impl SqliteRepo {
+    /// Fetch a single chunk by its chunk_id.
+    pub fn get_chunk_by_id(&self, id: &ChunkId) -> Result<Option<ChunkRecord>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT schema_version, chunk_id, doc_id, source_uri, source_mime, extracted_at, page_start, page_end, text, section_path_json, meta_json, extra_json FROM chunks WHERE chunk_id = ?1")
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        let mut rows = stmt
+            .query([id.0.as_str()])
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        if let Some(row) = rows.next().map_err(|e| StoreError::Backend(e.to_string()))? {
+            let schema_version: i64 = row.get(0).map_err(|e| StoreError::Backend(e.to_string()))?;
+            let chunk_id: String = row.get(1).map_err(|e| StoreError::Backend(e.to_string()))?;
+            let doc_id: String = row.get(2).map_err(|e| StoreError::Backend(e.to_string()))?;
+            let source_uri: String = row.get(3).map_err(|e| StoreError::Backend(e.to_string()))?;
+            let source_mime: String = row.get(4).map_err(|e| StoreError::Backend(e.to_string()))?;
+            let extracted_at: String = row.get(5).map_err(|e| StoreError::Backend(e.to_string()))?;
+            let page_start_opt: Option<i64> = row.get(6).ok();
+            let page_end_opt: Option<i64> = row.get(7).ok();
+            let text: String = row.get(8).map_err(|e| StoreError::Backend(e.to_string()))?;
+            let section_path_json: String = row.get(9).map_err(|e| StoreError::Backend(e.to_string()))?;
+            let meta_json: String = row.get(10).map_err(|e| StoreError::Backend(e.to_string()))?;
+            let extra_json: String = row.get(11).map_err(|e| StoreError::Backend(e.to_string()))?;
+
+            let section_path: Option<Vec<String>> = serde_json::from_str(&section_path_json).ok();
+            let meta: std::collections::BTreeMap<String, String> = serde_json::from_str(&meta_json).unwrap_or_default();
+            let extra: std::collections::BTreeMap<String, JsonValue> = serde_json::from_str(&extra_json).unwrap_or_default();
+
+            Ok(Some(ChunkRecord {
+                schema_version: schema_version as u16,
+                doc_id: DocumentId(doc_id),
+                chunk_id: ChunkId(chunk_id),
+                source_uri,
+                source_mime,
+                extracted_at,
+                page_start: page_start_opt.and_then(|v| u32::try_from(v).ok()),
+                page_end: page_end_opt.and_then(|v| u32::try_from(v).ok()),
+                text,
+                section_path,
+                meta,
+                extra,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Return previous and next chunks within the same document, ordered by rowid.
+    pub fn get_neighbor_chunks(&self, id: &ChunkId) -> Result<(Option<ChunkRecord>, Option<ChunkRecord>), StoreError> {
+        // Find doc_id and rowid for the current chunk
+        let (doc_id, rowid): (String, i64) = self
+            .conn
+            .query_row(
+                "SELECT doc_id, rowid FROM chunks WHERE chunk_id = ?1",
+                [id.0.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+
+        // Previous
+        let prev: Option<ChunkRecord> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT schema_version, chunk_id, doc_id, source_uri, source_mime, extracted_at, page_start, page_end, text, section_path_json, meta_json, extra_json FROM chunks WHERE doc_id = ?1 AND rowid < ?2 ORDER BY rowid DESC LIMIT 1")
+                .map_err(|e| StoreError::Backend(e.to_string()))?;
+            let mut rows = stmt
+                .query([doc_id.as_str(), &rowid.to_string()])
+                .map_err(|e| StoreError::Backend(e.to_string()))?;
+            if let Some(row) = rows.next().map_err(|e| StoreError::Backend(e.to_string()))? {
+                let schema_version: i64 = row.get(0).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let chunk_id: String = row.get(1).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let doc_id2: String = row.get(2).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let source_uri: String = row.get(3).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let source_mime: String = row.get(4).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let extracted_at: String = row.get(5).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let page_start_opt: Option<i64> = row.get(6).ok();
+                let page_end_opt: Option<i64> = row.get(7).ok();
+                let text: String = row.get(8).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let section_path_json: String = row.get(9).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let meta_json: String = row.get(10).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let extra_json: String = row.get(11).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let section_path: Option<Vec<String>> = serde_json::from_str(&section_path_json).ok();
+                let meta: std::collections::BTreeMap<String, String> = serde_json::from_str(&meta_json).unwrap_or_default();
+                let extra: std::collections::BTreeMap<String, JsonValue> = serde_json::from_str(&extra_json).unwrap_or_default();
+                Some(ChunkRecord {
+                    schema_version: schema_version as u16,
+                    doc_id: DocumentId(doc_id2),
+                    chunk_id: ChunkId(chunk_id),
+                    source_uri,
+                    source_mime,
+                    extracted_at,
+                    page_start: page_start_opt.and_then(|v| u32::try_from(v).ok()),
+                    page_end: page_end_opt.and_then(|v| u32::try_from(v).ok()),
+                    text,
+                    section_path,
+                    meta,
+                    extra,
+                })
+            } else { None }
+        };
+
+        // Next
+        let next: Option<ChunkRecord> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT schema_version, chunk_id, doc_id, source_uri, source_mime, extracted_at, page_start, page_end, text, section_path_json, meta_json, extra_json FROM chunks WHERE doc_id = ?1 AND rowid > ?2 ORDER BY rowid ASC LIMIT 1")
+                .map_err(|e| StoreError::Backend(e.to_string()))?;
+            let mut rows = stmt
+                .query([doc_id.as_str(), &rowid.to_string()])
+                .map_err(|e| StoreError::Backend(e.to_string()))?;
+            if let Some(row) = rows.next().map_err(|e| StoreError::Backend(e.to_string()))? {
+                let schema_version: i64 = row.get(0).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let chunk_id: String = row.get(1).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let doc_id2: String = row.get(2).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let source_uri: String = row.get(3).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let source_mime: String = row.get(4).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let extracted_at: String = row.get(5).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let page_start_opt: Option<i64> = row.get(6).ok();
+                let page_end_opt: Option<i64> = row.get(7).ok();
+                let text: String = row.get(8).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let section_path_json: String = row.get(9).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let meta_json: String = row.get(10).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let extra_json: String = row.get(11).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let section_path: Option<Vec<String>> = serde_json::from_str(&section_path_json).ok();
+                let meta: std::collections::BTreeMap<String, String> = serde_json::from_str(&meta_json).unwrap_or_default();
+                let extra: std::collections::BTreeMap<String, JsonValue> = serde_json::from_str(&extra_json).unwrap_or_default();
+                Some(ChunkRecord {
+                    schema_version: schema_version as u16,
+                    doc_id: DocumentId(doc_id2),
+                    chunk_id: ChunkId(chunk_id),
+                    source_uri,
+                    source_mime,
+                    extracted_at,
+                    page_start: page_start_opt.and_then(|v| u32::try_from(v).ok()),
+                    page_end: page_end_opt.and_then(|v| u32::try_from(v).ok()),
+                    text,
+                    section_path,
+                    meta,
+                    extra,
+                })
+            } else { None }
+        };
+
+        Ok((prev, next))
+    }
+}
+
