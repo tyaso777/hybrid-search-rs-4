@@ -306,5 +306,38 @@ pub fn chunk_blocks_to_segments(blocks: &[UnifiedBlock], params: &TextChunkParam
     }
 
     if out.is_empty() { out.push((String::new(), None, None)); }
-    out
+    // Post-process: merge too-short trailing segments into the previous one when it doesn't exceed cap.
+    // This helps avoid very small chunks caused by hard boundaries.
+    let mut merged: Vec<(String, Option<u32>, Option<u32>)> = Vec::with_capacity(out.len());
+    let short_min: usize = 100; // characters
+    for (text, ps, pe) in out.into_iter() {
+        if let Some((prev_text, prev_ps, prev_pe)) = merged.last_mut() {
+            let curr_len = text.chars().count();
+            let prev_len = prev_text.chars().count();
+            if curr_len <= short_min && prev_len + curr_len <= params.cap_chars {
+                // Join with a newline separator if previous doesn't already end with one (it shouldn't due to trim_end)
+                if !prev_text.ends_with('\n') { prev_text.push('\n'); }
+                prev_text.push_str(&text);
+                // Merge page ranges
+                let start_page = match (*prev_ps, ps) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (Some(a), None) => Some(a),
+                    (None, Some(b)) => Some(b),
+                    _ => None,
+                };
+                let end_page = match (*prev_pe, pe) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (Some(a), None) => Some(a),
+                    (None, Some(b)) => Some(b),
+                    _ => None,
+                };
+                *prev_ps = start_page;
+                *prev_pe = end_page;
+                continue;
+            }
+        }
+        merged.push((text, ps, pe));
+    }
+    if merged.is_empty() { merged.push((String::new(), None, None)); }
+    merged
 }
