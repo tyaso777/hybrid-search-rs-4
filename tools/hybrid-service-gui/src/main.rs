@@ -753,13 +753,13 @@ impl AppState {
     }
 
     fn suggest_config_filename(&self) -> String {
-        let base = "hybrid-service-gui";
+        let base = "hybrid_service_config";
         let name = self.config_store_name.trim();
         if name.is_empty() {
             format!("{}.json", base)
         } else {
             let safe = safe_filename_component(name);
-            format!("{}.{}.json", base, safe)
+            format!("{}_{}.json", base, safe)
         }
     }
     fn refresh_store_paths(&mut self) {
@@ -913,7 +913,7 @@ impl AppState {
 
             ort_runtime_committed: None,
 
-            config_last_name: String::from("config.json"),
+            config_last_name: String::from("hybrid_service_config.json"),
             config_store_name: String::new(),
 
             last_store_root_applied: None,
