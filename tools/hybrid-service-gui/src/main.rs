@@ -134,6 +134,16 @@ struct AppState {
     results: Vec<HitRow>,
     search_mode: SearchMode,
 
+    // Prompt builder (Search tab)
+    prompt_header_tmpl: String,
+    prompt_item_tmpl: String,
+    prompt_footer_tmpl: String,
+    prompt_items_count: usize,
+    prompt_prev: usize,
+    prompt_next: usize,
+    prompt_popup_visible: bool,
+    prompt_rendered: String,
+
     // UI
     tab: ActiveTab,
     insert_mode: InsertMode,
@@ -891,6 +901,16 @@ impl AppState {
             results: Vec::new(),
             search_mode: SearchMode::Hybrid,
 
+            // Prompt defaults (JSON style)
+            prompt_header_tmpl: String::from("{\n  \"instruction\": \"あなたは以下の検索結果をもとにユーザーの質問に答えなさい。\",\n  \"query\": \"<<Query:escape_json>>\",\n  \"results\": [\n"),
+            prompt_item_tmpl: String::from("{\"rank\": <<Rank>>, \"file\": \"<<File:escape_json>>\", \"page\": \"<<Page:escape_json>>\", \"text\": \"<<Text:escape_json>>\"}<<Comma>>"),
+            prompt_footer_tmpl: String::from("  ]\n}\n"),
+            prompt_items_count: 5,
+            prompt_prev: 1,
+            prompt_next: 1,
+            prompt_popup_visible: false,
+            prompt_rendered: String::new(),
+
             tab: ActiveTab::Insert,
             insert_mode: InsertMode::File,
             status: String::new(),
@@ -1124,6 +1144,9 @@ impl App for AppState {
             ui.separator();
             if !self.status.is_empty() { ui.label(&self.status); }
         });
+        // Popups (render after main UI so they appear above)
+        self.ui_preview_window(ctx);
+        self.ui_prompt_window(ctx);
     }
 }
 
@@ -1213,8 +1236,7 @@ impl AppState {
                 }
             }
         });
-        // Draw the preview popup on top if requested
-        self.ui_preview_window(ui.ctx());
+        // Preview popup is rendered after main UI in update()
         if self.ingest_running {
             ui.horizontal(|ui| {
                 let frac = if self.ingest_total > 0 { (self.ingest_done as f32 / self.ingest_total as f32).clamp(0.0, 1.0) } else { 0.0 };
@@ -1582,6 +1604,35 @@ impl AppState {
                 });
             }
 
+            // Prompt Template editor and builder
+            ui.collapsing("Prompt Template", |ui| {
+                // Settings: item count and context window
+                ui.horizontal(|ui| {
+                    ui.label("Items");
+                    ui.add(DragValue::new(&mut self.prompt_items_count).clamp_range(1..=1000));
+                    ui.add_space(12.0);
+                    ui.label("prev");
+                    ui.add(DragValue::new(&mut self.prompt_prev).clamp_range(0..=10));
+                    ui.label("next");
+                    ui.add(DragValue::new(&mut self.prompt_next).clamp_range(0..=10));
+                });
+                ui.add_space(6.0);
+                ui.label("Header template");
+                ui.add(TextEdit::multiline(&mut self.prompt_header_tmpl).desired_rows(3).desired_width(700.0));
+                ui.add_space(4.0);
+                ui.label("Item template");
+                ui.add(TextEdit::multiline(&mut self.prompt_item_tmpl).desired_rows(2).desired_width(700.0));
+                ui.add_space(4.0);
+                ui.label("Footer template");
+                ui.add(TextEdit::multiline(&mut self.prompt_footer_tmpl).desired_rows(3).desired_width(700.0));
+                ui.add_space(8.0);
+                if ui.button("Build Prompt").clicked() {
+                    let out = self.render_prompt();
+                    self.prompt_rendered = out;
+                    self.prompt_popup_visible = true;
+                }
+            });
+
             ui.separator();
             ui.push_id("results_table", |ui| {
                 egui::ScrollArea::horizontal().id_source("results_table_h").show(ui, |ui| {
@@ -1834,6 +1885,101 @@ impl AppState {
         }
         self.status = format!("Results: {}", self.results.len());
     }
+
+    fn render_prompt(&self) -> String {
+        // Expand header
+        let header = expand_template(&self.prompt_header_tmpl, |name, transform, arg| {
+            match (name, transform) {
+                ("Query", None) => self.query.clone(),
+                ("TopK", None) => self.top_k.to_string(),
+                _ => String::new(),
+            }
+        });
+
+        // Expand items
+        // Open repo once for optional context expansion
+        let repo_opt = chunking_store::sqlite_repo::SqliteRepo::open(self.db_path.trim()).ok();
+
+        let mut body = String::new();
+        let item_count = self.prompt_items_count.max(1).min(self.results.len());
+        for (i, row) in self.results.iter().take(item_count).enumerate() {
+            let item = expand_template(&self.prompt_item_tmpl, |name, transform, arg| {
+                match name {
+                    "Rank" => (i + 1).to_string(),
+                    "File" => row.file.clone(),
+                    "Page" => row.page.clone(),
+                    "CID" => row.cid.clone(),
+                    "SourceUri" => row.file_path.clone(),
+                    "Comma" => if i + 1 < item_count { ",".to_string() } else { String::new() },
+                    "Text" => match transform {
+                        Some("snippet") => {
+                            let n = arg.and_then(|s| s.parse::<usize>().ok()).unwrap_or(200);
+                            let combined = build_text_with_context_repo(repo_opt.as_ref(), &row.cid, &row.text_full, self.prompt_prev, self.prompt_next);
+                            snippet_chars(&combined, n)
+                        }
+                        Some("escape_json") => {
+                            escape_json_str(&build_text_with_context_repo(repo_opt.as_ref(), &row.cid, &row.text_full, self.prompt_prev, self.prompt_next))
+                        }
+                        Some("snippet_json") => {
+                            let n = arg.and_then(|s| s.parse::<usize>().ok()).unwrap_or(200);
+                            let combined = build_text_with_context_repo(repo_opt.as_ref(), &row.cid, &row.text_full, self.prompt_prev, self.prompt_next);
+                            escape_json_str(&snippet_chars(&combined, n))
+                        }
+                        _ => build_text_with_context_repo(repo_opt.as_ref(), &row.cid, &row.text_full, self.prompt_prev, self.prompt_next),
+                    },
+                    _ => String::new(),
+                }
+            });
+            body.push_str(&item);
+            if !item.ends_with('\n') { body.push('\n'); }
+        }
+
+        // Expand footer
+        let footer = expand_template(&self.prompt_footer_tmpl, |name, transform, arg| {
+            match (name, transform) {
+                ("Query", None) => self.query.clone(),
+                ("TopK", None) => self.top_k.to_string(),
+                _ => String::new(),
+            }
+        });
+
+        let mut out = String::new();
+        out.push_str(&header);
+        if !header.ends_with('\n') { out.push('\n'); }
+        out.push_str(&body);
+        if !body.ends_with('\n') { out.push('\n'); }
+        out.push_str(&footer);
+        if !out.ends_with('\n') { out.push('\n'); }
+        out
+    }
+
+    fn ui_prompt_window(&mut self, ctx: &egui::Context) {
+        if !self.prompt_popup_visible { return; }
+        let mut open = self.prompt_popup_visible;
+        let mut request_close = false;
+        egui::Window::new("Prompt Preview")
+            .open(&mut open)
+            .collapsible(false)
+            .default_width(840.0)
+            .default_height(600.0)
+            .default_pos(egui::pos2(60.0, 60.0))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("Copy").clicked() {
+                        ui.output_mut(|o| o.copied_text = self.prompt_rendered.clone());
+                        self.status = "Prompt copied to clipboard".into();
+                    }
+                    let close_btn = Button::new(egui::RichText::new("Close").color(egui::Color32::RED).strong());
+                    if ui.add(close_btn).clicked() { request_close = true; }
+                });
+                ui.separator();
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) { request_close = true; }
+                ScrollArea::vertical().id_source("prompt_scroll").show(ui, |ui| {
+                    ui.add(TextEdit::multiline(&mut self.prompt_rendered).desired_rows(28).desired_width(ui.available_width()));
+                });
+            });
+        self.prompt_popup_visible = open && !request_close;
+    }
 }
 
 // --- helpers ---
@@ -1958,6 +2104,135 @@ fn escape_tabs(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         match ch { '\t' => out.push_str("\\t"), '\r' => { /* skip */ }, _ => out.push(ch) }
+    }
+    out
+}
+
+// Expand placeholders in a template string.
+// Supported forms: <<Name>>, <<Name:transform>>, <<Name:transform(arg)>>
+// Resolver receives (name, transform, arg) and returns replacement text.
+fn expand_template<F>(tmpl: &str, mut resolver: F) -> String
+where
+    F: FnMut(&str, Option<&str>, Option<&str>) -> String,
+{
+    let mut out = String::with_capacity(tmpl.len());
+    let mut rest = tmpl;
+    loop {
+        match rest.find("<<") {
+            Some(start) => {
+                // Push the prefix as-is (preserves UTF-8)
+                out.push_str(&rest[..start]);
+                let after = &rest[start + 2..];
+                if let Some(end_rel) = after.find(">>") {
+                    let token = &after[..end_rel];
+                    let (name, transform, arg) = parse_token(token);
+                    let rep = resolver(name, transform.as_deref(), arg.as_deref());
+                    out.push_str(&rep);
+                    rest = &after[end_rel + 2..];
+                } else {
+                    // No closing, push remainder and break
+                    out.push_str(rest);
+                    break;
+                }
+            }
+            None => {
+                out.push_str(rest);
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn parse_token(token: &str) -> (
+    &str,                // name
+    Option<String>,      // transform
+    Option<String>,      // arg
+) {
+    if let Some(colon) = token.find(':') {
+        let (name, rest) = token.split_at(colon);
+        let rest = &rest[1..]; // skip ':'
+        if let Some(lp) = rest.find('(') {
+            let (tf, tail) = rest.split_at(lp);
+            if tail.ends_with(')') && tail.len() >= 2 {
+                let arg = &tail[1..tail.len() - 1];
+                return (name.trim(), Some(tf.trim().to_string()), Some(arg.trim().to_string()));
+            }
+            return (name.trim(), Some(tf.trim().to_string()), None);
+        } else {
+            return (name.trim(), Some(rest.trim().to_string()), None);
+        }
+    }
+    (token.trim(), None, None)
+}
+
+fn snippet_chars(s: &str, n: usize) -> String {
+    if n == 0 { return String::new(); }
+    let mut it = s.chars();
+    let taken: String = it.by_ref().take(n).collect();
+    if it.next().is_some() { format!("{}…", taken) } else { taken }
+}
+
+fn build_text_with_context_repo(
+    repo_opt: Option<&chunking_store::sqlite_repo::SqliteRepo>,
+    base_cid: &str,
+    base_text: &str,
+    prev: usize,
+    next: usize,
+) -> String {
+    if repo_opt.is_none() || (prev == 0 && next == 0) {
+        return base_text.to_string();
+    }
+    let repo = repo_opt.unwrap();
+    use chunk_model::ChunkId;
+    let mut parts: Vec<String> = Vec::new();
+    // Collect prev
+    if prev > 0 {
+        let mut cur = ChunkId(base_cid.to_string());
+        let mut prev_parts: Vec<String> = Vec::new();
+        for _ in 0..prev {
+            match repo.get_neighbor_chunks(&cur) {
+                Ok((p, _)) => {
+                    if let Some(pr) = p { prev_parts.push(pr.text.clone()); cur = pr.chunk_id; } else { break; }
+                }
+                Err(_) => break,
+            }
+        }
+        prev_parts.reverse();
+        parts.extend(prev_parts);
+    }
+    // Base
+    parts.push(base_text.to_string());
+    // Collect next
+    if next > 0 {
+        let mut cur = ChunkId(base_cid.to_string());
+        for _ in 0..next {
+            match repo.get_neighbor_chunks(&cur) {
+                Ok((_, nopt)) => {
+                    if let Some(nx) = nopt { parts.push(nx.text.clone()); cur = nx.chunk_id; } else { break; }
+                }
+                Err(_) => break,
+            }
+        }
+    }
+    parts.join("\n")
+}
+
+fn escape_json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                let code = c as u32;
+                out.push_str(&format!("\\u{:04X}", code));
+            }
+            _ => out.push(ch),
+        }
     }
     out
 }
