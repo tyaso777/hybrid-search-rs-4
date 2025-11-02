@@ -36,12 +36,17 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
         return ChunkOutput { file, chunks };
     }
 
-    // DOCX: read blocks, segment with text_segmenter (hard-cut at selected heading levels)
+    // DOCX: read blocks, segment with text_segmenter (derive cut levels from heading frequency)
     if lower.ends_with(".docx") {
         let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
         let params = text_segmenter::TextChunkParams::default();
-        let levels = docx_cut_levels_from_env();
-        let segs = chunk_blocks_grouped_by_levels(&blocks, &params, &levels, true);
+        let levels = derive_docx_cut_levels(&blocks);
+        let segs = if levels.is_empty() {
+            text_segmenter::chunk_blocks_to_segments(&blocks, &params)
+        } else {
+            let pair = if levels.len() >= 2 { Some((levels[0], levels[1])) } else { None };
+            chunk_blocks_grouped_by_levels(&blocks, &params, &levels, pair)
+        };
         let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
 
         let chunks: Vec<ChunkRecord> = segs
@@ -272,12 +277,17 @@ pub fn chunk_file_with_file_record_with_encoding(path: &str, encoding: Option<&s
         return ChunkOutput { file, chunks };
     }
 
-    // DOCX (hard-cut at selected heading levels)
+    // DOCX (derive cut levels from heading frequency)
     if lower.ends_with(".docx") {
         let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
         let params = text_segmenter::TextChunkParams::default();
-        let levels = docx_cut_levels_from_env();
-        let segs = chunk_blocks_grouped_by_levels(&blocks, &params, &levels, true);
+        let levels = derive_docx_cut_levels(&blocks);
+        let segs = if levels.is_empty() {
+            text_segmenter::chunk_blocks_to_segments(&blocks, &params)
+        } else {
+            let pair = if levels.len() >= 2 { Some((levels[0], levels[1])) } else { None };
+            chunk_blocks_grouped_by_levels(&blocks, &params, &levels, pair)
+        };
         let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
 
         let chunks: Vec<ChunkRecord> = segs
@@ -509,11 +519,16 @@ pub fn chunk_file_with_file_record_with_params(
         return ChunkOutput { file, chunks };
     }
 
-    // DOCX via unified text params (hard-cut at selected heading levels)
+    // DOCX via unified text params (derive cut levels from heading frequency)
     if lower.ends_with(".docx") {
         let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
-        let levels = docx_cut_levels_from_env();
-        let segs = chunk_blocks_grouped_by_levels(&blocks, params, &levels, true);
+        let levels = derive_docx_cut_levels(&blocks);
+        let segs = if levels.is_empty() {
+            text_segmenter::chunk_blocks_to_segments(&blocks, params)
+        } else {
+            let pair = if levels.len() >= 2 { Some((levels[0], levels[1])) } else { None };
+            chunk_blocks_grouped_by_levels(&blocks, params, &levels, pair)
+        };
         let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
         let chunks: Vec<ChunkRecord> = segs
             .into_iter()
@@ -734,6 +749,28 @@ fn chunk_blocks_grouped_by_h1(
     out
 }
 
+/// Determine DOCX cut levels dynamically:
+/// - Count heading occurrences per level (1..9)
+/// - Ignore levels that appear only once
+/// - Pick the first level (from 1 upward) with count >= 2 as "chapter"
+/// - Pick the next such level as "section" (if any)
+fn derive_docx_cut_levels(blocks: &[UnifiedBlock]) -> Vec<u8> {
+    let mut counts: [u32; 10] = [0; 10];
+    for b in blocks {
+        if let (BlockKind::Heading, Some(lv)) = (b.kind.clone(), b.heading_level) {
+            if (1..=9).contains(&lv) { counts[lv as usize] += 1; }
+        }
+    }
+    let mut out: Vec<u8> = Vec::new();
+    for lv in 1u8..=9u8 {
+        if counts[lv as usize] >= 2 {
+            out.push(lv);
+            if out.len() >= 2 { break; }
+        }
+    }
+    out
+}
+
 /// Split blocks when encountering a Heading whose level is in `cut_levels`.
 /// When `skip_h1_h2_gap` is true, do not cut between a newly-started H1 and an immediately-following H2
 /// (keeps H1 and its first H2 together at the start of the group).
@@ -741,7 +778,7 @@ fn chunk_blocks_grouped_by_levels(
     blocks: &[UnifiedBlock],
     params: &text_segmenter::TextChunkParams,
     cut_levels: &[u8],
-    skip_h1_h2_gap: bool,
+    no_cut_pair: Option<(u8, u8)>,
 ) -> Vec<(String, Option<u32>, Option<u32>)> {
     let mut out: Vec<(String, Option<u32>, Option<u32>)> = Vec::new();
     let mut cur: Vec<UnifiedBlock> = Vec::new();
@@ -751,11 +788,15 @@ fn chunk_blocks_grouped_by_levels(
         let is_boundary = is_heading && cut_levels.contains(&b_level);
         if is_boundary {
             let mut need_flush = !cur.is_empty();
-            if need_flush && skip_h1_h2_gap && b_level == 2 {
-                if cur.len() == 1 {
-                    let last = &cur[0];
-                    if matches!(last.kind, BlockKind::Heading) && last.heading_level == Some(1) {
-                        need_flush = false;
+            // Optional rule: if the boundary is "section" and the current group contains only
+            // a single preceding "chapter" heading, do not cut between them.
+            if need_flush {
+                if let Some((chap_lv, sec_lv)) = no_cut_pair {
+                    if b_level == sec_lv && cur.len() == 1 {
+                        let last = &cur[0];
+                        if matches!(last.kind, BlockKind::Heading) && last.heading_level == Some(chap_lv) {
+                            need_flush = false;
+                        }
                     }
                 }
             }
