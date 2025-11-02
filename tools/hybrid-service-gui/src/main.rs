@@ -1506,8 +1506,8 @@ impl AppState {
                                     .column(Column::initial(28.0))    // include checkbox
                                     .column(Column::initial(file_col_w))   // File (path)
                                     .column(Column::initial(72.0))    // Size (0.6x)
+                                    .column(Column::initial(80.0))    // Date (yyyy/mm/dd, 0.8x)
                                     .column(Column::initial(112.0))   // Encoding override (0.8x)
-                                    .column(Column::initial(100.0))   // Date (yyyy/mm/dd)
                                     .column(Column::initial(220.0));  // Preview (first chars)
 
                                 table
@@ -1526,8 +1526,8 @@ impl AppState {
                                         });
                                         header.col(|ui| { ui.label("File"); });
                                         header.col(|ui| { ui.label("Size"); });
-                                        header.col(|ui| { ui.label("Encoding"); });
                                         header.col(|ui| { ui.label("Date"); });
+                                        header.col(|ui| { ui.label("Encoding"); });
                                         header.col(|ui| { ui.label("Preview (text)"); });
                                     })
                                     .body(|mut body| {
@@ -1541,6 +1541,8 @@ impl AppState {
                                                     ui.monospace(disp);
                                                 });
                                                 row.col(|ui| { ui.label(humanize_bytes(it.size)); });
+                                                // Date before Encoding
+                                                row.col(|ui| { ui.label(it.modified_ymd.clone().unwrap_or_else(|| String::from("-"))); });
                                                 row.col(|ui| {
                                                     let encs = ["(global)", "utf-8", "shift_jis", "windows-1252", "utf-16le", "utf-16be"];
                                                     let current = it.encoding.clone().unwrap_or_else(|| String::from("(global)"));
@@ -1552,7 +1554,6 @@ impl AppState {
                                                         });
                                                     if sel == "(global)" { it.encoding = None; } else { it.encoding = Some(sel); }
                                                 });
-                                                row.col(|ui| { ui.label(it.modified_ymd.clone().unwrap_or_else(|| String::from("-"))); });
                                                 row.col(|ui| {
                                                     // Show a short preview for text-like files with the effective encoding
                                                     let lower = it.path.to_ascii_lowercase();
