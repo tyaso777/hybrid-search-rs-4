@@ -550,6 +550,7 @@ impl HybridService {
         min_chars: usize,
         max_chars: usize,
         cap_chars: usize,
+        short_merge_min_chars: usize,
         penalize_short_line: bool,
         penalize_page_boundary_no_newline: bool,
         cancel: Option<&CancelToken>,
@@ -561,6 +562,7 @@ impl HybridService {
             cap_chars,
             penalize_short_line,
             penalize_page_boundary_no_newline,
+            short_merge_min_chars,
         };
         let out = file_chunker::chunk_file_with_file_record_with_params(path, encoding, &tparams);
         let mut file: FileRecord = out.file;

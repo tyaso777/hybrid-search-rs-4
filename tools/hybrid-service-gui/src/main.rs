@@ -108,6 +108,7 @@ struct AppState {
     chunk_min: String,
     chunk_max: String,
     chunk_cap: String,
+    chunk_merge_min: String,
     chunk_penalize_short_line: bool,
     chunk_penalize_page_no_nl: bool,
 
@@ -212,6 +213,8 @@ struct ChunkCfg {
     chunk_cap: usize,
     chunk_penalize_short_line: bool,
     chunk_penalize_page_no_nl: bool,
+    #[serde(default)]
+    short_merge_min: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -593,6 +596,7 @@ impl AppState {
                 ui.label("min"); ui.add(TextEdit::singleline(&mut self.chunk_min).desired_width(60.0));
                 ui.label("max"); ui.add(TextEdit::singleline(&mut self.chunk_max).desired_width(60.0));
                 ui.label("cap"); ui.add(TextEdit::singleline(&mut self.chunk_cap).desired_width(60.0));
+                ui.label("merge<="); ui.add(TextEdit::singleline(&mut self.chunk_merge_min).desired_width(60.0));
             });
             ui.horizontal(|ui| {
                 ui.checkbox(&mut self.chunk_penalize_short_line, "Penalize after short line");
@@ -641,6 +645,7 @@ impl AppState {
                 chunk_cap: self.chunk_cap.trim().parse().unwrap_or(800),
                 chunk_penalize_short_line: self.chunk_penalize_short_line,
                 chunk_penalize_page_no_nl: self.chunk_penalize_page_no_nl,
+                short_merge_min: Some(self.chunk_merge_min.trim().parse().unwrap_or(100)),
             },
             model: ModelCfg {
                 model_path: self.model_path.trim().to_string(),
@@ -670,6 +675,7 @@ impl AppState {
         self.chunk_cap = cfg.chunk.chunk_cap.to_string();
         self.chunk_penalize_short_line = cfg.chunk.chunk_penalize_short_line;
         self.chunk_penalize_page_no_nl = cfg.chunk.chunk_penalize_page_no_nl;
+        self.chunk_merge_min = cfg.chunk.short_merge_min.unwrap_or(100).to_string();
         // Model
         self.model_path = cfg.model.model_path;
         self.tokenizer_path = cfg.model.tokenizer_path;
@@ -692,6 +698,7 @@ impl AppState {
         self.chunk_cap = cfg.chunk_cap.to_string();
         self.chunk_penalize_short_line = cfg.chunk_penalize_short_line;
         self.chunk_penalize_page_no_nl = cfg.chunk_penalize_page_no_nl;
+        self.chunk_merge_min = "100".into();
         // Model
         self.model_path = cfg.model_path;
         self.tokenizer_path = cfg.tokenizer_path;
@@ -861,6 +868,7 @@ impl AppState {
             chunk_min: String::from("400"),
             chunk_max: String::from("600"),
             chunk_cap: String::from("800"),
+            chunk_merge_min: String::from("100"),
             chunk_penalize_short_line: true,
             chunk_penalize_page_no_nl: true,
 
@@ -1231,6 +1239,7 @@ impl AppState {
         if let Ok(v) = self.chunk_min.trim().parse::<usize>() { if v > 0 { params.min_chars = v; } }
         if let Ok(v) = self.chunk_max.trim().parse::<usize>() { if v > 0 { params.max_chars = v; } }
         if let Ok(v) = self.chunk_cap.trim().parse::<usize>() { if v > 0 { params.cap_chars = v; } }
+        if let Ok(v) = self.chunk_merge_min.trim().parse::<usize>() { params.short_merge_min_chars = v; }
         params.penalize_short_line = self.chunk_penalize_short_line;
         params.penalize_page_boundary_no_newline = self.chunk_penalize_page_no_nl;
 
@@ -1430,13 +1439,14 @@ impl AppState {
         let cap = self.chunk_cap.trim().parse().unwrap_or(800);
         let ps = self.chunk_penalize_short_line;
         let pp = self.chunk_penalize_page_no_nl;
+        let merge_min = self.chunk_merge_min.trim().parse().unwrap_or(100);
         std::thread::spawn(move || {
             let hint = doc_hint_opt.as_deref();
             let cb: Box<dyn FnMut(ProgressEvent) + Send> = Box::new(move |ev: ProgressEvent| { let _ = tx.send(ev); });
             let _ = svc.ingest_file_with_progress_custom(
                 &path_owned, hint,
                 enc_opt.as_deref(),
-                min, max, cap, ps, pp,
+                min, max, cap, merge_min, ps, pp,
                 Some(&cancel), Some(cb)
             );
             // The service emits Finished/Canceled; no-op here.

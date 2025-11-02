@@ -32,6 +32,7 @@ fn chunk_pdf_blocks_to_segments(
         cap_chars: params.cap_chars,
         penalize_short_line: true,
         penalize_page_boundary_no_newline: true,
+        short_merge_min_chars: 100,
     };
     crate::text_segmenter::chunk_blocks_to_segments(blocks, &tparams)
 }

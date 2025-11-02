@@ -9,11 +9,14 @@ pub struct TextChunkParams {
     pub penalize_short_line: bool,
     /// Penalize cutting at a page boundary when there is no newline before.
     pub penalize_page_boundary_no_newline: bool,
+    /// Merge a too-short trailing segment (<= this many chars) into the previous one
+    /// when the previous won't exceed cap_chars.
+    pub short_merge_min_chars: usize,
 }
 
 impl Default for TextChunkParams {
     fn default() -> Self {
-        Self { min_chars: 400, max_chars: 600, cap_chars: 800, penalize_short_line: true, penalize_page_boundary_no_newline: true }
+        Self { min_chars: 400, max_chars: 600, cap_chars: 800, penalize_short_line: true, penalize_page_boundary_no_newline: true, short_merge_min_chars: 100 }
     }
 }
 
@@ -309,7 +312,7 @@ pub fn chunk_blocks_to_segments(blocks: &[UnifiedBlock], params: &TextChunkParam
     // Post-process: merge too-short trailing segments into the previous one when it doesn't exceed cap.
     // This helps avoid very small chunks caused by hard boundaries.
     let mut merged: Vec<(String, Option<u32>, Option<u32>)> = Vec::with_capacity(out.len());
-    let short_min: usize = 100; // characters
+    let short_min: usize = params.short_merge_min_chars; // characters
     for (text, ps, pe) in out.into_iter() {
         if let Some((prev_text, prev_ps, prev_pe)) = merged.last_mut() {
             let curr_len = text.chars().count();
