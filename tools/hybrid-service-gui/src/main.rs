@@ -20,6 +20,7 @@ use egui_extras::{Column, TableBuilder, StripBuilder, Size};
 use eframe::{App, CreationContext, Frame, NativeOptions};
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
+use rayon::prelude::*;
 
 use hybrid_service::{HybridService, ServiceConfig, CancelToken, ProgressEvent, HnswState};
 use embedding_provider::config::{default_stdio_config, ONNX_STDIO_DEFAULTS};
@@ -1839,6 +1840,8 @@ impl AppState {
         let use_all = filters.is_empty() || filters.iter().any(|f| f == "*");
         let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(std::path::PathBuf::from(root), 0)];
         let mut total: usize = 0; let mut kept: usize = 0;
+        let mut immediate: Vec<IngestFileItem> = Vec::new();
+        let mut needs_hash: Vec<(String, u64)> = Vec::new();
         while let Some((dir, depth)) = stack.pop() {
             let Ok(rd) = std::fs::read_dir(&dir) else { continue };
             for entry in rd.flatten() {
@@ -1857,28 +1860,36 @@ impl AppState {
                         if !matched { continue; }
                         total += 1;
                         let fsz = meta.len();
-                        // Prefilter by size: if DB has no file with this size, treat as new (include=true).
                         if !known_sizes.contains(&fsz) {
-                            self.ingest_files.push(IngestFileItem { include: true, path: pstr, size: fsz });
+                            // No DB file with this size: definitely new, no hashing required
+                            immediate.push(IngestFileItem { include: true, path: pstr, size: fsz });
                             kept += 1;
                         } else {
-                            // Size exists in DB; compute hash to confirm uniqueness.
-                            let mut is_known = false;
-                            if let Some(hx) = sha256_hex_file(&pstr) {
-                                if known.contains(&hx) { is_known = true; }
-                            }
-                            if is_known {
-                                // Show registered item but leave it unchecked
-                                self.ingest_files.push(IngestFileItem { include: false, path: pstr, size: fsz });
-                            } else {
-                                self.ingest_files.push(IngestFileItem { include: true, path: pstr, size: fsz });
-                                kept += 1;
-                            }
+                            // Size exists in DB: queue for hashing
+                            needs_hash.push((pstr, fsz));
                         }
                     }
                 }
             }
         }
+
+        // Hash the queued files in parallel
+        let hashed_results: Vec<IngestFileItem> = needs_hash
+            .par_iter()
+            .map(|(p, fsz)| {
+                let mut include = true;
+                if let Some(hx) = sha256_hex_file(p) {
+                    if known.contains(&hx) { include = false; }
+                }
+                IngestFileItem { include, path: p.clone(), size: *fsz }
+            })
+            .collect();
+
+        for it in &hashed_results { if it.include { kept += 1; } }
+
+        self.ingest_files.clear();
+        self.ingest_files.extend(immediate);
+        self.ingest_files.extend(hashed_results);
         self.ingest_files.sort_by(|a, b| a.path.cmp(&b.path));
         self.status = format!("Scanned {} files (new: {})", total, kept);
     }
