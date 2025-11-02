@@ -36,11 +36,12 @@ pub fn chunk_file_with_file_record(path: &str) -> ChunkOutput {
         return ChunkOutput { file, chunks };
     }
 
-    // DOCX: read blocks, segment with text_segmenter (hard-cut at top-level headings)
+    // DOCX: read blocks, segment with text_segmenter (hard-cut at selected heading levels)
     if lower.ends_with(".docx") {
         let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
         let params = text_segmenter::TextChunkParams::default();
-        let segs = chunk_blocks_grouped_by_h1(&blocks, &params);
+        let levels = docx_cut_levels_from_env();
+        let segs = chunk_blocks_grouped_by_levels(&blocks, &params, &levels, true);
         let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
 
         let chunks: Vec<ChunkRecord> = segs
@@ -271,11 +272,12 @@ pub fn chunk_file_with_file_record_with_encoding(path: &str, encoding: Option<&s
         return ChunkOutput { file, chunks };
     }
 
-    // DOCX (hard-cut at top-level headings)
+    // DOCX (hard-cut at selected heading levels)
     if lower.ends_with(".docx") {
         let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
         let params = text_segmenter::TextChunkParams::default();
-        let segs = chunk_blocks_grouped_by_h1(&blocks, &params);
+        let levels = docx_cut_levels_from_env();
+        let segs = chunk_blocks_grouped_by_levels(&blocks, &params, &levels, true);
         let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
 
         let chunks: Vec<ChunkRecord> = segs
@@ -507,10 +509,11 @@ pub fn chunk_file_with_file_record_with_params(
         return ChunkOutput { file, chunks };
     }
 
-    // DOCX via unified text params (hard-cut at top-level headings)
+    // DOCX via unified text params (hard-cut at selected heading levels)
     if lower.ends_with(".docx") {
         let blocks: Vec<UnifiedBlock> = reader_docx::read_docx_to_blocks(path);
-        let segs = chunk_blocks_grouped_by_h1(&blocks, params);
+        let levels = docx_cut_levels_from_env();
+        let segs = chunk_blocks_grouped_by_levels(&blocks, params, &levels, true);
         let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
         let chunks: Vec<ChunkRecord> = segs
             .into_iter()
@@ -729,6 +732,64 @@ fn chunk_blocks_grouped_by_h1(
         out.append(&mut segs);
     }
     out
+}
+
+/// Split blocks when encountering a Heading whose level is in `cut_levels`.
+/// When `skip_h1_h2_gap` is true, do not cut between a newly-started H1 and an immediately-following H2
+/// (keeps H1 and its first H2 together at the start of the group).
+fn chunk_blocks_grouped_by_levels(
+    blocks: &[UnifiedBlock],
+    params: &text_segmenter::TextChunkParams,
+    cut_levels: &[u8],
+    skip_h1_h2_gap: bool,
+) -> Vec<(String, Option<u32>, Option<u32>)> {
+    let mut out: Vec<(String, Option<u32>, Option<u32>)> = Vec::new();
+    let mut cur: Vec<UnifiedBlock> = Vec::new();
+    for b in blocks.iter() {
+        let is_heading = matches!(b.kind, BlockKind::Heading);
+        let b_level = b.heading_level.unwrap_or(0);
+        let is_boundary = is_heading && cut_levels.contains(&b_level);
+        if is_boundary {
+            let mut need_flush = !cur.is_empty();
+            if need_flush && skip_h1_h2_gap && b_level == 2 {
+                if cur.len() == 1 {
+                    let last = &cur[0];
+                    if matches!(last.kind, BlockKind::Heading) && last.heading_level == Some(1) {
+                        need_flush = false;
+                    }
+                }
+            }
+            if need_flush {
+                let mut segs = text_segmenter::chunk_blocks_to_segments(&cur, params);
+                out.append(&mut segs);
+                cur.clear();
+            }
+            cur.push(b.clone());
+        } else {
+            cur.push(b.clone());
+        }
+    }
+    if !cur.is_empty() {
+        let mut segs = text_segmenter::chunk_blocks_to_segments(&cur, params);
+        out.append(&mut segs);
+    }
+    out
+}
+
+/// Read cut levels for DOCX hard-boundary grouping from env var `CHUNKER_CUT_LEVELS_DOCX`.
+/// Example: "1,2" => cut at Heading 1 and Heading 2. Defaults to [1]. Invalid values are ignored.
+fn docx_cut_levels_from_env() -> Vec<u8> {
+    if let Ok(s) = std::env::var("CHUNKER_CUT_LEVELS_DOCX") {
+        let mut v: Vec<u8> = s
+            .split(',')
+            .filter_map(|t| t.trim().parse::<u8>().ok())
+            .collect();
+        v.retain(|&x| x >= 1 && x <= 9);
+        if v.is_empty() { vec![2] } else { v }
+    } else {
+        // Default: cut at Heading 2 when env var is not set
+        vec![2]
+    }
 }
 
 // --- Metadata enrichment helpers --------------------------------------------------------------
