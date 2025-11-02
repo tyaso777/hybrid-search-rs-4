@@ -276,7 +276,7 @@ fn parse_numbering<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>) -> Num
                 b"start" => { if let (Some(abs), Some(lv)) = (in_abs, cur_lvl) { if let Some(v) = attr_val(&e, b"val") { if let Ok(n) = v.parse::<i32>() { cfg.abs.entry(abs).or_default().entry(lv).or_default().start = n; } } } }
                 b"num" => { if let Some(num) = attr_val(&e, b"numId").and_then(|s| s.parse::<u32>().ok()) { cfg.nums.entry(num).or_insert((0, HashMap::new())); } }
                 b"abstractNumId" => { if let Some(num) = in_num { if let Some(v) = attr_val(&e, b"val") { if let Ok(an) = v.parse::<u32>() { cfg.nums.entry(num).or_insert((0, HashMap::new())).0 = an; } } } }
-                b"lvlOverride" => { cur_override_lvl = attr_val(&e, b"ilvl").and_then(|s| s.parse::<u8>().ok()); cur_override_lvl=None; }
+                b"lvlOverride" => { cur_override_lvl = None; }
                 b"startOverride" => { if let (Some(num), Some(lv)) = (in_num, cur_override_lvl) { if let Some(v) = attr_val(&e, b"val") { if let Ok(n) = v.parse::<i32>() { cfg.nums.entry(num).or_insert((0, HashMap::new())).1.insert(lv, n); } } } }
                 _ => {}
             }
@@ -489,7 +489,7 @@ pub fn read_docx_to_blocks(path: &str) -> Vec<UnifiedBlock> {
                     b"numPr" => { in_numpr = true; pending_num_id=None; pending_ilvl=None; }
                     b"pStyle" => {
                         // Heading style, robust to variants like "Heading1", "Heading 1", case-insensitive
-                        if let Some(mut val) = attr_val(&e, b"val") {
+                        if let Some(val) = attr_val(&e, b"val") {
                             let lower = val.to_ascii_lowercase();
                             if let Some(rest) = lower.strip_prefix("heading") {
                                 let digits: String = rest.chars().filter(|ch| ch.is_ascii_digit()).collect();
@@ -529,7 +529,7 @@ pub fn read_docx_to_blocks(path: &str) -> Vec<UnifiedBlock> {
                     b"numId" => { if in_numpr { if let Some(v) = attr_val(&e, b"val") { pending_num_id = v.parse::<u32>().ok(); } } }
                     b"ilvl" => { if in_numpr { if let Some(v) = attr_val(&e, b"val") { pending_ilvl = v.parse::<u8>().ok(); } } }
                     b"pStyle" => {
-                        if let Some(mut val) = attr_val(&e, b"val") {
+                        if let Some(val) = attr_val(&e, b"val") {
                             let lower = val.to_ascii_lowercase();
                             if let Some(rest) = lower.strip_prefix("heading") {
                                 let digits: String = rest.chars().filter(|ch| ch.is_ascii_digit()).collect();
