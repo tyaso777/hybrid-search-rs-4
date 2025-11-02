@@ -2,6 +2,7 @@ pub mod reader_pdf;
 pub mod reader_docx;
 pub mod reader_txt;
 pub mod reader_excel;
+pub mod reader_pptx;
 pub mod unified_blocks;
 pub mod chunker_rules_jp;
 pub mod text_segmenter;
@@ -161,6 +162,60 @@ pub fn chunk_file_with_file_record_with_options(path: &str, opts: &ChunkOptions)
         return ChunkOutput { file, chunks };
     }
 
+    // PPTX (slides as H1 boundaries; tables honored)
+    if lower.ends_with(".pptx") {
+        let blocks: Vec<UnifiedBlock> = reader_pptx::read_pptx_to_blocks(path);
+        let params = opts.params.unwrap_or_else(text_segmenter::TextChunkParams::default);
+        let segs = chunk_blocks_grouped_by_h1(&blocks, &params);
+        let page_count = segs.iter().filter_map(|(_, _ps, pe)| *pe).max();
+        let chunks: Vec<ChunkRecord> = segs
+            .into_iter()
+            .enumerate()
+            .map(|(i, (text, ps, pe))| ChunkRecord {
+                schema_version: chunk_model::SCHEMA_MAJOR,
+                doc_id: DocumentId(path.to_string()),
+                chunk_id: ChunkId(format!("{}#{}", path, i)),
+                source_uri: path.to_string(),
+                source_mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation".into(),
+                extracted_at: String::new(),
+                page_start: ps,
+                page_end: pe,
+                text,
+                section_path: None,
+                meta: BTreeMap::new(),
+                extra: BTreeMap::new(),
+            })
+            .collect();
+
+        let mut file = FileRecord {
+            schema_version: chunk_model::SCHEMA_MAJOR,
+            doc_id: DocumentId(path.to_string()),
+            doc_revision: Some(1),
+            source_uri: path.to_string(),
+            source_mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation".into(),
+            file_size_bytes: None,
+            content_sha256: None,
+            page_count,
+            extracted_at: String::new(),
+            created_at_meta: None,
+            updated_at_meta: None,
+            title_guess: None,
+            author_guess: None,
+            dominant_lang: None,
+            tags: Vec::new(),
+            ingest_tool: Some("file-chunker".into()),
+            ingest_tool_version: Some(env!("CARGO_PKG_VERSION").into()),
+            reader_backend: Some("pptx".into()),
+            ocr_used: None,
+            ocr_langs: Vec::new(),
+            chunk_count: Some(chunks.len() as u32),
+            total_tokens: None,
+            meta: BTreeMap::new(),
+            extra: BTreeMap::new(),
+        };
+        enrich_file_record_basic(&mut file, path);
+        return ChunkOutput { file, chunks };
+    }
     // Excel
     if lower.ends_with(".xlsx") || lower.ends_with(".xls") || lower.ends_with(".ods") {
         let blocks: Vec<UnifiedBlock> = reader_excel::read_excel_to_blocks(path);
