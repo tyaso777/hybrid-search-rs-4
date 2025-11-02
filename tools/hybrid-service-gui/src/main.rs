@@ -1457,17 +1457,18 @@ impl AppState {
                     // Row 3: Scan button under Extensions
                     ui.horizontal(|ui| { if ui.button("Scan").clicked() { self.scan_ingest_folder(); } });
                     ui.separator();
-                    // Row 3: Controls row (always visible): Select/Deselect + Ingest Files
+                    // Row 3: Controls row (always visible): Ingest Files
                     ui.horizontal(|ui| {
                         let has_items = !self.ingest_files.is_empty();
-                        ui.add_enabled_ui(has_items, |ui| {
-                            if ui.button("Select All").clicked() { for it in &mut self.ingest_files { it.include = true; } }
-                            if ui.button("Deselect All").clicked() { for it in &mut self.ingest_files { it.include = false; } }
-                        });
-                        let any_selected = self.ingest_files.iter().any(|i| i.include);
+                        let selected_count = self.ingest_files.iter().filter(|i| i.include).count();
+                        let any_selected = selected_count > 0;
                         let can_ingest = has_items && any_selected && !self.ingest_running;
-                        if ui.add_enabled(can_ingest, Button::new("Ingest Files")).clicked() {
+                        if ui.add_enabled(can_ingest, Button::new("Ingest Selected")).clicked() {
                             self.do_ingest_files_batch();
+                        }
+                        // Show selection summary
+                        if has_items {
+                            ui.label(format!("Selected: {} / Total: {}", selected_count, self.ingest_files.len()));
                         }
                     });
                     ui.add_space(4.0);
@@ -1486,7 +1487,18 @@ impl AppState {
 
                                 table
                                     .header(20.0, |mut header| {
-                                        header.col(|_ui| { /* checkbox column header blank */ });
+                                        header.col(|ui| {
+                                            let total = self.ingest_files.len();
+                                            let selected = self.ingest_files.iter().filter(|i| i.include).count();
+                                            let mut master = total > 0 && selected == total;
+                                            let resp = ui.add(egui::Checkbox::new(&mut master, ""));
+                                            if resp.clicked() {
+                                                for it in &mut self.ingest_files { it.include = master; }
+                                            }
+                                            if selected > 0 && selected < total {
+                                                ui.small(format!("{} / {}", selected, total));
+                                            }
+                                        });
                                         header.col(|ui| { ui.label("File"); });
                                         header.col(|ui| { ui.label("Size"); });
                                     })
@@ -2816,6 +2828,7 @@ fn open_in_os_folder(path: &str) -> Result<(), String> {
         return Ok(());
     }
 }
+
 
 
 
