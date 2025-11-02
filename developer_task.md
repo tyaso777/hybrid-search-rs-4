@@ -57,6 +57,7 @@
 - [ ] 1回目の検索が遅い。Vector検索の初期化がうまくいっていない。
 - [ ] Insert TextについてもPreviewほしい。
 
+
 ## Docs
 
 ## refactor

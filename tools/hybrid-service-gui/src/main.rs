@@ -229,6 +229,8 @@ struct AppState {
     files_selected_detail: String,
     files_delete_pending: Option<String>,
     files_deleting: bool,
+    // Files tab: multi-select by DocId
+    files_selected_set: std::collections::HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -429,49 +431,50 @@ impl AppState {
                 if self.files.len() >= self.files_page_size { self.files_page += 1; self.refresh_files(); }
             }
             if self.files_loading { ui.add(Spinner::new()); }
+            // Bulk delete selected
+            let sel_count = self.files_selected_set.len();
+            if ui.add_enabled(sel_count > 0 && !self.files_deleting, Button::new(egui::RichText::new(format!("Delete Selected ({})", sel_count)).color(egui::Color32::RED))).clicked() {
+                self.delete_selected_files();
+            }
         });
 
         ui.separator();
         // Table
-        let mut to_delete_doc: Option<String> = None;
         ui.push_id("files_table", |ui| {
             egui::ScrollArea::horizontal().id_source("files_table_h").show(ui, |ui| {
             let table = TableBuilder::new(ui)
                 .striped(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .column(Column::initial(28.0))    // select
                 .column(Column::initial(360.0))   // file (source uri)
                 .column(Column::initial(90.0))    // size
                 .column(Column::initial(70.0))    // pages
                 .column(Column::initial(70.0))    // chunks
                 .column(Column::initial(170.0))   // extracted at
                 .column(Column::initial(170.0))   // updated at
-                .column(Column::initial(180.0))   // author
-                .column(Column::initial(90.0));   // actions
+                .column(Column::initial(180.0));  // author
 
             table
                 .header(20.0, |mut header| {
+                    // Master checkbox for current page
                     header.col(|ui| {
-                                            let active = matches!(self.ingest_sort_key, IngestSortKey::File);
-                                            let arrow = if active { if self.ingest_sort_asc { " ▲" } else { " ▼" } } else { "" };
-                                            if ui.button(format!("File{}", arrow)).clicked() {
-                                                if self.ingest_sort_key != IngestSortKey::File { self.ingest_sort_key = IngestSortKey::File; self.ingest_sort_asc = true; } else if self.ingest_sort_asc { self.ingest_sort_asc = false; } else { self.ingest_sort_key = IngestSortKey::Default; self.ingest_sort_asc = true; }
-                                                { let base = self.ingest_folder_path.clone(); let abs = self.ingest_show_abs_paths; self.apply_ingest_sort_with(base.as_str(), abs) };
-                                            }
-                                        });
-                    header.col(|ui| {
-                                            let active = matches!(self.ingest_sort_key, IngestSortKey::Size);
-                                            let arrow = if active { if self.ingest_sort_asc { " ▲" } else { " ▼" } } else { "" };
-                                            if ui.button(format!("Size{}", arrow)).clicked() {
-                                                if self.ingest_sort_key != IngestSortKey::Size { self.ingest_sort_key = IngestSortKey::Size; self.ingest_sort_asc = true; } else if self.ingest_sort_asc { self.ingest_sort_asc = false; } else { self.ingest_sort_key = IngestSortKey::Default; self.ingest_sort_asc = true; }
-                                                { let base = self.ingest_folder_path.clone(); let abs = self.ingest_show_abs_paths; self.apply_ingest_sort_with(base.as_str(), abs) };
-                                            }
-                                        });
+                        let total = self.files.len();
+                        let selected_on_page = self.files.iter().filter(|r| self.files_selected_set.contains(&r.doc_id.0)).count();
+                        let mut master = total > 0 && selected_on_page == total;
+                        let resp = ui.add(egui::Checkbox::new(&mut master, ""));
+                        if resp.clicked() {
+                            if master { for rec in &self.files { self.files_selected_set.insert(rec.doc_id.0.clone()); } }
+                            else { for rec in &self.files { self.files_selected_set.remove(&rec.doc_id.0); } }
+                        }
+                        if selected_on_page > 0 && selected_on_page < total { ui.small(format!("{} / {}", selected_on_page, total)); }
+                    });
+                    header.col(|ui| { ui.label("File"); });
+                    header.col(|ui| { ui.label("Size"); });
                     header.col(|ui| { ui.label("Pages"); });
                     header.col(|ui| { ui.label("Chunks"); });
                     header.col(|ui| { ui.label("Extracted"); });
                     header.col(|ui| { ui.label("Updated"); });
                     header.col(|ui| { ui.label("Author"); });
-                    header.col(|ui| { ui.label("Actions"); });
                 })
                 .body(|mut body| {
                     fn humanize_bytes_opt(v: Option<u64>) -> String {
@@ -497,6 +500,13 @@ impl AppState {
                     }
                     for rec in &self.files {
                         body.row(22.0, |mut row_ui| {
+                            // select
+                            row_ui.col(|ui| {
+                                let mut checked = self.files_selected_set.contains(&rec.doc_id.0);
+                                if ui.checkbox(&mut checked, "").changed() {
+                                    if checked { self.files_selected_set.insert(rec.doc_id.0.clone()); } else { self.files_selected_set.remove(&rec.doc_id.0); }
+                                }
+                            });
                             let file_disp = trunc(&rec.source_uri, 60);
                             row_ui.col(|ui| {
                                 if ui.link(file_disp).clicked() {
@@ -511,33 +521,13 @@ impl AppState {
                             row_ui.col(|ui| { ui.label(&rec.extracted_at); });
                             row_ui.col(|ui| { ui.label(rec.updated_at_meta.clone().unwrap_or_else(|| String::from("-"))); });
                             row_ui.col(|ui| { ui.label(rec.author_guess.clone().unwrap_or_else(|| String::from(""))); });
-                            // Actions
-                            row_ui.col(|ui| {
-                                let pending = self.files_delete_pending.as_ref().map(|s| s == &rec.doc_id.0).unwrap_or(false);
-                                if !pending {
-                                    let btn = egui::RichText::new("Delete").color(egui::Color32::RED);
-                                    if ui.add_enabled(!self.files_deleting, Button::new(btn)).clicked() {
-                                        self.files_delete_pending = Some(rec.doc_id.0.clone());
-                                    }
-                                } else {
-                                    ui.horizontal(|ui| {
-                                        let btn = egui::RichText::new("Confirm").color(egui::Color32::RED);
-                                        if ui.add_enabled(!self.files_deleting, Button::new(btn)).clicked() {
-                                            to_delete_doc = Some(rec.doc_id.0.clone());
-                                        }
-                                        if ui.button("Cancel").clicked() { self.files_delete_pending = None; }
-                                    });
-                                }
-                            });
                         });
                     }
                 });
             });
         });
 
-        if let Some(doc) = to_delete_doc.take() {
-            self.delete_by_doc_id(&doc);
-        }
+        // Per-row delete removed; bulk delete via toolbar
 
         if let Some(_doc) = &self.files_selected_doc {
             ui.separator();
@@ -590,6 +580,32 @@ impl AppState {
             }
         }
         self.files_deleting = false;
+    }
+
+    fn delete_selected_files(&mut self) {
+        if self.svc.is_none() { self.status = "Service not initialized".into(); return; }
+        if !self.ensure_store_paths_current() { return; }
+        let ids: Vec<String> = self.files_selected_set.iter().cloned().collect();
+        if ids.is_empty() { self.status = "No files selected".into(); return; }
+        self.files_deleting = true;
+        let mut total_deleted = 0usize;
+        if let Some(svc) = &self.svc {
+            for doc in &ids {
+                let filters = vec![FilterClause { kind: FilterKind::Must, op: FilterOp::DocIdEq(doc.clone()) }];
+                match svc.delete_by_filter(&filters, 1000) {
+                    Ok(rep) => { total_deleted += rep.db_deleted as usize; },
+                    Err(e) => { self.status = format!("Delete failed for {}: {}", doc, e); }
+                }
+            }
+        }
+        self.files_selected_set.clear();
+        self.files_delete_pending = None;
+        self.files_selected_doc = None;
+        self.files_selected_display.clear();
+        self.files_selected_detail.clear();
+        self.files_deleting = false;
+        self.refresh_files();
+        self.status = format!("Deleted {} records", total_deleted);
     }
 
     fn refresh_files(&mut self) {
@@ -1169,6 +1185,7 @@ impl AppState {
             files_selected_detail: String::new(),
             files_delete_pending: None,
             files_deleting: false,
+            files_selected_set: std::collections::HashSet::new(),
         };
         // Update default prompt header instruction to include citation guidance
         s.prompt_header_tmpl = String::from("{\n  \"instruction\": \"\",\n  \"query\": \"<<Query:escape_json>>\",\n  \"results\": [\n" );
@@ -3190,6 +3207,9 @@ impl AppState {
         });
     }
 }
+
+
+
 
 
 
