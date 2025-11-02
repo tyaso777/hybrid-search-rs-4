@@ -1454,8 +1454,11 @@ impl AppState {
                         ui.label("Depth");
                         ui.add(DragValue::new(&mut self.ingest_depth).clamp_range(0..=16));
                     });
-                    // Row 3: Scan button under Extensions
-                    ui.horizontal(|ui| { if ui.button("Scan").clicked() { self.scan_ingest_folder(); } });
+                    // Row 3: Scan buttons under Extensions
+                    ui.horizontal(|ui| {
+                        if ui.button("Scan").clicked() { self.scan_ingest_folder(); }
+                        if ui.button("Scan Unregistered").clicked() { self.scan_ingest_folder_unregistered(); }
+                    });
                     ui.separator();
                     // Row 3: Controls row (always visible): Ingest Files
                     ui.horizontal(|ui| {
@@ -1797,6 +1800,67 @@ impl AppState {
         self.status = format!("Scanned {} files", self.ingest_files.len());
     }
 
+    fn scan_ingest_folder_unregistered(&mut self) {
+        if !self.ensure_store_paths_current() { return; }
+        let Some(svc) = &self.svc else { self.status = "Model not initialized".into(); return; };
+
+        use std::collections::HashSet;
+        let mut known: HashSet<String> = HashSet::new();
+        let limit: usize = 1000;
+        let mut offset: usize = 0;
+        loop {
+            match svc.list_files(limit, offset) {
+                Ok(list) => {
+                    if list.is_empty() { break; }
+                    for rec in &list {
+                        if let Some(h) = rec.content_sha256.clone() { known.insert(h); }
+                    }
+                    if list.len() < limit { break; }
+                    offset += limit;
+                }
+                Err(e) => { self.status = format!("Fetch known hashes failed: {e}"); return; }
+            }
+        }
+
+        self.ingest_files.clear();
+        let root = self.ingest_folder_path.trim();
+        if root.is_empty() { self.status = "Choose a folder".into(); return; }
+        let max_depth = self.ingest_depth;
+        let filters: Vec<String> = self.ingest_exts
+            .split(',')
+            .map(|s| s.trim().trim_start_matches('.').to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let use_all = filters.is_empty() || filters.iter().any(|f| f == "*");
+        let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(std::path::PathBuf::from(root), 0)];
+        let mut total: usize = 0; let mut kept: usize = 0;
+        while let Some((dir, depth)) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            for entry in rd.flatten() {
+                let path = entry.path();
+                if let Ok(meta) = entry.metadata() {
+                    if meta.is_dir() {
+                        if depth < max_depth { stack.push((path, depth + 1)); }
+                    } else if meta.is_file() {
+                        let pstr = path.display().to_string();
+                        let lower = pstr.to_ascii_lowercase();
+                        let matched = if use_all { true } else {
+                            let mut ok = false;
+                            for f in &filters { if lower.ends_with(&format!(".{}", f)) { ok = true; break; } }
+                            ok
+                        };
+                        if !matched { continue; }
+                        total += 1;
+                        if let Some(hx) = sha256_hex_file(&pstr) { if known.contains(&hx) { continue; } }
+                        self.ingest_files.push(IngestFileItem { include: true, path: pstr, size: meta.len() });
+                        kept += 1;
+                    }
+                }
+            }
+        }
+        self.ingest_files.sort_by(|a, b| a.path.cmp(&b.path));
+        self.status = format!("Scanned {} files (new: {})", total, kept);
+    }
     fn do_ingest_files_batch(&mut self) {
         if !self.ensure_store_paths_current() { return; }
         let Some(svc) = self.svc.as_ref() else { self.status = "Model not initialized".into(); return; };
@@ -2590,6 +2654,29 @@ fn escape_tabs(s: &str) -> String {
         match ch { '\t' => out.push_str("\\t"), '\r' => { /* skip */ }, _ => out.push(ch) }
     }
     out
+}
+
+// Compute SHA-256 hex digest of a file path (streaming).
+fn sha256_hex_file(path: &str) -> Option<String> {
+    use std::fs::File;
+    use std::io::Read;
+    use sha2::Digest;
+    let mut f = File::open(path).ok()?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = match f.read(&mut buf) { Ok(n) => n, Err(_) => return None };
+        if n == 0 { break; }
+        hasher.update(&buf[..n]);
+    }
+    let digest = hasher.finalize();
+    Some(to_hex(&digest))
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes { s.push_str(&format!("{:02x}", b)); }
+    s
 }
 
 // Expand placeholders in a template string.
