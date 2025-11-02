@@ -4,6 +4,16 @@ use std::path::PathBuf;
 use std::sync::{mpsc::{self, Receiver, TryRecvError}, Arc};
 use std::time::Instant;
 
+fn humanize_bytes(v: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let nf = v as f64;
+    if nf < KB { format!("{} B", v) }
+    else if nf < MB { format!("{:.1} KB", nf/KB) }
+    else if nf < GB { format!("{:.1} MB", nf/MB) }
+    else { format!("{:.1} GB", nf/GB) }
+}
 use eframe::egui::{self, Button, CentralPanel, ComboBox, ScrollArea, Spinner, TextEdit, DragValue};
 use eframe::egui::ProgressBar;
 use egui_extras::{Column, TableBuilder, StripBuilder, Size};
@@ -40,6 +50,7 @@ enum ActiveTab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InsertMode {
     File,
+    Files,
     Text,
 }
 
@@ -103,6 +114,11 @@ struct AppState {
     ingest_file_path: String,
     ingest_encoding: String,
     ingest_preview: String,
+    // Insert Files (folder scan)
+    ingest_folder_path: String,
+    ingest_exts: String,
+    ingest_depth: usize,
+    ingest_files: Vec<IngestFileItem>,
 
     // Chunk params (unified for PDF/TXT)
     chunk_min: String,
@@ -197,6 +213,13 @@ struct AppState {
     files_selected_detail: String,
     files_delete_pending: Option<String>,
     files_deleting: bool,
+}
+
+#[derive(Debug, Clone)]
+struct IngestFileItem {
+    include: bool,
+    path: String,
+    size: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -1020,6 +1043,10 @@ impl AppState {
             ingest_file_path: String::new(),
             ingest_encoding: String::from("auto"),
             ingest_preview: String::new(),
+            ingest_folder_path: String::new(),
+            ingest_exts: String::from("pdf, docx, pptx, xlsx, xls, ods, txt, md, markdown, csv, tsv, log, json, yaml, yml, ini, toml, cfg, conf, rst, tex, srt, properties"),
+            ingest_depth: 3,
+            ingest_files: Vec::new(),
 
             chunk_min: String::from("400"),
             chunk_max: String::from("600"),
@@ -1329,12 +1356,14 @@ impl AppState {
         ui.add_enabled_ui(!self.ingest_running, |ui| {
             // Sub-tabs for Insert
             ui.horizontal(|ui| {
-                // Draw two tab-like buttons with an underline
+                // Tab buttons with underline
                 let resp_file = ui.selectable_value(&mut self.insert_mode, InsertMode::File, "Insert File");
+                let resp_files = ui.selectable_value(&mut self.insert_mode, InsertMode::Files, "Insert Files");
                 let resp_text = ui.selectable_value(&mut self.insert_mode, InsertMode::Text, "Insert Text");
 
-                // Compute a union rect spanning both buttons
-                let union = resp_file.rect.union(resp_text.rect);
+                // Compute a union rect spanning all buttons
+                let union12 = resp_file.rect.union(resp_files.rect);
+                let union = union12.union(resp_text.rect);
                 let y = union.bottom() + 2.0;
                 let painter = ui.painter();
                 let base_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
@@ -1349,6 +1378,7 @@ impl AppState {
                 // Accent underline under the active tab
                 let active_rect = match self.insert_mode {
                     InsertMode::File => resp_file.rect,
+                    InsertMode::Files => resp_files.rect,
                     InsertMode::Text => resp_text.rect,
                 };
                 painter.line_segment(
@@ -1400,6 +1430,79 @@ impl AppState {
 
                     // Row 5: Ingest File
                     if ui.add_enabled(!self.ingest_running, Button::new("Ingest File")).clicked() { self.do_ingest_file(); }
+                }
+                InsertMode::Files => {
+                    // Row 1: Choose Folder, [Folder path]
+                    ui.horizontal(|ui| {
+                        if ui.button("Choose Folder").clicked() {
+                            if let Some(p) = FileDialog::new().pick_folder() {
+                                self.ingest_folder_path = p.display().to_string();
+                            }
+                        }
+                        ui.add(TextEdit::singleline(&mut self.ingest_folder_path).desired_width(420.0));
+                    });
+                    // Row 2: Extensions + Encoding + Depth + Scan
+                    ui.horizontal(|ui| { ui.label("Extensions (comma)");
+                        ui.add(TextEdit::singleline(&mut self.ingest_exts).desired_width(220.0));
+                        ui.label("Encoding");
+                        let encs = ["auto", "utf-8", "shift_jis", "windows-1252", "utf-16le", "utf-16be"];
+                        ComboBox::from_id_source("ingest_files_encoding")
+                            .selected_text(self.ingest_encoding.clone())
+                            .show_ui(ui, |ui| {
+                                for e in encs { ui.selectable_value(&mut self.ingest_encoding, e.to_string(), e); }
+                            });
+                        ui.label("Depth");
+                        ui.add(DragValue::new(&mut self.ingest_depth).clamp_range(0..=16));
+                    });
+                    // Row 3: Scan button under Extensions
+                    ui.horizontal(|ui| { if ui.button("Scan").clicked() { self.scan_ingest_folder(); } });
+                    ui.separator();
+                    // Row 3: Controls row (always visible): Select/Deselect + Ingest Files
+                    ui.horizontal(|ui| {
+                        let has_items = !self.ingest_files.is_empty();
+                        ui.add_enabled_ui(has_items, |ui| {
+                            if ui.button("Select All").clicked() { for it in &mut self.ingest_files { it.include = true; } }
+                            if ui.button("Deselect All").clicked() { for it in &mut self.ingest_files { it.include = false; } }
+                        });
+                        let any_selected = self.ingest_files.iter().any(|i| i.include);
+                        let can_ingest = has_items && any_selected && !self.ingest_running;
+                        if ui.add_enabled(can_ingest, Button::new("Ingest Files")).clicked() {
+                            self.do_ingest_files_batch();
+                        }
+                    });
+                    ui.add_space(4.0);
+                    // Results table or empty message
+                    if self.ingest_files.is_empty() {
+                        ui.label("No files scanned.");
+                    } else {
+                        ui.push_id("ingest_files_table", |ui| {
+                            egui::ScrollArea::horizontal().id_source("ingest_files_table_h").show(ui, |ui| {
+                                let table = TableBuilder::new(ui)
+                                    .striped(true)
+                                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                    .column(Column::initial(28.0))    // include checkbox
+                                    .column(Column::initial(520.0))   // File (path)
+                                    .column(Column::initial(120.0));  // Size
+
+                                table
+                                    .header(20.0, |mut header| {
+                                        header.col(|_ui| { /* checkbox column header blank */ });
+                                        header.col(|ui| { ui.label("File"); });
+                                        header.col(|ui| { ui.label("Size"); });
+                                    })
+                                    .body(|mut body| {
+                                        for it in &mut self.ingest_files {
+                                            body.row(22.0, |mut row| {
+                                                row.col(|ui| { ui.checkbox(&mut it.include, ""); });
+                                                row.col(|ui| { ui.monospace(&it.path); });
+                                                row.col(|ui| { ui.label(humanize_bytes(it.size)); });
+                                            });
+                                        }
+                                    });
+                            });
+                        });
+                        // (Ingest button moved above the table)
+                    }
                 }
                 InsertMode::Text => {
                     // Text input with the action button placed below
@@ -1637,7 +1740,7 @@ impl AppState {
         let merge_min = self.chunk_merge_min.trim().parse().unwrap_or(100);
         std::thread::spawn(move || {
             let hint = doc_hint_opt.as_deref();
-            let cb: Box<dyn FnMut(ProgressEvent) + Send> = Box::new(move |ev: ProgressEvent| { let _ = tx.send(ev); });
+            let tx2 = tx.clone(); let cb: Box<dyn FnMut(ProgressEvent) + Send> = Box::new(move |ev: ProgressEvent| { let _ = tx2.send(ev); });
             let _ = svc.ingest_file_with_progress_custom(
                 &path_owned, hint,
                 enc_opt.as_deref(),
@@ -1645,6 +1748,80 @@ impl AppState {
                 Some(&cancel), Some(cb)
             );
             // The service emits Finished/Canceled; no-op here.
+        });
+    }
+
+    fn scan_ingest_folder(&mut self) {
+        self.ingest_files.clear();
+        let root = self.ingest_folder_path.trim();
+        if root.is_empty() { self.status = "Choose a folder".into(); return; }
+        let max_depth = self.ingest_depth;
+        let filters: Vec<String> = self.ingest_exts.split(',').map(|s| s.trim().trim_start_matches('.').to_ascii_lowercase()).filter(|s| !s.is_empty()).collect();
+        let use_all = filters.is_empty() || filters.iter().any(|f| f == "*");
+        let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(std::path::PathBuf::from(root), 0)];
+        while let Some((dir, depth)) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            for entry in rd.flatten() {
+                let path = entry.path();
+                if let Ok(meta) = entry.metadata() {
+                    if meta.is_dir() {
+                        if depth < max_depth { stack.push((path, depth + 1)); }
+                    } else if meta.is_file() {
+                        let pstr = path.display().to_string();
+                        let lower = pstr.to_ascii_lowercase();
+                        let matched = if use_all { true } else {
+                            let mut ok = false;
+                            for f in &filters {
+                                if lower.ends_with(&format!(".{}", f)) { ok = true; break; }
+                            }
+                            ok
+                        };
+                        if matched { self.ingest_files.push(IngestFileItem { include: true, path: pstr, size: meta.len() }); }
+                    }
+                }
+            }
+        }
+        self.ingest_files.sort_by(|a, b| a.path.cmp(&b.path));
+        self.status = format!("Scanned {} files", self.ingest_files.len());
+    }
+
+    fn do_ingest_files_batch(&mut self) {
+        if !self.ensure_store_paths_current() { return; }
+        let Some(svc) = self.svc.as_ref() else { self.status = "Model not initialized".into(); return; };
+        let selected: Vec<String> = self.ingest_files.iter().filter(|i| i.include).map(|i| i.path.clone()).collect();
+        if selected.is_empty() { self.status = "No files selected".into(); return; }
+        let svc = Arc::clone(svc);
+        let (tx, rx) = mpsc::channel::<ProgressEvent>();
+        let cancel = CancelToken::new();
+        self.ingest_rx = Some(rx);
+        self.ingest_cancel = Some(cancel.clone());
+        self.ingest_running = true;
+        self.ingest_done = 0;
+        self.ingest_total = 0;
+        self.ingest_last_batch = 0;
+        self.ingest_started = Some(Instant::now());
+        self.status = format!("Ingesting {} files...", selected.len());
+        let enc_opt = { let e = self.ingest_encoding.trim().to_string(); if e.is_empty() || e.eq_ignore_ascii_case("auto") { None } else { Some(e) } };
+        let min = self.chunk_min.trim().parse().unwrap_or(400);
+        let max = self.chunk_max.trim().parse().unwrap_or(600);
+        let cap = self.chunk_cap.trim().parse().unwrap_or(800);
+        let ps = self.chunk_penalize_short_line;
+        let pp = self.chunk_penalize_page_no_nl;
+        let merge_min = self.chunk_merge_min.trim().parse().unwrap_or(100);
+        let doc_hint = if self.doc_hint.trim().is_empty() { None } else { Some(self.doc_hint.trim().to_string()) };
+        std::thread::spawn(move || {
+            for (idx, p) in selected.iter().enumerate() {
+                let hint = doc_hint.as_deref();
+                let tx2 = tx.clone(); let cb: Box<dyn FnMut(ProgressEvent) + Send> = Box::new(move |ev: ProgressEvent| { let _ = tx2.send(ev); });
+                let _ = svc.ingest_file_with_progress_custom(
+                    p, hint,
+                    enc_opt.as_deref(),
+                    min, max, cap, merge_min, ps, pp,
+                    Some(&cancel), Some(cb)
+                );
+                if cancel.is_canceled() { let _ = tx.send(ProgressEvent::Canceled); return; }
+                if idx + 1 == selected.len() { /* Finished will arrive from service */ }
+            }
         });
     }
 
@@ -2639,3 +2816,9 @@ fn open_in_os_folder(path: &str) -> Result<(), String> {
         return Ok(());
     }
 }
+
+
+
+
+
+
