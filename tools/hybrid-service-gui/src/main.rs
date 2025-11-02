@@ -222,6 +222,11 @@ struct IngestFileItem {
     include: bool,
     path: String,
     size: u64,
+    // Optional per-file encoding override; None means use global setting
+    encoding: Option<String>,
+    // Cached preview state for quick mojibake check in the table
+    preview_cached_enc: Option<String>,
+    preview_cached_text: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1490,7 +1495,9 @@ impl AppState {
                                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                                     .column(Column::initial(28.0))    // include checkbox
                                     .column(Column::initial(520.0))   // File (path)
-                                    .column(Column::initial(120.0));  // Size
+                                    .column(Column::initial(120.0))   // Size
+                                    .column(Column::initial(140.0))   // Encoding override
+                                    .column(Column::initial(220.0));  // Preview (first chars)
 
                                 table
                                     .header(20.0, |mut header| {
@@ -1508,6 +1515,8 @@ impl AppState {
                                         });
                                         header.col(|ui| { ui.label("File"); });
                                         header.col(|ui| { ui.label("Size"); });
+                                        header.col(|ui| { ui.label("Encoding"); });
+                                        header.col(|ui| { ui.label("Preview (text)"); });
                                     })
                                     .body(|mut body| {
                                         for it in &mut self.ingest_files {
@@ -1515,6 +1524,38 @@ impl AppState {
                                                 row.col(|ui| { ui.checkbox(&mut it.include, ""); });
                                                 row.col(|ui| { ui.monospace(&it.path); });
                                                 row.col(|ui| { ui.label(humanize_bytes(it.size)); });
+                                                row.col(|ui| {
+                                                    let encs = ["(global)", "utf-8", "shift_jis", "windows-1252", "utf-16le", "utf-16be"];
+                                                    let current = it.encoding.clone().unwrap_or_else(|| String::from("(global)"));
+                                                    let mut sel = current.clone();
+                                                    ComboBox::from_id_source(format!("enc_{}", it.path))
+                                                        .selected_text(sel.clone())
+                                                        .show_ui(ui, |ui| {
+                                                            for e in encs { ui.selectable_value(&mut sel, e.to_string(), e); }
+                                                        });
+                                                    if sel == "(global)" { it.encoding = None; } else { it.encoding = Some(sel); }
+                                                });
+                                                row.col(|ui| {
+                                                    // Show a short preview for text-like files with the effective encoding
+                                                    let lower = it.path.to_ascii_lowercase();
+                                                    let text_exts = [
+                                                        ".txt", ".md", ".markdown", ".csv", ".tsv", ".log", ".json", ".yaml", ".yml",
+                                                        ".ini", ".toml", ".cfg", ".conf", ".rst", ".tex", ".srt", ".properties",
+                                                    ];
+                                                    let is_text_like = text_exts.iter().any(|e| lower.ends_with(e));
+                                                    if is_text_like {
+                                                        let enc_eff = it.encoding.clone().unwrap_or_else(|| self.ingest_encoding.clone());
+                                                        let need_reload = it.preview_cached_enc.as_deref() != Some(enc_eff.as_str());
+                                                        if need_reload || it.preview_cached_text.is_none() {
+                                                            let pv = preview_text_for_file(&it.path, &enc_eff, 4096, 48).unwrap_or_else(|| String::from("-"));
+                                                            it.preview_cached_enc = Some(enc_eff);
+                                                            it.preview_cached_text = Some(pv);
+                                                        }
+                                                        ui.label(it.preview_cached_text.as_deref().unwrap_or("-"));
+                                                    } else {
+                                                        ui.label("-");
+                                                    }
+                                                });
                                             });
                                         }
                                     });
@@ -1795,7 +1836,7 @@ impl AppState {
                             }
                             ok
                         };
-                        if matched { self.ingest_files.push(IngestFileItem { include: true, path: pstr, size: meta.len() }); }
+                        if matched { self.ingest_files.push(IngestFileItem { include: true, path: pstr, size: meta.len(), encoding: None, preview_cached_enc: None, preview_cached_text: None }); }
                     }
                 }
             }
@@ -1862,7 +1903,7 @@ impl AppState {
                         let fsz = meta.len();
                         if !known_sizes.contains(&fsz) {
                             // No DB file with this size: definitely new, no hashing required
-                            immediate.push(IngestFileItem { include: true, path: pstr, size: fsz });
+                            immediate.push(IngestFileItem { include: true, path: pstr, size: fsz, encoding: None, preview_cached_enc: None, preview_cached_text: None });
                             kept += 1;
                         } else {
                             // Size exists in DB: queue for hashing
@@ -1881,7 +1922,7 @@ impl AppState {
                 if let Some(hx) = sha256_hex_file(p) {
                     if known.contains(&hx) { include = false; }
                 }
-                IngestFileItem { include, path: p.clone(), size: *fsz }
+                IngestFileItem { include, path: p.clone(), size: *fsz, encoding: None, preview_cached_enc: None, preview_cached_text: None }
             })
             .collect();
 
@@ -1896,7 +1937,11 @@ impl AppState {
     fn do_ingest_files_batch(&mut self) {
         if !self.ensure_store_paths_current() { return; }
         let Some(svc) = self.svc.as_ref() else { self.status = "Model not initialized".into(); return; };
-        let selected: Vec<String> = self.ingest_files.iter().filter(|i| i.include).map(|i| i.path.clone()).collect();
+        let selected: Vec<(String, Option<String>)> = self.ingest_files
+            .iter()
+            .filter(|i| i.include)
+            .map(|i| (i.path.clone(), i.encoding.clone()))
+            .collect();
         if selected.is_empty() { self.status = "No files selected".into(); return; }
         let svc = Arc::clone(svc);
         let (tx, rx) = mpsc::channel::<ProgressEvent>();
@@ -1918,12 +1963,17 @@ impl AppState {
         let merge_min = self.chunk_merge_min.trim().parse().unwrap_or(100);
         let doc_hint = if self.doc_hint.trim().is_empty() { None } else { Some(self.doc_hint.trim().to_string()) };
         std::thread::spawn(move || {
-            for (idx, p) in selected.iter().enumerate() {
+            for (idx, (p, enc_override)) in selected.iter().enumerate() {
                 let hint = doc_hint.as_deref();
                 let tx2 = tx.clone(); let cb: Box<dyn FnMut(ProgressEvent) + Send> = Box::new(move |ev: ProgressEvent| { let _ = tx2.send(ev); });
+                // Choose per-file encoding if provided; otherwise use global
+                let enc_use_owned: Option<String> = match enc_override {
+                    Some(s) if !s.is_empty() => Some(s.clone()),
+                    _ => enc_opt.clone(),
+                };
                 let _ = svc.ingest_file_with_progress_custom(
                     p, hint,
-                    enc_opt.as_deref(),
+                    enc_use_owned.as_deref(),
                     min, max, cap, merge_min, ps, pp,
                     Some(&cancel), Some(cb)
                 );
@@ -2686,6 +2736,46 @@ fn escape_tabs(s: &str) -> String {
         match ch { '\t' => out.push_str("\\t"), '\r' => { /* skip */ }, _ => out.push(ch) }
     }
     out
+}
+
+// Decode bytes with a given encoding keyword used by the GUI.
+fn decode_bytes_with_encoding(bytes: &[u8], enc: &str) -> String {
+    let enc = enc.to_ascii_lowercase();
+    match enc.as_str() {
+        "auto" => String::from_utf8_lossy(bytes).to_string(),
+        "utf-8" | "utf8" => String::from_utf8_lossy(bytes).to_string(),
+        "shift_jis" | "sjis" | "cp932" | "windows-31j" => {
+            let (cow, _, _) = encoding_rs::SHIFT_JIS.decode(bytes); cow.into_owned()
+        }
+        "windows-1252" | "cp1252" => { let (cow, _, _) = encoding_rs::WINDOWS_1252.decode(bytes); cow.into_owned() }
+        "utf-16le" | "utf16le" => {
+            let mut u16s: Vec<u16> = Vec::with_capacity(bytes.len()/2);
+            let mut i = 0usize; if bytes.len() >= 2 && bytes[0]==0xFF && bytes[1]==0xFE { i = 2; }
+            while i + 1 < bytes.len() { u16s.push(u16::from_le_bytes([bytes[i], bytes[i+1]])); i += 2; }
+            String::from_utf16_lossy(&u16s)
+        }
+        "utf-16be" | "utf16be" => {
+            let mut u16s: Vec<u16> = Vec::with_capacity(bytes.len()/2);
+            let mut i = 0usize; if bytes.len() >= 2 && bytes[0]==0xFE && bytes[1]==0xFF { i = 2; }
+            while i + 1 < bytes.len() { u16s.push(u16::from_be_bytes([bytes[i], bytes[i+1]])); i += 2; }
+            String::from_utf16_lossy(&u16s)
+        }
+        _ => String::from_utf8_lossy(bytes).to_string(),
+    }
+}
+
+// Load a small preview of a file with the specified encoding, returning a truncated single-line sample.
+fn preview_text_for_file(path: &str, enc: &str, max_bytes: usize, max_chars: usize) -> Option<String> {
+    use std::fs::File;
+    use std::io::Read;
+    let mut f = File::open(path).ok()?;
+    let mut buf = vec![0u8; max_bytes.max(1)];
+    let n = f.read(&mut buf).ok()?;
+    buf.truncate(n);
+    let mut text = decode_bytes_with_encoding(&buf, enc);
+    // normalize CRLF
+    text = text.replace('\r', "");
+    Some(truncate_for_preview(&text, max_chars))
 }
 
 // Compute SHA-256 hex digest of a file path (streaming).
