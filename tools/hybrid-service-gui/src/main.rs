@@ -119,6 +119,7 @@ struct AppState {
     ingest_exts: String,
     ingest_depth: usize,
     ingest_files: Vec<IngestFileItem>,
+    ingest_only_unregistered: bool,
 
     // Chunk params (unified for PDF/TXT)
     chunk_min: String,
@@ -1047,6 +1048,7 @@ impl AppState {
             ingest_exts: String::from("pdf, docx, pptx, xlsx, xls, ods, txt, md, markdown, csv, tsv, log, json, yaml, yml, ini, toml, cfg, conf, rst, tex, srt, properties"),
             ingest_depth: 3,
             ingest_files: Vec::new(),
+            ingest_only_unregistered: false,
 
             chunk_min: String::from("400"),
             chunk_max: String::from("600"),
@@ -1441,7 +1443,7 @@ impl AppState {
                         }
                         ui.add(TextEdit::singleline(&mut self.ingest_folder_path).desired_width(420.0));
                     });
-                    // Row 2: Extensions + Encoding + Depth + Scan
+                    // Row 2: Extensions + Encoding + Depth
                     ui.horizontal(|ui| { ui.label("Extensions (comma)");
                         ui.add(TextEdit::singleline(&mut self.ingest_exts).desired_width(220.0));
                         ui.label("Encoding");
@@ -1455,12 +1457,13 @@ impl AppState {
                         ui.add(DragValue::new(&mut self.ingest_depth).clamp_range(0..=16));
                     });
                     // Row 3: Scan buttons under Extensions
+                    ui.horizontal(|ui| { ui.checkbox(&mut self.ingest_only_unregistered, "Check unregistered files"); });
                     ui.horizontal(|ui| {
-                        if ui.button("Scan").clicked() { self.scan_ingest_folder(); }
-                        if ui.button("Scan Unregistered").clicked() { self.scan_ingest_folder_unregistered(); }
-                    });
+                        if ui.button("Scan").clicked() {
+                            if self.ingest_only_unregistered { self.scan_ingest_folder_unregistered(); } else { self.scan_ingest_folder(); }
+                        }
                     ui.separator();
-                    // Row 3: Controls row (always visible): Ingest Files
+                    });
                     ui.horizontal(|ui| {
                         let has_items = !self.ingest_files.is_empty();
                         let selected_count = self.ingest_files.iter().filter(|i| i.include).count();
@@ -1806,6 +1809,7 @@ impl AppState {
 
         use std::collections::HashSet;
         let mut known: HashSet<String> = HashSet::new();
+        let mut known_sizes: HashSet<u64> = HashSet::new();
         let limit: usize = 1000;
         let mut offset: usize = 0;
         loop {
@@ -1814,6 +1818,7 @@ impl AppState {
                     if list.is_empty() { break; }
                     for rec in &list {
                         if let Some(h) = rec.content_sha256.clone() { known.insert(h); }
+                        if let Some(sz) = rec.file_size_bytes { known_sizes.insert(sz); }
                     }
                     if list.len() < limit { break; }
                     offset += limit;
@@ -1851,9 +1856,25 @@ impl AppState {
                         };
                         if !matched { continue; }
                         total += 1;
-                        if let Some(hx) = sha256_hex_file(&pstr) { if known.contains(&hx) { continue; } }
-                        self.ingest_files.push(IngestFileItem { include: true, path: pstr, size: meta.len() });
-                        kept += 1;
+                        let fsz = meta.len();
+                        // Prefilter by size: if DB has no file with this size, treat as new (include=true).
+                        if !known_sizes.contains(&fsz) {
+                            self.ingest_files.push(IngestFileItem { include: true, path: pstr, size: fsz });
+                            kept += 1;
+                        } else {
+                            // Size exists in DB; compute hash to confirm uniqueness.
+                            let mut is_known = false;
+                            if let Some(hx) = sha256_hex_file(&pstr) {
+                                if known.contains(&hx) { is_known = true; }
+                            }
+                            if is_known {
+                                // Show registered item but leave it unchecked
+                                self.ingest_files.push(IngestFileItem { include: false, path: pstr, size: fsz });
+                            } else {
+                                self.ingest_files.push(IngestFileItem { include: true, path: pstr, size: fsz });
+                                kept += 1;
+                            }
+                        }
                     }
                 }
             }
@@ -2915,6 +2936,7 @@ fn open_in_os_folder(path: &str) -> Result<(), String> {
         return Ok(());
     }
 }
+
 
 
 
