@@ -62,6 +62,15 @@ enum SearchMode {
     Vec,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IngestSortKey {
+    Default,
+    File,
+    Size,
+    Date,
+    Preview,
+}
+
 #[derive(Debug)]
 struct ServiceInitTask {
     rx: Receiver<Result<Arc<HybridService>, String>>,
@@ -123,6 +132,9 @@ struct AppState {
     ingest_only_unregistered: bool,
     // Insert Files UI: show absolute paths instead of relative to chosen folder
     ingest_show_abs_paths: bool,
+    // Insert Files UI: sorting state
+    ingest_sort_key: IngestSortKey,
+    ingest_sort_asc: bool,
 
     // Chunk params (unified for PDF/TXT)
     chunk_min: String,
@@ -224,6 +236,8 @@ struct IngestFileItem {
     include: bool,
     path: String,
     size: u64,
+    // Original insertion order within a scan
+    ordinal: usize,
     // Optional per-file encoding override; None means use global setting
     encoding: Option<String>,
     // Cached preview state for quick mojibake check in the table
@@ -436,8 +450,22 @@ impl AppState {
 
             table
                 .header(20.0, |mut header| {
-                    header.col(|ui| { ui.label("File"); });
-                    header.col(|ui| { ui.label("Size"); });
+                    header.col(|ui| {
+                                            let active = matches!(self.ingest_sort_key, IngestSortKey::File);
+                                            let arrow = if active { if self.ingest_sort_asc { " ▲" } else { " ▼" } } else { "" };
+                                            if ui.button(format!("File{}", arrow)).clicked() {
+                                                if self.ingest_sort_key != IngestSortKey::File { self.ingest_sort_key = IngestSortKey::File; self.ingest_sort_asc = true; } else if self.ingest_sort_asc { self.ingest_sort_asc = false; } else { self.ingest_sort_key = IngestSortKey::Default; self.ingest_sort_asc = true; }
+                                                { let base = self.ingest_folder_path.clone(); let abs = self.ingest_show_abs_paths; self.apply_ingest_sort_with(base.as_str(), abs) };
+                                            }
+                                        });
+                    header.col(|ui| {
+                                            let active = matches!(self.ingest_sort_key, IngestSortKey::Size);
+                                            let arrow = if active { if self.ingest_sort_asc { " ▲" } else { " ▼" } } else { "" };
+                                            if ui.button(format!("Size{}", arrow)).clicked() {
+                                                if self.ingest_sort_key != IngestSortKey::Size { self.ingest_sort_key = IngestSortKey::Size; self.ingest_sort_asc = true; } else if self.ingest_sort_asc { self.ingest_sort_asc = false; } else { self.ingest_sort_key = IngestSortKey::Default; self.ingest_sort_asc = true; }
+                                                { let base = self.ingest_folder_path.clone(); let abs = self.ingest_show_abs_paths; self.apply_ingest_sort_with(base.as_str(), abs) };
+                                            }
+                                        });
                     header.col(|ui| { ui.label("Pages"); });
                     header.col(|ui| { ui.label("Chunks"); });
                     header.col(|ui| { ui.label("Extracted"); });
@@ -1059,6 +1087,8 @@ impl AppState {
             ingest_files: Vec::new(),
             ingest_only_unregistered: false,
             ingest_show_abs_paths: false,
+            ingest_sort_key: IngestSortKey::Default,
+            ingest_sort_asc: true,
 
             chunk_min: String::from("400"),
             chunk_max: String::from("600"),
@@ -1533,11 +1563,39 @@ impl AppState {
                                                 ui.small(format!("{} / {}", selected, total));
                                             }
                                         });
-                                        header.col(|ui| { ui.label("File"); });
-                                        header.col(|ui| { ui.label("Size"); });
-                                        header.col(|ui| { ui.label("Date"); });
+                                        header.col(|ui| {
+                                            let active = matches!(self.ingest_sort_key, IngestSortKey::File);
+                                            let arrow = if active { if self.ingest_sort_asc { " ▲" } else { " ▼" } } else { "" };
+                                            if ui.button(format!("File{}", arrow)).clicked() {
+                                                if self.ingest_sort_key != IngestSortKey::File { self.ingest_sort_key = IngestSortKey::File; self.ingest_sort_asc = true; } else if self.ingest_sort_asc { self.ingest_sort_asc = false; } else { self.ingest_sort_key = IngestSortKey::Default; self.ingest_sort_asc = true; }
+                                                { let base = self.ingest_folder_path.clone(); let abs = self.ingest_show_abs_paths; self.apply_ingest_sort_with(base.as_str(), abs) };
+                                            }
+                                        });
+                                        header.col(|ui| {
+                                            let active = matches!(self.ingest_sort_key, IngestSortKey::Size);
+                                            let arrow = if active { if self.ingest_sort_asc { " ▲" } else { " ▼" } } else { "" };
+                                            if ui.button(format!("Size{}", arrow)).clicked() {
+                                                if self.ingest_sort_key != IngestSortKey::Size { self.ingest_sort_key = IngestSortKey::Size; self.ingest_sort_asc = true; } else if self.ingest_sort_asc { self.ingest_sort_asc = false; } else { self.ingest_sort_key = IngestSortKey::Default; self.ingest_sort_asc = true; }
+                                                { let base = self.ingest_folder_path.clone(); let abs = self.ingest_show_abs_paths; self.apply_ingest_sort_with(base.as_str(), abs) };
+                                            }
+                                        });
+                                        header.col(|ui| {
+                                            let active = matches!(self.ingest_sort_key, IngestSortKey::Date);
+                                            let arrow = if active { if self.ingest_sort_asc { " ▲" } else { " ▼" } } else { "" };
+                                            if ui.button(format!("Date{}", arrow)).clicked() {
+                                                if self.ingest_sort_key != IngestSortKey::Date { self.ingest_sort_key = IngestSortKey::Date; self.ingest_sort_asc = true; } else if self.ingest_sort_asc { self.ingest_sort_asc = false; } else { self.ingest_sort_key = IngestSortKey::Default; self.ingest_sort_asc = true; }
+                                                { let base = self.ingest_folder_path.clone(); let abs = self.ingest_show_abs_paths; self.apply_ingest_sort_with(base.as_str(), abs) };
+                                            }
+                                        });
                                         header.col(|ui| { ui.label("Encoding"); });
-                                        header.col(|ui| { ui.label("Preview (text)"); });
+                                        header.col(|ui| {
+                                            let active = matches!(self.ingest_sort_key, IngestSortKey::Preview);
+                                            let arrow = if active { if self.ingest_sort_asc { " ▲" } else { " ▼" } } else { "" };
+                                            if ui.button(format!("Preview (text){}", arrow)).clicked() {
+                                                if self.ingest_sort_key != IngestSortKey::Preview { self.ingest_sort_key = IngestSortKey::Preview; self.ingest_sort_asc = true; } else if self.ingest_sort_asc { self.ingest_sort_asc = false; } else { self.ingest_sort_key = IngestSortKey::Default; self.ingest_sort_asc = true; }
+                                                { let base = self.ingest_folder_path.clone(); let abs = self.ingest_show_abs_paths; self.apply_ingest_sort_with(base.as_str(), abs) };
+                                            }
+                                        });
                                     })
                                     .body(|mut body| {
                                         let base_root = self.ingest_folder_path.clone();
@@ -1847,6 +1905,7 @@ impl AppState {
         let filters: Vec<String> = self.ingest_exts.split(',').map(|s| s.trim().trim_start_matches('.').to_ascii_lowercase()).filter(|s| !s.is_empty()).collect();
         let use_all = filters.is_empty() || filters.iter().any(|f| f == "*");
         let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(std::path::PathBuf::from(root), 0)];
+        let mut seq: usize = 0;
         while let Some((dir, depth)) = stack.pop() {
             let Ok(rd) = std::fs::read_dir(&dir) else { continue };
             for entry in rd.flatten() {
@@ -1866,13 +1925,14 @@ impl AppState {
                         };
                         if matched {
                             let mdy = meta.modified().ok().map(|st| format_ymd(st));
-                            self.ingest_files.push(IngestFileItem { include: true, path: pstr, size: meta.len(), encoding: None, preview_cached_enc: None, preview_cached_text: None, modified_ymd: mdy });
+                            self.ingest_files.push(IngestFileItem { include: true, path: pstr, size: meta.len(), ordinal: seq, encoding: None, preview_cached_enc: None, preview_cached_text: None, modified_ymd: mdy });
+                            seq += 1;
                         }
                     }
                 }
             }
         }
-        self.ingest_files.sort_by(|a, b| a.path.cmp(&b.path));
+        { let base = self.ingest_folder_path.clone(); let abs = self.ingest_show_abs_paths; self.apply_ingest_sort_with(base.as_str(), abs) };
         self.status = format!("Scanned {} files", self.ingest_files.len());
     }
 
@@ -1913,7 +1973,8 @@ impl AppState {
         let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(std::path::PathBuf::from(root), 0)];
         let mut total: usize = 0; let mut kept: usize = 0;
         let mut immediate: Vec<IngestFileItem> = Vec::new();
-        let mut needs_hash: Vec<(String, u64, Option<String>)> = Vec::new();
+        let mut needs_hash: Vec<(String, u64, Option<String>, usize)> = Vec::new();
+        let mut seq: usize = 0;
         while let Some((dir, depth)) = stack.pop() {
             let Ok(rd) = std::fs::read_dir(&dir) else { continue };
             for entry in rd.flatten() {
@@ -1934,11 +1995,11 @@ impl AppState {
                         let fsz = meta.len();
                         if !known_sizes.contains(&fsz) {
                             // No DB file with this size: definitely new, no hashing required
-                            { let mdy = meta.modified().ok().map(|st| format_ymd(st)); immediate.push(IngestFileItem { include: true, path: pstr, size: fsz, encoding: None, preview_cached_enc: None, preview_cached_text: None, modified_ymd: mdy }); }
+                            { let mdy = meta.modified().ok().map(|st| format_ymd(st)); immediate.push(IngestFileItem { include: true, path: pstr, size: fsz, ordinal: seq, encoding: None, preview_cached_enc: None, preview_cached_text: None, modified_ymd: mdy }); seq += 1; }
                             kept += 1;
                         } else {
                             // Size exists in DB: queue for hashing
-                            { let mdy = meta.modified().ok().map(|st| format_ymd(st)); needs_hash.push((pstr, fsz, mdy)); }
+                            { let mdy = meta.modified().ok().map(|st| format_ymd(st)); needs_hash.push((pstr, fsz, mdy, seq)); seq += 1; }
                         }
                     }
                 }
@@ -1948,12 +2009,12 @@ impl AppState {
         // Hash the queued files in parallel
         let hashed_results: Vec<IngestFileItem> = needs_hash
             .par_iter()
-            .map(|(p, fsz, mdy)| {
+            .map(|(p, fsz, mdy, ord)| {
                 let mut include = true;
                 if let Some(hx) = sha256_hex_file(p) {
                     if known.contains(&hx) { include = false; }
                 }
-                IngestFileItem { include, path: p.clone(), size: *fsz, encoding: None, preview_cached_enc: None, preview_cached_text: None, modified_ymd: mdy.clone() }
+                IngestFileItem { include, path: p.clone(), size: *fsz, ordinal: *ord, encoding: None, preview_cached_enc: None, preview_cached_text: None, modified_ymd: mdy.clone() }
             })
             .collect();
 
@@ -1962,7 +2023,7 @@ impl AppState {
         self.ingest_files.clear();
         self.ingest_files.extend(immediate);
         self.ingest_files.extend(hashed_results);
-        self.ingest_files.sort_by(|a, b| a.path.cmp(&b.path));
+        { let base = self.ingest_folder_path.clone(); let abs = self.ingest_show_abs_paths; self.apply_ingest_sort_with(base.as_str(), abs) };
         self.status = format!("Scanned {} files (new: {})", total, kept);
     }
     fn do_ingest_files_batch(&mut self) {
@@ -2251,7 +2312,14 @@ impl AppState {
                     table
                         .header(20.0, |mut header| {
                             header.col(|ui| { ui.label("#"); });
-                            header.col(|ui| { ui.label("File"); });
+                            header.col(|ui| {
+                                            let active = matches!(self.ingest_sort_key, IngestSortKey::File);
+                                            let arrow = if active { if self.ingest_sort_asc { " ▲" } else { " ▼" } } else { "" };
+                                            if ui.button(format!("File{}", arrow)).clicked() {
+                                                if self.ingest_sort_key != IngestSortKey::File { self.ingest_sort_key = IngestSortKey::File; self.ingest_sort_asc = true; } else if self.ingest_sort_asc { self.ingest_sort_asc = false; } else { self.ingest_sort_key = IngestSortKey::Default; self.ingest_sort_asc = true; }
+                                                { let base = self.ingest_folder_path.clone(); let abs = self.ingest_show_abs_paths; self.apply_ingest_sort_with(base.as_str(), abs) };
+                                            }
+                                        });
                             header.col(|ui| { ui.label("Page"); });
                             if show_tv { header.col(|ui| { ui.label("TV"); }); }
                             if show_tv_and { header.col(|ui| { ui.label("TV(AND)"); }); }
@@ -3099,6 +3167,29 @@ fn open_in_os_folder(path: &str) -> Result<(), String> {
 
 
 
+
+
+
+
+
+
+impl AppState {
+    fn apply_ingest_sort_with(&mut self, base_root: &str, show_abs: bool) {
+        let asc = self.ingest_sort_asc;
+        let key = self.ingest_sort_key;
+        let make_disp = |p: &str| display_path_with_root(p, base_root, show_abs);
+        self.ingest_files.sort_by(|a, b| {
+            let ord = match key {
+                IngestSortKey::Default => a.ordinal.cmp(&b.ordinal),
+                IngestSortKey::File => make_disp(&a.path).cmp(&make_disp(&b.path)),
+                IngestSortKey::Size => a.size.cmp(&b.size),
+                IngestSortKey::Date => a.modified_ymd.as_deref().unwrap_or("").cmp(b.modified_ymd.as_deref().unwrap_or("")),
+                IngestSortKey::Preview => a.preview_cached_text.as_deref().unwrap_or("").cmp(b.preview_cached_text.as_deref().unwrap_or("")),
+            };
+            if asc || matches!(key, IngestSortKey::Default) { ord } else { ord.reverse() }
+        });
+    }
+}
 
 
 
