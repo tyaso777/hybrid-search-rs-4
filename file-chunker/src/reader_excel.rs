@@ -83,7 +83,13 @@ fn cell_to_string(c: &calamine::DataType) -> String {
     use calamine::DataType as D;
     match c {
         D::Empty => String::new(),
-        D::String(s) => s.trim().to_string(),
+        D::String(s) => {
+            // Normalize CRLF/CR to LF, then map in-cell newlines to U+2028 to distinguish
+            // them from row separators (which remain '\n').
+            let mut t = s.replace("\r\n", "\n").replace('\r', "\n");
+            t = t.replace('\n', "\u{2028}");
+            t
+        }
         D::Float(f) => {
             if f.fract() == 0.0 { format!("{}", *f as i64) } else { f.to_string() }
         }
