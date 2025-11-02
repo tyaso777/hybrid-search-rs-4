@@ -1,4 +1,4 @@
-﻿use std::env;
+use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{mpsc::{self, Receiver, TryRecvError}, Arc};
@@ -229,6 +229,8 @@ struct IngestFileItem {
     // Cached preview state for quick mojibake check in the table
     preview_cached_enc: Option<String>,
     preview_cached_text: Option<String>,
+    // File modified date in yyyy/mm/dd for display
+    modified_ymd: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1492,15 +1494,20 @@ impl AppState {
                     if self.ingest_files.is_empty() {
                         ui.label("No files scanned.");
                     } else {
-                        ui.push_id("ingest_files_table", |ui| {
+                        let tbl_id = if self.ingest_show_abs_paths { "ingest_files_table_abs" } else { "ingest_files_table_rel" };
+                        ui.push_id(tbl_id, |ui| {
                             egui::ScrollArea::horizontal().id_source("ingest_files_table_h").show(ui, |ui| {
+                                // Use a narrower default for the File column when showing relative paths
+                                let file_col_w: f32 = if self.ingest_show_abs_paths { 520.0 } else { 520.0 * 0.7 };
                                 let table = TableBuilder::new(ui)
                                     .striped(true)
+                                    .resizable(true)
                                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                                     .column(Column::initial(28.0))    // include checkbox
-                                    .column(Column::initial(520.0))   // File (path)
-                                    .column(Column::initial(120.0))   // Size
-                                    .column(Column::initial(140.0))   // Encoding override
+                                    .column(Column::initial(file_col_w))   // File (path)
+                                    .column(Column::initial(72.0))    // Size (0.6x)
+                                    .column(Column::initial(112.0))   // Encoding override (0.8x)
+                                    .column(Column::initial(100.0))   // Date (yyyy/mm/dd)
                                     .column(Column::initial(220.0));  // Preview (first chars)
 
                                 table
@@ -1520,6 +1527,7 @@ impl AppState {
                                         header.col(|ui| { ui.label("File"); });
                                         header.col(|ui| { ui.label("Size"); });
                                         header.col(|ui| { ui.label("Encoding"); });
+                                        header.col(|ui| { ui.label("Date"); });
                                         header.col(|ui| { ui.label("Preview (text)"); });
                                     })
                                     .body(|mut body| {
@@ -1544,6 +1552,7 @@ impl AppState {
                                                         });
                                                     if sel == "(global)" { it.encoding = None; } else { it.encoding = Some(sel); }
                                                 });
+                                                row.col(|ui| { ui.label(it.modified_ymd.clone().unwrap_or_else(|| String::from("-"))); });
                                                 row.col(|ui| {
                                                     // Show a short preview for text-like files with the effective encoding
                                                     let lower = it.path.to_ascii_lowercase();
@@ -1845,7 +1854,10 @@ impl AppState {
                             }
                             ok
                         };
-                        if matched { self.ingest_files.push(IngestFileItem { include: true, path: pstr, size: meta.len(), encoding: None, preview_cached_enc: None, preview_cached_text: None }); }
+                        if matched {
+                            let mdy = meta.modified().ok().map(|st| format_ymd(st));
+                            self.ingest_files.push(IngestFileItem { include: true, path: pstr, size: meta.len(), encoding: None, preview_cached_enc: None, preview_cached_text: None, modified_ymd: mdy });
+                        }
                     }
                 }
             }
@@ -1891,7 +1903,7 @@ impl AppState {
         let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(std::path::PathBuf::from(root), 0)];
         let mut total: usize = 0; let mut kept: usize = 0;
         let mut immediate: Vec<IngestFileItem> = Vec::new();
-        let mut needs_hash: Vec<(String, u64)> = Vec::new();
+        let mut needs_hash: Vec<(String, u64, Option<String>)> = Vec::new();
         while let Some((dir, depth)) = stack.pop() {
             let Ok(rd) = std::fs::read_dir(&dir) else { continue };
             for entry in rd.flatten() {
@@ -1912,11 +1924,11 @@ impl AppState {
                         let fsz = meta.len();
                         if !known_sizes.contains(&fsz) {
                             // No DB file with this size: definitely new, no hashing required
-                            immediate.push(IngestFileItem { include: true, path: pstr, size: fsz, encoding: None, preview_cached_enc: None, preview_cached_text: None });
+                            { let mdy = meta.modified().ok().map(|st| format_ymd(st)); immediate.push(IngestFileItem { include: true, path: pstr, size: fsz, encoding: None, preview_cached_enc: None, preview_cached_text: None, modified_ymd: mdy }); }
                             kept += 1;
                         } else {
                             // Size exists in DB: queue for hashing
-                            needs_hash.push((pstr, fsz));
+                            { let mdy = meta.modified().ok().map(|st| format_ymd(st)); needs_hash.push((pstr, fsz, mdy)); }
                         }
                     }
                 }
@@ -1926,12 +1938,12 @@ impl AppState {
         // Hash the queued files in parallel
         let hashed_results: Vec<IngestFileItem> = needs_hash
             .par_iter()
-            .map(|(p, fsz)| {
+            .map(|(p, fsz, mdy)| {
                 let mut include = true;
                 if let Some(hx) = sha256_hex_file(p) {
                     if known.contains(&hx) { include = false; }
                 }
-                IngestFileItem { include, path: p.clone(), size: *fsz, encoding: None, preview_cached_enc: None, preview_cached_text: None }
+                IngestFileItem { include, path: p.clone(), size: *fsz, encoding: None, preview_cached_enc: None, preview_cached_text: None, modified_ymd: mdy.clone() }
             })
             .collect();
 
@@ -2765,6 +2777,11 @@ fn display_path_with_root(path: &str, root: &str, absolute: bool) -> String {
     }
 }
 
+// Format SystemTime to yyyy/mm/dd for table display
+fn format_ymd(st: std::time::SystemTime) -> String {
+    let dt: chrono::DateTime<chrono::Local> = st.into();
+    dt.format("%Y/%m/%d").to_string()
+}
 // Decode bytes with a given encoding keyword used by the GUI.
 fn decode_bytes_with_encoding(bytes: &[u8], enc: &str) -> String {
     let enc = enc.to_ascii_lowercase();
@@ -3064,6 +3081,9 @@ fn open_in_os_folder(path: &str) -> Result<(), String> {
         return Ok(());
     }
 }
+
+
+
 
 
 
