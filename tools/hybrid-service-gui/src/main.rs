@@ -391,9 +391,7 @@ impl AppState {
             let table = TableBuilder::new(ui)
                 .striped(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::initial(260.0))   // doc id
-                .column(Column::initial(320.0))   // source uri
-                .column(Column::initial(120.0))   // mime
+                .column(Column::initial(360.0))   // file (source uri)
                 .column(Column::initial(90.0))    // size
                 .column(Column::initial(70.0))    // pages
                 .column(Column::initial(70.0))    // chunks
@@ -404,9 +402,7 @@ impl AppState {
 
             table
                 .header(20.0, |mut header| {
-                    header.col(|ui| { ui.label("Doc ID"); });
                     header.col(|ui| { ui.label("File"); });
-                    header.col(|ui| { ui.label("MIME"); });
                     header.col(|ui| { ui.label("Size"); });
                     header.col(|ui| { ui.label("Pages"); });
                     header.col(|ui| { ui.label("Chunks"); });
@@ -439,14 +435,6 @@ impl AppState {
                     }
                     for rec in &self.files {
                         body.row(22.0, |mut row_ui| {
-                            let doc_disp = trunc(&rec.doc_id.0, 42);
-                            row_ui.col(|ui| {
-                                if ui.link(doc_disp).clicked() {
-                                    self.files_selected_doc = Some(rec.doc_id.0.clone());
-                                    self.files_selected_display = rec.doc_id.0.clone();
-                                    self.files_selected_detail = serde_json::to_string_pretty(rec).unwrap_or_else(|_| "<render error>".into());
-                                }
-                            });
                             let file_disp = trunc(&rec.source_uri, 60);
                             row_ui.col(|ui| {
                                 if ui.link(file_disp).clicked() {
@@ -455,7 +443,6 @@ impl AppState {
                                     self.files_selected_detail = serde_json::to_string_pretty(rec).unwrap_or_else(|_| "<render error>".into());
                                 }
                             });
-                            row_ui.col(|ui| { ui.label(&rec.source_mime); });
                             row_ui.col(|ui| { ui.label(humanize_bytes_opt(rec.file_size_bytes)); });
                             row_ui.col(|ui| { ui.label(rec.page_count.map(|v| v.to_string()).unwrap_or_else(|| "-".into())); });
                             row_ui.col(|ui| { ui.label(rec.chunk_count.map(|v| v.to_string()).unwrap_or_else(|| "-".into())); });
