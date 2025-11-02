@@ -1323,8 +1323,20 @@ impl App for AppState {
                         ("ready", idx)
                     };
                     let dll_status = if self.ort_runtime_committed.is_some() { "fixed" } else { "editable" };
-                    let status_text = format!("Model: {}, RuntimeDLL: {}, Index: {}", model_status, dll_status, index_status);
-                    ui.label(status_text);
+                    // Color-coded status: warn color for not-ready/editable; green-ish for ready/fixed; red for error
+                    let warn = ui.visuals().warn_fg_color;
+                    let ok = egui::Color32::from_rgb(58, 166, 94);
+                    let err = egui::Color32::RED;
+                    let model_color = match model_status { "ready" => ok, "loading" | "released" => warn, _ => err };
+                    let dll_color = match dll_status { "fixed" => ok, "editable" => warn, _ => warn };
+                    let index_color = match index_status { "ready" => ok, "loading" | "absent" => warn, "error" => err, _ => warn };
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("Model: {}", model_status)).color(model_color));
+                        ui.label(", ");
+                        ui.label(egui::RichText::new(format!("RuntimeDLL: {}", dll_status)).color(dll_color));
+                        ui.label(", ");
+                        ui.label(egui::RichText::new(format!("Index: {}", index_status)).color(index_color));
+                    });
                     // compact controls with a clear right-side divider as well
                     ui.add_space(8.0);
                     ui.add_space(8.0);
