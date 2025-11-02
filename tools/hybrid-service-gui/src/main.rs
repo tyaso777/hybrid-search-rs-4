@@ -1026,9 +1026,9 @@ impl AppState {
         let defaults = default_stdio_config();
         let store_default = String::from("target/demo/store");
         let mut s = Self {
-            model_path: defaults.model_path.display().to_string(),
-            tokenizer_path: defaults.tokenizer_path.display().to_string(),
-            runtime_path: defaults.runtime_library_path.display().to_string(),
+            model_path: String::from("embedding_provider/models/ruri-v3-onnx/model.onnx"),
+            tokenizer_path: String::from("embedding_provider/models/ruri-v3-onnx/tokenizer.json"),
+            runtime_path: String::from("embedding_provider/bin/onnxruntime-win-x64-1.23.1/lib/onnxruntime.dll"),
             embedding_dimension: ONNX_STDIO_DEFAULTS.embedding_dimension.to_string(),
             max_tokens: ONNX_STDIO_DEFAULTS.max_input_tokens.to_string(),
             embed_batch_size: String::from("64"),
