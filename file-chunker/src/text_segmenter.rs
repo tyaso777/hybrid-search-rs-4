@@ -133,6 +133,16 @@ pub fn chunk_blocks_to_segments(blocks: &[UnifiedBlock], params: &TextChunkParam
     // Helper: leader characters used for TOC dot leaders
     let is_leader_char = |c: char| matches!(c, '.' | '…' | '・');
 
+    // Detect table block spans in concatenated text (prefer attrs flag; fallback to text prefix)
+    let mut table_ranges: Vec<(usize, usize)> = Vec::new();
+    for (i, b) in blocks.iter().enumerate() {
+        let is_table = b.attrs.get("is_table").map(|v| v == "true").unwrap_or_else(|| b.text.trim_start().starts_with("<table "));
+        if is_table {
+            if let Some(span) = spans.get(i) { table_ranges.push((span.start, span.end)); }
+        }
+    }
+    table_ranges.sort_by_key(|r| r.0);
+
     let mut scored: Vec<(usize, f32)> = boundaries.iter().map(|b| {
         let mut s = b.base_score;
         if params.penalize_short_line { s -= penalize_after_short_line(&text, b.idx); }
@@ -177,6 +187,37 @@ pub fn chunk_blocks_to_segments(blocks: &[UnifiedBlock], params: &TextChunkParam
     }).collect();
     scored.sort_by_key(|p| p.0);
 
+    // Remove boundaries that fall inside table blocks (keep edges)
+    scored.retain(|(idx, _)| {
+        !table_ranges.iter().any(|(s, e)| *idx > *s && *idx < *e)
+    });
+
+    // Table-aware score tweaks:
+    // - discourage cutting right before a table (prefer to keep the previous sentence with the table)
+    // - slightly encourage cutting right after a table
+    if !table_ranges.is_empty() {
+        let idxs: Vec<usize> = scored.iter().map(|p| p.0).collect();
+        for (ts, te) in &table_ranges {
+            // reward boundary at table end (block boundary)
+            if let Ok(pos) = idxs.binary_search(te) {
+                if let Some((_i, score)) = scored.get_mut(pos) { *score += 0.25; }
+            }
+            // find last two boundaries before table start
+            match idxs.binary_search(ts) {
+                Ok(pos) | Err(pos) => {
+                    if pos > 0 {
+                        let prev = pos - 1; // last boundary before table
+                        if let Some((_i, score)) = scored.get_mut(prev) { *score -= 0.3; }
+                        if prev > 0 {
+                            let prev2 = prev - 1; // one more boundary earlier
+                            if let Some((_i, score)) = scored.get_mut(prev2) { *score += 0.15; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let total = text.len();
     let mut start = 0usize;
     let mut out: Vec<(String, Option<u32>, Option<u32>)> = Vec::new();
@@ -214,8 +255,29 @@ pub fn chunk_blocks_to_segments(blocks: &[UnifiedBlock], params: &TextChunkParam
             break;
         }
 
-        if let Some(cut) = pick_boundary_in_range(&scored, min, cap, max) {
+        // Table-aware adjustment before finalizing cut selection
+        // Identify the next table that starts at/after current start
+        let next_table = table_ranges.iter().find(|(s, _e)| *s >= start);
+
+        if let Some(mut cut) = pick_boundary_in_range(&scored, min, cap, max) {
             if cut > start {
+                if let Some((ts, te)) = next_table.copied() {
+                    // If we are about to cut before the table while the table (and text until its end)
+                    // still fits under cap, try to cut earlier so that the next segment will include
+                    // the sentence before the table together with the table.
+                    if cut <= ts && te <= cap {
+                        // find last two boundaries before table start
+                        let idxs: Vec<usize> = scored.iter().map(|p| p.0).collect();
+                        let mut prev2: Option<usize> = None;
+                        match idxs.binary_search(&ts) {
+                            Ok(pos) | Err(pos) => {
+                                if pos > 1 { prev2 = Some(idxs[pos - 2]); }
+                                else if pos > 0 { prev2 = Some(idxs[pos - 1]); }
+                            }
+                        }
+                        if let Some(b2) = prev2 { if b2 >= min { cut = b2; } }
+                    }
+                }
                 let seg = text[start..cut].trim_end();
                 if !seg.is_empty() {
                     let (ps, pe) = page_range_for_segment(start, cut, &spans);

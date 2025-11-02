@@ -464,12 +464,28 @@ pub fn read_docx_to_blocks(path: &str) -> Vec<UnifiedBlock> {
     let mut in_p = false;
     let mut para_start_page: u32 = 1;
 
+    // Table extraction state: join cells with '\t' and rows with '\n'
+    let mut in_tbl = false;
+    let mut in_tr = false;
+    let mut in_tc = false;
+    let mut cell_text = String::new();
+    let mut row_cells: Vec<String> = Vec::new();
+    let mut table_text = String::new();
+    let mut table_start_page: u32 = 1;
+
     loop {
         buf.clear();
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 match local_name(e.name().as_ref()) {
-                    b"p" => { in_p = true; cur_text.clear(); pending_heading_level = None; para_start_page = current_page; current_style_id = None; }
+                    b"p" => {
+                        if !in_tc { // paragraphs inside table cells are aggregated into the cell text
+                            in_p = true; cur_text.clear(); pending_heading_level = None; para_start_page = current_page; current_style_id = None;
+                        }
+                    }
+                    b"tbl" => { in_tbl = true; table_text.clear(); table_start_page = current_page; }
+                    b"tr" => { if in_tbl { in_tr = true; row_cells.clear(); } }
+                    b"tc" => { if in_tr { in_tc = true; cell_text.clear(); } }
                     b"numPr" => { in_numpr = true; pending_num_id=None; pending_ilvl=None; }
                     b"pStyle" => {
                         // Heading style, robust to variants like "Heading1", "Heading 1", case-insensitive
@@ -501,9 +517,9 @@ pub fn read_docx_to_blocks(path: &str) -> Vec<UnifiedBlock> {
                         if let Some(t) = attr_val(&e, b"type") {
                             if t.eq_ignore_ascii_case("page") { current_page = current_page.saturating_add(1); }
                         }
-                        cur_text.push('\n');
+                        if in_tc { cell_text.push('\u{2028}'); } else { cur_text.push('\n'); }
                     }
-                    b"tab" => { cur_text.push('\t'); }
+                    b"tab" => { if in_tc { cell_text.push('\t'); } else { cur_text.push('\t'); } }
                     _ => {}
                 }
             }
@@ -534,9 +550,9 @@ pub fn read_docx_to_blocks(path: &str) -> Vec<UnifiedBlock> {
                         if let Some(t) = attr_val(&e, b"type") {
                             if t.eq_ignore_ascii_case("page") { current_page = current_page.saturating_add(1); }
                         }
-                        cur_text.push('\n');
+                        if in_tc { cell_text.push('\u{2028}'); } else { cur_text.push('\n'); }
                     }
-                    b"tab" => { cur_text.push('\t'); }
+                    b"tab" => { if in_tc { cell_text.push('\t'); } else { cur_text.push('\t'); } }
                     _ => {}
                 }
             }
@@ -544,7 +560,10 @@ pub fn read_docx_to_blocks(path: &str) -> Vec<UnifiedBlock> {
                 match local_name(e.name().as_ref()) {
                     b"t" => { in_t = false; }
                     b"p" => {
-                        if in_p {
+                        if in_tc {
+                            // paragraph end inside table cell => treat as soft newline within the cell (U+2028)
+                            if !cell_text.ends_with('\u{2028}') { cell_text.push('\u{2028}'); }
+                        } else if in_p {
                             let mut text_owned = cur_text.trim().to_string();
                             // If paragraph has no explicit numPr, derive numbering from style
                             if pending_num_id.is_none() {
@@ -587,12 +606,57 @@ pub fn read_docx_to_blocks(path: &str) -> Vec<UnifiedBlock> {
                             in_p = false; cur_text.clear(); pending_heading_level = None; in_numpr=false; pending_num_id=None; pending_ilvl=None; current_style_id=None;
                         }
                     }
+                    b"tc" => {
+                        if in_tc {
+                            in_tc = false;
+                            // finalize a cell
+                            let cell = cell_text.trim().to_string();
+                            row_cells.push(cell);
+                            cell_text.clear();
+                        }
+                    }
+                    b"tr" => {
+                        if in_tr {
+                            in_tr = false;
+                            // finalize a row => join cells with tabs, add newline
+                            let line = row_cells.join("\t");
+                            table_text.push_str(&line);
+                            table_text.push('\n');
+                            row_cells.clear();
+                        }
+                    }
+                    b"tbl" => {
+                        if in_tbl {
+                            in_tbl = false;
+                            // flush accumulated table text as a single block with HTML-like wrapper
+                            if !table_text.is_empty() {
+                                let mut wrapped = String::new();
+                                // Add a leading newline only if previous block does not end with one
+                                let need_leading_nl = blocks.last().map_or(false, |prev| !prev.text.ends_with('\n'));
+                                if need_leading_nl { wrapped.push('\n'); }
+                                let content = table_text.trim_end_matches('\n');
+                                wrapped.push_str(&format!("<table delim=\"tsv\" cell-nl=\"U+2028\">\n{}\n</table>\n", content));
+                                let mut b = UnifiedBlock::new(BlockKind::Paragraph, wrapped, order, path, "docx");
+                                b.page_start = Some(table_start_page);
+                                b.page_end = Some(current_page);
+                                // optional hint that this is a table and the cell newline codepoint
+                                b.attrs.insert("is_table".to_string(), "true".to_string());
+                                b.attrs.insert("table_cell_nl".to_string(), "U+2028".to_string());
+                                blocks.push(b);
+                                order += 1;
+                            }
+                            table_text.clear();
+                        }
+                    }
                     _ => {}
                 }
             }
             Ok(Event::Text(t)) => {
                 if in_t {
-                    if let Ok(cow) = t.unescape() { let s: String = cow.into_owned(); cur_text.push_str(&s); }
+                    if let Ok(cow) = t.unescape() {
+                        let s: String = cow.into_owned();
+                        if in_tc { cell_text.push_str(&s); } else { cur_text.push_str(&s); }
+                    }
                 }
             }
             Ok(Event::Eof) => break,

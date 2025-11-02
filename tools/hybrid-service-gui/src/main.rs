@@ -1329,47 +1329,7 @@ impl AppState {
                                         .id_source("preview_selected_text")
                                         .show(ui, |ui| { ui.monospace(text); });
 
-                                    ui.separator();
-                                    ui.heading("Metadata");
-                                    ui.horizontal(|ui| {
-                                        ui.label("meta:");
-                                        if c.meta.is_empty() {
-                                            ui.monospace("<empty>");
-                                        } else {
-                                            ui.vertical(|ui| {
-                                                for (k, v) in c.meta.iter() {
-                                                    ui.monospace(format!("{}: {}", k, v));
-                                                }
-                                            });
-                                        }
-                                    });
-
-                                    ui.horizontal(|ui| {
-                                        ui.label("extra:");
-                                        if c.extra.is_empty() {
-                                            ui.monospace("<empty>");
-                                        } else {
-                                            let json = serde_json::to_string_pretty(&c.extra)
-                                                .unwrap_or_else(|_| String::from("<serde error>"));
-                                            egui::ScrollArea::vertical()
-                                                .id_source("preview_selected_extra_json")
-                                                .max_height(140.0)
-                                                .show(ui, |ui| {
-                                                ui.monospace(json);
-                                            });
-                                        }
-                                    });
-
-                                    ui.separator();
-                                    ui.heading("ChunkRecord (JSON)");
-                                    let whole = serde_json::to_string_pretty(&c)
-                                        .unwrap_or_else(|_| String::from("<serde error>"));
-                                    egui::ScrollArea::vertical()
-                                        .id_source("preview_selected_record_json")
-                                        .max_height(220.0)
-                                        .show(ui, |ui| {
-                                        ui.monospace(whole);
-                                    });
+                                    // Metadata and JSON detail sections removed for a simpler view
                                 }}
                             });
                         });
