@@ -121,6 +121,8 @@ struct AppState {
     ingest_depth: usize,
     ingest_files: Vec<IngestFileItem>,
     ingest_only_unregistered: bool,
+    // Insert Files UI: show absolute paths instead of relative to chosen folder
+    ingest_show_abs_paths: bool,
 
     // Chunk params (unified for PDF/TXT)
     chunk_min: String,
@@ -1055,6 +1057,7 @@ impl AppState {
             ingest_depth: 3,
             ingest_files: Vec::new(),
             ingest_only_unregistered: false,
+            ingest_show_abs_paths: false,
 
             chunk_min: String::from("400"),
             chunk_max: String::from("600"),
@@ -1482,6 +1485,7 @@ impl AppState {
                         if has_items {
                             ui.label(format!("Selected: {} / Total: {}", selected_count, self.ingest_files.len()));
                         }
+                        ui.checkbox(&mut self.ingest_show_abs_paths, "Absolute paths");
                     });
                     ui.add_space(4.0);
                     // Results table or empty message
@@ -1519,10 +1523,15 @@ impl AppState {
                                         header.col(|ui| { ui.label("Preview (text)"); });
                                     })
                                     .body(|mut body| {
+                                        let base_root = self.ingest_folder_path.clone();
+                                        let show_abs = self.ingest_show_abs_paths;
                                         for it in &mut self.ingest_files {
                                             body.row(22.0, |mut row| {
                                                 row.col(|ui| { ui.checkbox(&mut it.include, ""); });
-                                                row.col(|ui| { ui.monospace(&it.path); });
+                                                row.col(|ui| {
+                                                    let disp = display_path_with_root(&it.path, base_root.as_str(), show_abs);
+                                                    ui.monospace(disp);
+                                                });
                                                 row.col(|ui| { ui.label(humanize_bytes(it.size)); });
                                                 row.col(|ui| {
                                                     let encs = ["(global)", "utf-8", "shift_jis", "windows-1252", "utf-16le", "utf-16be"];
@@ -2736,6 +2745,24 @@ fn escape_tabs(s: &str) -> String {
         match ch { '\t' => out.push_str("\\t"), '\r' => { /* skip */ }, _ => out.push(ch) }
     }
     out
+}
+
+// Display helper: relative to root unless absolute requested or strip fails
+fn display_path_with_root(path: &str, root: &str, absolute: bool) -> String {
+    if absolute || root.is_empty() { return path.to_string(); }
+    use std::path::Path;
+    let p = Path::new(path);
+    let r = Path::new(root);
+    if let Ok(rel) = p.strip_prefix(r) {
+        let mut s = rel.display().to_string();
+        // Trim a leading separator for aesthetics
+        if s.starts_with('\\') || s.starts_with('/') {
+            s.remove(0);
+        }
+        s
+    } else {
+        path.to_string()
+    }
 }
 
 // Decode bytes with a given encoding keyword used by the GUI.
