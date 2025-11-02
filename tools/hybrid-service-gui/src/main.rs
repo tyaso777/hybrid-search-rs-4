@@ -1,4 +1,4 @@
-use std::env;
+﻿use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{mpsc::{self, Receiver, TryRecvError}, Arc};
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use rayon::prelude::*;
 
 use hybrid_service::{HybridService, ServiceConfig, CancelToken, ProgressEvent, HnswState};
-use embedding_provider::config::{default_stdio_config, ONNX_STDIO_DEFAULTS};
+use embedding_provider::config::ONNX_STDIO_DEFAULTS;
 use chunking_store::{FilterClause, FilterKind, FilterOp};
 use chunking_store::ChunkStoreRead;
 // Removed unused FilterKind/FilterOp after moving Tantivy ops into service
@@ -464,7 +464,7 @@ impl AppState {
                     fn trunc(s: &str, n: usize) -> String {
                         if s.chars().count() <= n { return s.to_string(); }
                         let mut out: String = s.chars().take(n).collect();
-                        out.push('…');
+                        out.push('\u{2026}');
                         out
                     }
                     for rec in &self.files {
@@ -1023,7 +1023,6 @@ impl AppState {
     }
     fn new(cc: &CreationContext<'_>) -> Self {
         install_japanese_fallback_fonts(&cc.egui_ctx);
-        let defaults = default_stdio_config();
         let store_default = String::from("target/demo/store");
         let mut s = Self {
             model_path: String::from("embedding_provider/models/ruri-v3-onnx/model.onnx"),
@@ -1088,7 +1087,7 @@ impl AppState {
             search_mode: SearchMode::Hybrid,
 
             // Prompt defaults (JSON style)
-            prompt_header_tmpl: String::from("{\n  \"instruction\": \"あなたは以下の検索結果をもとにユーザーの質問に答えなさい。\",\n  \"query\": \"<<Query:escape_json>>\",\n  \"results\": [\n"),
+            prompt_header_tmpl: String::from("{\n  \"instruction\": \"\",\n  \"query\": \"<<Query:escape_json>>\",\n  \"results\": [\n"),
             prompt_item_tmpl: String::from("{\"rank\": <<Rank>>, \"file\": \"<<File:escape_json>>\", \"page\": \"<<Page:escape_json>>\", \"text\": \"<<Text:escape_json>>\"}<<Comma>>"),
             prompt_footer_tmpl: String::from("  ]\n}\n"),
             prompt_items_count: 5,
@@ -1142,9 +1141,7 @@ impl AppState {
             files_deleting: false,
         };
         // Update default prompt header instruction to include citation guidance
-        s.prompt_header_tmpl = String::from(
-            "{\n  \"instruction\": \"あなたは以下の検索結果をもとにユーザーの質問に答えなさい。回答根拠には#: {Rank}として番号を記載してください。\",\n  \"query\": \"<<Query:escape_json>>\",\n  \"results\": [\n"
-        );
+        s.prompt_header_tmpl = String::from("{\n  \"instruction\": \"\",\n  \"query\": \"<<Query:escape_json>>\",\n  \"results\": [\n" );
         // Seed default prompt template list
         s.seed_default_prompt_templates_if_empty();
         s
@@ -1444,7 +1441,7 @@ impl AppState {
                         });
                         // Row 3: Preview text (separate line)
                         let mut preview_short: String = self.ingest_preview.chars().take(60).collect();
-                        if self.ingest_preview.chars().count() > 60 { preview_short.push('…'); }
+                        if self.ingest_preview.chars().count() > 60 { preview_short.push('\u{2026}'); }
                         ui.label(format!("Preview: {}", preview_short.replace(['\n','\r','\t'], " ")));
                     }
 
@@ -2369,7 +2366,7 @@ impl AppState {
                             let mut sep_fmt = egui::text::TextFormat::default();
                             sep_fmt.color = weak_color;
                             sep_fmt.italics = true;
-                            job.append("\n…\n", 0.0, sep_fmt);
+                            job.append("\n窶ｦ\n", 0.0, sep_fmt);
                         }
                     }
                     ui.add(egui::Label::new(egui::WidgetText::LayoutJob(job)));
@@ -2474,7 +2471,7 @@ impl AppState {
                 // Flatten newlines/tabs for single-line preview, then truncate
                 let flat: String = rec.text.replace(['\n', '\r', '\t'], " ");
                 let mut text_preview: String = flat.chars().take(80).collect();
-                if flat.chars().count() > 80 { text_preview.push('…'); }
+                if flat.chars().count() > 80 { text_preview.push('\u{2026}'); }
                 self.results.push(HitRow { cid: rec.chunk_id.0, file, file_path: rec.source_uri.clone(), page, text_preview, text_full: rec.text, tv: sc_tv, tv_and: sc_and, tv_or: sc_or, vec: sc_vec });
             }
         }
@@ -2761,7 +2758,7 @@ fn truncate_for_preview(s: &str, max_chars: usize) -> String {
     if max_chars == 0 { return String::new(); }
     let mut it = s.chars();
     let truncated: String = it.by_ref().take(max_chars).collect();
-    if it.next().is_some() { format!("{}…", truncated.replace(['\n', '\r', '\t'], " ")) } else { truncated.replace(['\n', '\r', '\t'], " ") }
+    if it.next().is_some() { format!("{}窶ｦ", truncated.replace(['\n', '\r', '\t'], " ")) } else { truncated.replace(['\n', '\r', '\t'], " ") }
 }
 
 fn escape_tabs(s: &str) -> String {
@@ -2920,7 +2917,7 @@ fn snippet_chars(s: &str, n: usize) -> String {
     if n == 0 { return String::new(); }
     let mut it = s.chars();
     let taken: String = it.by_ref().take(n).collect();
-    if it.next().is_some() { format!("{}…", taken) } else { taken }
+    if it.next().is_some() { format!("{}窶ｦ", taken) } else { taken }
 }
 
 fn build_text_with_context_repo(
@@ -3094,6 +3091,8 @@ fn open_in_os_folder(path: &str) -> Result<(), String> {
         return Ok(());
     }
 }
+
+
 
 
 
