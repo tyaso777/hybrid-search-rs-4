@@ -141,6 +141,11 @@ struct AppState {
     prompt_items_count: usize,
     prompt_prev: usize,
     prompt_next: usize,
+    // Multiple templates support
+    prompt_templates: Vec<PromptTemplate>,
+    selected_prompt: Option<String>,
+    prompt_name_edit: String,
+    prompt_name_edit_mode: bool,
     prompt_popup_visible: bool,
     prompt_rendered: String,
 
@@ -201,12 +206,14 @@ struct ContextChunk {
     is_base: bool,
 }
 
-// New (nested) config format: { store: {...}, chunk: {...}, model: {...} }
+// New (nested) config format: { store: {...}, chunk: {...}, model: {...}, prompt?: {...} }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HybridGuiConfigV2 {
     store: StoreCfg,
     chunk: ChunkCfg,
     model: ModelCfg,
+    #[serde(default)]
+    prompt: Option<PromptCfg>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,6 +245,25 @@ struct ModelCfg {
     embed_auto: bool,
     embed_initial_batch: usize,
     embed_min_batch: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PromptCfg {
+    #[serde(default)]
+    templates: Vec<PromptTemplate>,
+    #[serde(default)]
+    selected: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PromptTemplate {
+    name: String,
+    header: String,
+    item: String,
+    footer: String,
+    items: usize,
+    prev: usize,
+    next: usize,
 }
 
 // Backward-compatible (flat) config format used previously
@@ -668,6 +694,10 @@ impl AppState {
                 embed_initial_batch: self.embed_initial_batch.trim().parse().unwrap_or(128),
                 embed_min_batch: self.embed_min_batch.trim().parse().unwrap_or(8),
             },
+            prompt: Some(PromptCfg {
+                templates: self.prompt_templates.clone(),
+                selected: self.selected_prompt.clone(),
+            }),
         }
     }
 
@@ -696,6 +726,18 @@ impl AppState {
         self.embed_auto = cfg.model.embed_auto;
         self.embed_initial_batch = cfg.model.embed_initial_batch.to_string();
         self.embed_min_batch = cfg.model.embed_min_batch.to_string();
+        // Prompt templates
+        if let Some(p) = cfg.prompt {
+            self.prompt_templates = p.templates;
+            self.selected_prompt = p.selected;
+            // If selected exists, apply to editors
+            if let Some(sel) = self.selected_prompt.clone() {
+                self.apply_prompt_template_by_name(&sel);
+            }
+        } else {
+            // When not present, keep current UI fields and seed a default
+            self.seed_default_prompt_templates_if_empty();
+        }
     }
 
     fn apply_ui_config_v1(&mut self, cfg: HybridGuiConfigV1) {
@@ -746,11 +788,128 @@ impl AppState {
     fn save_config_via_dialog(&mut self) {
         let suggested = self.suggest_config_filename();
         if let Some(path) = FileDialog::new().add_filter("JSON", &["json"]).set_file_name(&suggested).save_file() {
+            let p = std::path::Path::new(&path);
+            if p.exists() {
+                // Merge current Prompt Templates into existing config JSON (append/update by name)
+                match self.merge_templates_into_config_file(p) {
+                    Ok((added, updated)) => {
+                        self.status = format!("Updated templates in {} (added {}, updated {})", p.display(), added, updated);
+                        if let Some(name) = p.file_name().and_then(|s| s.to_str()) { self.config_last_name = name.to_string(); }
+                    }
+                    Err(e) => { self.status = format!("Update templates failed: {}", e); }
+                }
+            } else {
+                // Write full config when creating a new file
+                let cfg = self.to_ui_config_v2();
+                match serde_json::to_string_pretty(&cfg) {
+                    Ok(body) => match std::fs::write(&path, body) {
+                        Ok(_) => {
+                            self.status = format!("Saved config to {}", path.display());
+                            if let Some(name) = std::path::Path::new(&path).file_name().and_then(|s| s.to_str()) {
+                                self.config_last_name = name.to_string();
+                            }
+                        }
+                        Err(e) => { self.status = format!("Save config failed: {}", e); }
+                    }
+                    Err(e) => { self.status = format!("Serialize config failed: {}", e); }
+                }
+            }
+        }
+    }
+
+    // Append/merge current prompt templates into an existing config JSON file, preserving other keys.
+    fn merge_templates_into_config_file(&self, path: &std::path::Path) -> Result<(usize, usize), String> {
+        let s = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let mut v: serde_json::Value = serde_json::from_str(&s).map_err(|e| e.to_string())?;
+
+        // Ensure prompt object
+        if !v.get("prompt").map(|x| x.is_object()).unwrap_or(false) {
+            v["prompt"] = serde_json::json!({});
+        }
+        // Ensure templates array
+        if !v["prompt"].get("templates").map(|x| x.is_array()).unwrap_or(false) {
+            v["prompt"]["templates"] = serde_json::json!([]);
+        }
+        let arr = v["prompt"]["templates"].as_array_mut().ok_or("templates is not array")?;
+
+        // Build a map name -> index for existing
+        use std::collections::HashMap;
+        let mut index: HashMap<String, usize> = HashMap::new();
+        for (i, el) in arr.iter().enumerate() {
+            if let Some(obj) = el.as_object() {
+                if let Some(name) = obj.get("name").and_then(|x| x.as_str()) {
+                    index.insert(name.to_string(), i);
+                }
+            }
+        }
+
+        let mut added = 0usize;
+        let mut updated = 0usize;
+        for tpl in &self.prompt_templates {
+            let val = match serde_json::to_value(tpl) { Ok(v) => v, Err(_) => continue };
+            if let Some(pos) = index.get(&tpl.name).cloned() {
+                if pos < arr.len() { arr[pos] = val; updated += 1; }
+            } else {
+                arr.push(val);
+                index.insert(tpl.name.clone(), arr.len() - 1);
+                added += 1;
+            }
+        }
+        // Update selected name
+        v["prompt"]["selected"] = match &self.selected_prompt {
+            Some(n) => serde_json::Value::String(n.clone()),
+            None => serde_json::Value::Null,
+        };
+
+        let body = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+        std::fs::write(path, body).map_err(|e| e.to_string())?;
+        Ok((added, updated))
+    }
+
+    fn import_prompt_templates_via_dialog(&mut self) {
+        if let Some(path) = FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
+            match std::fs::read_to_string(&path) {
+                Ok(s) => {
+                    match serde_json::from_str::<HybridGuiConfigV2>(&s) {
+                        Ok(cfg2) => {
+                            if let Some(p) = cfg2.prompt {
+                                let mut added = 0usize;
+                                let mut updated = 0usize;
+                                for tpl in p.templates {
+                                    if let Some(pos) = self.prompt_templates.iter().position(|t| t.name == tpl.name) {
+                                        self.prompt_templates[pos] = tpl;
+                                        updated += 1;
+                                    } else {
+                                        self.prompt_templates.push(tpl);
+                                        added += 1;
+                                    }
+                                }
+                                self.status = format!("Imported templates from {} (added {}, updated {})", path.display(), added, updated);
+                            } else {
+                                self.status = format!("No prompt templates found in {}", path.display());
+                            }
+                        }
+                        Err(_) => {
+                            self.status = format!("Import failed: not a v2 config with prompts: {}", path.display());
+                        }
+                    }
+                }
+                Err(e) => { self.status = format!("Read failed: {}", e); }
+            }
+        }
+    }
+
+    fn save_config_overwrite_via_dialog(&mut self) {
+        let suggested = self.suggest_config_filename();
+        if let Some(path) = FileDialog::new()
+            .add_filter("JSON", &["json"]).set_file_name(&suggested)
+            .save_file()
+        {
             let cfg = self.to_ui_config_v2();
             match serde_json::to_string_pretty(&cfg) {
                 Ok(body) => match std::fs::write(&path, body) {
                     Ok(_) => {
-                        self.status = format!("Saved config to {}", path.display());
+                        self.status = format!("Saved config (overwrite) to {}", path.display());
                         if let Some(name) = std::path::Path::new(&path).file_name().and_then(|s| s.to_str()) {
                             self.config_last_name = name.to_string();
                         }
@@ -845,7 +1004,7 @@ impl AppState {
         install_japanese_fallback_fonts(&cc.egui_ctx);
         let defaults = default_stdio_config();
         let store_default = String::from("target/demo/store");
-        Self {
+        let mut s = Self {
             model_path: defaults.model_path.display().to_string(),
             tokenizer_path: defaults.tokenizer_path.display().to_string(),
             runtime_path: defaults.runtime_library_path.display().to_string(),
@@ -908,10 +1067,14 @@ impl AppState {
             prompt_items_count: 5,
             prompt_prev: 1,
             prompt_next: 1,
+            prompt_templates: Vec::new(),
+            selected_prompt: None,
+            prompt_name_edit: String::new(),
+            prompt_name_edit_mode: false,
             prompt_popup_visible: false,
             prompt_rendered: String::new(),
 
-            tab: ActiveTab::Insert,
+            tab: ActiveTab::Config,
             insert_mode: InsertMode::File,
             status: String::new(),
             selected_cid: None,
@@ -950,6 +1113,29 @@ impl AppState {
             files_selected_detail: String::new(),
             files_delete_pending: None,
             files_deleting: false,
+        };
+        // Update default prompt header instruction to include citation guidance
+        s.prompt_header_tmpl = String::from(
+            "{\n  \"instruction\": \"あなたは以下の検索結果をもとにユーザーの質問に答えなさい。回答根拠には#: {Rank}として番号を記載してください。\",\n  \"query\": \"<<Query:escape_json>>\",\n  \"results\": [\n"
+        );
+        // Seed default prompt template list
+        s.seed_default_prompt_templates_if_empty();
+        s
+    }
+
+    fn seed_default_prompt_templates_if_empty(&mut self) {
+        if self.prompt_templates.is_empty() {
+            let name = "JSON Default".to_string();
+            self.prompt_templates.push(PromptTemplate {
+                name: name.clone(),
+                header: self.prompt_header_tmpl.clone(),
+                item: self.prompt_item_tmpl.clone(),
+                footer: self.prompt_footer_tmpl.clone(),
+                items: self.prompt_items_count,
+                prev: self.prompt_prev,
+                next: self.prompt_next,
+            });
+            self.selected_prompt = Some(name);
         }
     }
 
@@ -1071,14 +1257,14 @@ impl App for AppState {
         CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.add_enabled_ui(!self.ingest_running, |ui| {
-                    // Top-level tabs with underline accent
+                    // Top-level tabs with underline accent (Config first)
+                    let resp_config = ui.selectable_value(&mut self.tab, ActiveTab::Config, "Config");
                     let resp_insert = ui.selectable_value(&mut self.tab, ActiveTab::Insert, "Insert");
                     let resp_search = ui.selectable_value(&mut self.tab, ActiveTab::Search, "Search");
                     let resp_files = ui.selectable_value(&mut self.tab, ActiveTab::Files, "Files");
-                    let resp_config = ui.selectable_value(&mut self.tab, ActiveTab::Config, "Config");
-                    let union12 = resp_insert.rect.union(resp_search.rect);
-                    let union123 = union12.union(resp_files.rect);
-                    let union_all = union123.union(resp_config.rect);
+                    let union12 = resp_config.rect.union(resp_insert.rect);
+                    let union123 = union12.union(resp_search.rect);
+                    let union_all = union123.union(resp_files.rect);
                     let y = union_all.bottom() + 2.0;
                     let painter = ui.painter();
                     let base_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
@@ -1604,8 +1790,66 @@ impl AppState {
                 });
             }
 
-            // Prompt Template editor and builder
+            // Quick action: Build Prompt button (always visible)
+            ui.horizontal(|ui| {
+                if ui.button("Build Prompt").clicked() {
+                    let out = self.render_prompt();
+                    self.prompt_rendered = out;
+                    self.prompt_popup_visible = true;
+                }
+                ui.add_space(8.0);
+                if ui.button("Import Templates").clicked() {
+                    self.import_prompt_templates_via_dialog();
+                }
+            });
+
+            // Prompt Template editor
             ui.collapsing("Prompt Template", |ui| {
+                // Template selection toolbar
+                ui.horizontal(|ui| {
+                    ui.label("Template Name");
+                    let mut chosen = self.selected_prompt.clone().unwrap_or_default();
+                    egui::ComboBox::from_id_source("prompt_tpl_select")
+                        .selected_text(if chosen.is_empty() { "<unsaved>" } else { &chosen })
+                        .show_ui(ui, |ui| {
+                            for tpl in &self.prompt_templates {
+                                ui.selectable_value(&mut chosen, tpl.name.clone(), tpl.name.clone());
+                            }
+                        });
+                    if self.selected_prompt.as_deref() != Some(&chosen) {
+                        if !chosen.is_empty() {
+                            self.selected_prompt = Some(chosen.clone());
+                            self.apply_prompt_template_by_name(&chosen);
+                        }
+                    }
+                    ui.add_space(8.0);
+                    if ui.button("New").clicked() {
+                        self.selected_prompt = None;
+                        self.prompt_name_edit_mode = true;
+                        self.prompt_name_edit = String::from("New Template");
+                    }
+                    if ui.button("Delete").clicked() { self.delete_selected_prompt_template(); }
+                    if ui.button("Save in Config").clicked() {
+                        // Upsert current editor as a template (under selected name or ask name if none)
+                        if self.selected_prompt.is_none() && self.prompt_name_edit.trim().is_empty() {
+                            // Trigger name input first time for unsaved
+                            self.prompt_name_edit_mode = true;
+                            self.prompt_name_edit = String::from("New Template");
+                        } else {
+                            self.save_current_prompt_template(false);
+                            self.save_config_overwrite_via_dialog();
+                        }
+                    }
+                });
+                if self.prompt_name_edit_mode {
+                    ui.horizontal(|ui| {
+                        ui.label("Name");
+                        ui.add(TextEdit::singleline(&mut self.prompt_name_edit).desired_width(240.0));
+                        if ui.button("OK").clicked() { self.save_current_prompt_template(true); self.prompt_name_edit_mode = false; }
+                        if ui.button("Cancel").clicked() { self.prompt_name_edit_mode = false; }
+                    });
+                }
+
                 // Settings: item count and context window
                 ui.horizontal(|ui| {
                     ui.label("Items");
@@ -1626,11 +1870,6 @@ impl AppState {
                 ui.label("Footer template");
                 ui.add(TextEdit::multiline(&mut self.prompt_footer_tmpl).desired_rows(3).desired_width(700.0));
                 ui.add_space(8.0);
-                if ui.button("Build Prompt").clicked() {
-                    let out = self.render_prompt();
-                    self.prompt_rendered = out;
-                    self.prompt_popup_visible = true;
-                }
             });
 
             ui.separator();
@@ -1889,9 +2128,20 @@ impl AppState {
     fn render_prompt(&self) -> String {
         // Expand header
         let header = expand_template(&self.prompt_header_tmpl, |name, transform, arg| {
-            match (name, transform) {
-                ("Query", None) => self.query.clone(),
-                ("TopK", None) => self.top_k.to_string(),
+            match name {
+                "Query" => match transform {
+                    Some("escape_json") => escape_json_str(&self.query),
+                    Some("snippet") => {
+                        let n = arg.and_then(|s| s.parse::<usize>().ok()).unwrap_or(200);
+                        snippet_chars(&self.query, n)
+                    }
+                    Some("snippet_json") => {
+                        let n = arg.and_then(|s| s.parse::<usize>().ok()).unwrap_or(200);
+                        escape_json_str(&snippet_chars(&self.query, n))
+                    }
+                    _ => self.query.clone(),
+                },
+                "TopK" => self.top_k.to_string(),
                 _ => String::new(),
             }
         });
@@ -1936,9 +2186,20 @@ impl AppState {
 
         // Expand footer
         let footer = expand_template(&self.prompt_footer_tmpl, |name, transform, arg| {
-            match (name, transform) {
-                ("Query", None) => self.query.clone(),
-                ("TopK", None) => self.top_k.to_string(),
+            match name {
+                "Query" => match transform {
+                    Some("escape_json") => escape_json_str(&self.query),
+                    Some("snippet") => {
+                        let n = arg.and_then(|s| s.parse::<usize>().ok()).unwrap_or(200);
+                        snippet_chars(&self.query, n)
+                    }
+                    Some("snippet_json") => {
+                        let n = arg.and_then(|s| s.parse::<usize>().ok()).unwrap_or(200);
+                        escape_json_str(&snippet_chars(&self.query, n))
+                    }
+                    _ => self.query.clone(),
+                },
+                "TopK" => self.top_k.to_string(),
                 _ => String::new(),
             }
         });
@@ -1979,6 +2240,53 @@ impl AppState {
                 });
             });
         self.prompt_popup_visible = open && !request_close;
+    }
+
+    fn apply_prompt_template_by_name(&mut self, name: &str) {
+        if let Some(t) = self.prompt_templates.iter().find(|t| t.name == name) {
+            self.prompt_header_tmpl = t.header.clone();
+            self.prompt_item_tmpl = t.item.clone();
+            self.prompt_footer_tmpl = t.footer.clone();
+            self.prompt_items_count = t.items;
+            self.prompt_prev = t.prev;
+            self.prompt_next = t.next;
+        }
+    }
+
+    fn save_current_prompt_template(&mut self, force_new_name: bool) {
+        let mut name = self.selected_prompt.clone().unwrap_or_default();
+        if force_new_name || name.is_empty() { name = self.prompt_name_edit.trim().to_string(); }
+        if name.is_empty() { self.status = "Template name is empty".into(); return; }
+        // Build the template object from current editors and settings
+        let tpl = PromptTemplate {
+            name: name.clone(),
+            header: self.prompt_header_tmpl.clone(),
+            item: self.prompt_item_tmpl.clone(),
+            footer: self.prompt_footer_tmpl.clone(),
+            items: self.prompt_items_count,
+            prev: self.prompt_prev,
+            next: self.prompt_next,
+        };
+        // Upsert by name
+        if let Some(pos) = self.prompt_templates.iter().position(|t| t.name == name) {
+            self.prompt_templates[pos] = tpl;
+        } else {
+            self.prompt_templates.push(tpl);
+        }
+        self.selected_prompt = Some(name);
+        self.status = "Prompt template saved".into();
+    }
+
+    fn delete_selected_prompt_template(&mut self) {
+        if let Some(name) = self.selected_prompt.clone() {
+            if let Some(pos) = self.prompt_templates.iter().position(|t| t.name == name) {
+                self.prompt_templates.remove(pos);
+                self.selected_prompt = None;
+                self.status = "Prompt template deleted".into();
+                return;
+            }
+        }
+        self.status = "No template selected".into();
     }
 }
 
