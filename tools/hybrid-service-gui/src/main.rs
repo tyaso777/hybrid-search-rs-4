@@ -444,12 +444,13 @@ impl AppState {
             egui::ScrollArea::horizontal().id_source("files_table_h").show(ui, |ui| {
             let table = TableBuilder::new(ui)
                 .striped(true)
+                .resizable(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .column(Column::initial(28.0))    // select
                 .column(Column::initial(360.0))   // file (source uri)
-                .column(Column::initial(90.0))    // size
-                .column(Column::initial(70.0))    // pages
-                .column(Column::initial(70.0))    // chunks
+                .column(Column::initial(72.0))    // size (0.8x)
+                .column(Column::initial(56.0))    // pages (0.8x)
+                .column(Column::initial(56.0))    // chunks (0.8x)
                 .column(Column::initial(170.0))   // extracted at
                 .column(Column::initial(170.0))   // updated at
                 .column(Column::initial(180.0));  // author
@@ -507,9 +508,9 @@ impl AppState {
                                     if checked { self.files_selected_set.insert(rec.doc_id.0.clone()); } else { self.files_selected_set.remove(&rec.doc_id.0); }
                                 }
                             });
-                            let file_disp = trunc(&rec.source_uri, 60);
                             row_ui.col(|ui| {
-                                if ui.link(file_disp).clicked() {
+                                let label = egui::Label::new(egui::RichText::new(&rec.source_uri).monospace()).truncate(true).sense(egui::Sense::click());
+                                if ui.add(label).clicked() {
                                     self.files_selected_doc = Some(rec.doc_id.0.clone());
                                     self.files_selected_display = rec.source_uri.clone();
                                     self.files_selected_detail = serde_json::to_string_pretty(rec).unwrap_or_else(|_| "<render error>".into());
