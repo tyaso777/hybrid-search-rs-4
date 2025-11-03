@@ -1,4 +1,5 @@
-﻿use std::env;
+﻿use chrono::TimeZone;
+use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{mpsc::{self, Receiver, TryRecvError}, Arc};
@@ -451,9 +452,9 @@ impl AppState {
                 .column(Column::initial(72.0))    // size (0.8x)
                 .column(Column::initial(56.0))    // pages (0.8x)
                 .column(Column::initial(56.0))    // chunks (0.8x)
-                .column(Column::initial(170.0))   // extracted at
-                .column(Column::initial(170.0))   // updated at
-                .column(Column::initial(180.0));  // author
+                .column(Column::initial(136.0))   // updated at (0.8x)
+                .column(Column::initial(180.0))   // author
+                .column(Column::initial(170.0));  // inserted at
 
             table
                 .header(20.0, |mut header| {
@@ -473,9 +474,9 @@ impl AppState {
                     header.col(|ui| { ui.label("Size"); });
                     header.col(|ui| { ui.label("Pages"); });
                     header.col(|ui| { ui.label("Chunks"); });
-                    header.col(|ui| { ui.label("Extracted"); });
                     header.col(|ui| { ui.label("Updated"); });
                     header.col(|ui| { ui.label("Author"); });
+                    header.col(|ui| { ui.label("Inserted"); });
                 })
                 .body(|mut body| {
                     fn humanize_bytes_opt(v: Option<u64>) -> String {
@@ -519,9 +520,9 @@ impl AppState {
                             row_ui.col(|ui| { ui.label(humanize_bytes_opt(rec.file_size_bytes)); });
                             row_ui.col(|ui| { ui.label(rec.page_count.map(|v| v.to_string()).unwrap_or_else(|| "-".into())); });
                             row_ui.col(|ui| { ui.label(rec.chunk_count.map(|v| v.to_string()).unwrap_or_else(|| "-".into())); });
-                            row_ui.col(|ui| { ui.label(&rec.extracted_at); });
-                            row_ui.col(|ui| { ui.label(rec.updated_at_meta.clone().unwrap_or_else(|| String::from("-"))); });
+                            row_ui.col(|ui| { let rawu = rec.updated_at_meta.clone().unwrap_or_else(|| String::from("-")); let disp = format_ts_local_short(&rawu); ui.label(disp); });
                             row_ui.col(|ui| { ui.label(rec.author_guess.clone().unwrap_or_else(|| String::from(""))); });
+                            row_ui.col(|ui| { let disp = format_ts_local_short(&rec.extracted_at); ui.label(disp); });
                         });
                     }
                 });
@@ -3211,6 +3212,27 @@ impl AppState {
 
 
 
+
+
+
+
+
+
+
+fn format_ts_local_short(s: &str) -> String {
+    // Expect RFC3339/ISO-8601; fallback to original string on parse failure
+    if s.is_empty() || s == "-" { return String::from(s); }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        let local_dt = dt.with_timezone(&chrono::Local);
+        return local_dt.format("%Y/%m/%d %H:%M").to_string();
+    }
+    // Try a common alternative without timezone
+    if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        let dt = chrono::Local.from_local_datetime(&ndt).single();
+        if let Some(ldt) = dt { return ldt.format("%Y/%m/%d %H:%M").to_string(); }
+    }
+    s.to_string()
+}
 
 
 
