@@ -72,6 +72,18 @@ enum IngestSortKey {
     Preview,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FilesSortKey {
+    Default,
+    File,
+    Size,
+    Pages,
+    Chunks,
+    Updated,
+    Author,
+    Inserted,
+}
+
 #[derive(Debug)]
 struct ServiceInitTask {
     rx: Receiver<Result<Arc<HybridService>, String>>,
@@ -232,6 +244,11 @@ struct AppState {
     files_deleting: bool,
     // Files tab: multi-select by DocId
     files_selected_set: std::collections::HashSet<String>,
+    // Files tab: sorting
+    files_sort_key: FilesSortKey,
+    files_sort_asc: bool,
+    // Preserve default order across toggles
+    files_default_ord: std::collections::HashMap<String, usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -470,13 +487,76 @@ impl AppState {
                         }
                         if selected_on_page > 0 && selected_on_page < total { ui.small(format!("{} / {}", selected_on_page, total)); }
                     });
-                    header.col(|ui| { ui.label("File"); });
-                    header.col(|ui| { ui.label("Size"); });
-                    header.col(|ui| { ui.label("Pages"); });
-                    header.col(|ui| { ui.label("Chunks"); });
-                    header.col(|ui| { ui.label("Updated"); });
-                    header.col(|ui| { ui.label("Author"); });
-                    header.col(|ui| { ui.label("Inserted"); });
+                    header.col(|ui| {
+                        let active = matches!(self.files_sort_key, FilesSortKey::File);
+                        let arrow = if active { if self.files_sort_asc { " ▲" } else { " ▼" } } else { "" };
+                        if ui.button(format!("File{}", arrow)).clicked() {
+                            if self.files_sort_key != FilesSortKey::File { self.files_sort_key = FilesSortKey::File; self.files_sort_asc = true; }
+                            else if self.files_sort_asc { self.files_sort_asc = false; }
+                            else { self.files_sort_key = FilesSortKey::Default; self.files_sort_asc = true; }
+                            self.apply_files_sort();
+                        }
+                    });
+                    header.col(|ui| {
+                        let active = matches!(self.files_sort_key, FilesSortKey::Size);
+                        let arrow = if active { if self.files_sort_asc { " ▲" } else { " ▼" } } else { "" };
+                        if ui.button(format!("Size{}", arrow)).clicked() {
+                            if self.files_sort_key != FilesSortKey::Size { self.files_sort_key = FilesSortKey::Size; self.files_sort_asc = true; }
+                            else if self.files_sort_asc { self.files_sort_asc = false; }
+                            else { self.files_sort_key = FilesSortKey::Default; self.files_sort_asc = true; }
+                            self.apply_files_sort();
+                        }
+                    });
+                    header.col(|ui| {
+                        let active = matches!(self.files_sort_key, FilesSortKey::Pages);
+                        let arrow = if active { if self.files_sort_asc { " ▲" } else { " ▼" } } else { "" };
+                        if ui.button(format!("Pages{}", arrow)).clicked() {
+                            if self.files_sort_key != FilesSortKey::Pages { self.files_sort_key = FilesSortKey::Pages; self.files_sort_asc = true; }
+                            else if self.files_sort_asc { self.files_sort_asc = false; }
+                            else { self.files_sort_key = FilesSortKey::Default; self.files_sort_asc = true; }
+                            self.apply_files_sort();
+                        }
+                    });
+                    header.col(|ui| {
+                        let active = matches!(self.files_sort_key, FilesSortKey::Chunks);
+                        let arrow = if active { if self.files_sort_asc { " ▲" } else { " ▼" } } else { "" };
+                        if ui.button(format!("Chunks{}", arrow)).clicked() {
+                            if self.files_sort_key != FilesSortKey::Chunks { self.files_sort_key = FilesSortKey::Chunks; self.files_sort_asc = true; }
+                            else if self.files_sort_asc { self.files_sort_asc = false; }
+                            else { self.files_sort_key = FilesSortKey::Default; self.files_sort_asc = true; }
+                            self.apply_files_sort();
+                        }
+                    });
+                    header.col(|ui| {
+                        let active = matches!(self.files_sort_key, FilesSortKey::Updated);
+                        let arrow = if active { if self.files_sort_asc { " ▲" } else { " ▼" } } else { "" };
+                        if ui.button(format!("Updated{}", arrow)).clicked() {
+                            if self.files_sort_key != FilesSortKey::Updated { self.files_sort_key = FilesSortKey::Updated; self.files_sort_asc = true; }
+                            else if self.files_sort_asc { self.files_sort_asc = false; }
+                            else { self.files_sort_key = FilesSortKey::Default; self.files_sort_asc = true; }
+                            self.apply_files_sort();
+                        }
+                    });
+                    header.col(|ui| {
+                        let active = matches!(self.files_sort_key, FilesSortKey::Author);
+                        let arrow = if active { if self.files_sort_asc { " ▲" } else { " ▼" } } else { "" };
+                        if ui.button(format!("Author{}", arrow)).clicked() {
+                            if self.files_sort_key != FilesSortKey::Author { self.files_sort_key = FilesSortKey::Author; self.files_sort_asc = true; }
+                            else if self.files_sort_asc { self.files_sort_asc = false; }
+                            else { self.files_sort_key = FilesSortKey::Default; self.files_sort_asc = true; }
+                            self.apply_files_sort();
+                        }
+                    });
+                    header.col(|ui| {
+                        let active = matches!(self.files_sort_key, FilesSortKey::Inserted);
+                        let arrow = if active { if self.files_sort_asc { " ▲" } else { " ▼" } } else { "" };
+                        if ui.button(format!("Inserted{}", arrow)).clicked() {
+                            if self.files_sort_key != FilesSortKey::Inserted { self.files_sort_key = FilesSortKey::Inserted; self.files_sort_asc = true; }
+                            else if self.files_sort_asc { self.files_sort_asc = false; }
+                            else { self.files_sort_key = FilesSortKey::Default; self.files_sort_asc = true; }
+                            self.apply_files_sort();
+                        }
+                    });
                 })
                 .body(|mut body| {
                     fn humanize_bytes_opt(v: Option<u64>) -> String {
@@ -619,7 +699,17 @@ impl AppState {
         // Synchronous fetch; can move to a thread if needed later
         if let Some(svc) = &self.svc {
             match svc.list_files(limit, offset) {
-                Ok(list) => { self.files = list; self.status = format!("Loaded files page {} ({} items)", self.files_page + 1, self.files.len()); }
+                Ok(list) => {
+                    self.files = list;
+                    // Capture default order by doc_id for tri-state sort (Default)
+                    self.files_default_ord.clear();
+                    for (i, rec) in self.files.iter().enumerate() {
+                        self.files_default_ord.insert(rec.doc_id.0.clone(), i);
+                    }
+                    // Apply current sort selection
+                    self.apply_files_sort();
+                    self.status = format!("Loaded files page {} ({} items)", self.files_page + 1, self.files.len());
+                }
                 Err(e) => { self.status = format!("List files failed: {e}"); }
             }
         }
@@ -1188,6 +1278,9 @@ impl AppState {
             files_delete_pending: None,
             files_deleting: false,
             files_selected_set: std::collections::HashSet::new(),
+            files_sort_key: FilesSortKey::Default,
+            files_sort_asc: true,
+            files_default_ord: std::collections::HashMap::new(),
         };
         // Update default prompt header instruction to include citation guidance
         s.prompt_header_tmpl = String::from("{\n  \"instruction\": \"\",\n  \"query\": \"<<Query:escape_json>>\",\n  \"results\": [\n" );
@@ -3193,6 +3286,28 @@ fn open_in_os_folder(path: &str) -> Result<(), String> {
 
 
 impl AppState {
+    fn apply_files_sort(&mut self) {
+        let asc = self.files_sort_asc;
+        let key = self.files_sort_key;
+        self.files.sort_by(|a, b| {
+            use std::cmp::Ordering;
+            let ord: Ordering = match key {
+                FilesSortKey::Default => {
+                    let ai = self.files_default_ord.get(&a.doc_id.0).copied().unwrap_or(usize::MAX);
+                    let bi = self.files_default_ord.get(&b.doc_id.0).copied().unwrap_or(usize::MAX);
+                    ai.cmp(&bi)
+                }
+                FilesSortKey::File => a.source_uri.cmp(&b.source_uri),
+                FilesSortKey::Size => a.file_size_bytes.unwrap_or(0).cmp(&b.file_size_bytes.unwrap_or(0)),
+                FilesSortKey::Pages => a.page_count.unwrap_or(0).cmp(&b.page_count.unwrap_or(0)),
+                FilesSortKey::Chunks => a.chunk_count.unwrap_or(0).cmp(&b.chunk_count.unwrap_or(0)),
+                FilesSortKey::Updated => a.updated_at_meta.as_deref().unwrap_or("").cmp(b.updated_at_meta.as_deref().unwrap_or("")),
+                FilesSortKey::Author => a.author_guess.as_deref().unwrap_or("").cmp(b.author_guess.as_deref().unwrap_or("")),
+                FilesSortKey::Inserted => a.extracted_at.cmp(&b.extracted_at),
+            };
+            if asc || matches!(key, FilesSortKey::Default) { ord } else { ord.reverse() }
+        });
+    }
     fn apply_ingest_sort_with(&mut self, base_root: &str, show_abs: bool) {
         let asc = self.ingest_sort_asc;
         let key = self.ingest_sort_key;
