@@ -162,6 +162,15 @@
         "description":  "Bindings to libbzip2 for bzip2 compression and decompression exposed as Reader/Writer streams."
     },
     {
+        "name":  "calamine",
+        "version":  "0.23.1",
+        "authors":  "Johann Tuffe \u003ctafia973@gmail.com\u003e",
+        "repository":  "https://github.com/tafia/calamine",
+        "license":  "MIT",
+        "license_file":  null,
+        "description":  "An Excel/OpenDocument Spreadsheets reader and deserializer in pure rust"
+    },
+    {
         "name":  "cc",
         "version":  "1.2.43",
         "authors":  "Alex Crichton \u003calex@alexcrichton.com\u003e",
@@ -205,6 +214,15 @@
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
         "description":  "Traits for describing block ciphers and stream ciphers"
+    },
+    {
+        "name":  "codepage",
+        "version":  "0.1.2",
+        "authors":  "Henri Sivonen \u003chsivonen@hsivonen.fi\u003e",
+        "repository":  "https://github.com/hsivonen/codepage",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Mapping between Windows code page numbers and encoding_rs character encodings"
     },
     {
         "name":  "console_error_panic_hook",
@@ -371,7 +389,7 @@
     {
         "name":  "generic-array",
         "version":  "0.14.9",
-        "authors":  "Bartłomiej Kamiński \u003cfizyk20@gmail.com\u003e|Aaron Trent \u003cnovacrazy@gmail.com\u003e",
+        "authors":  "BartﾅＰmiej Kamiﾅгki \u003cfizyk20@gmail.com\u003e|Aaron Trent \u003cnovacrazy@gmail.com\u003e",
         "repository":  "https://github.com/fizyk20/generic-array.git",
         "license":  "MIT",
         "license_file":  null,
@@ -396,6 +414,15 @@
         "description":  "A small cross-platform library for retrieving random data from system source"
     },
     {
+        "name":  "hex",
+        "version":  "0.4.3",
+        "authors":  "KokaKiwi \u003ckokakiwi@kokakiwi.net\u003e",
+        "repository":  "https://github.com/KokaKiwi/rust-hex",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Encoding and decoding data into/from hexadecimal representation."
+    },
+    {
         "name":  "hmac",
         "version":  "0.12.1",
         "authors":  "RustCrypto Developers",
@@ -407,7 +434,7 @@
     {
         "name":  "iana-time-zone",
         "version":  "0.1.64",
-        "authors":  "Andrew Straw \u003cstrawman@astraw.com\u003e|René Kijewski \u003crene.kijewski@fu-berlin.de\u003e|Ryan Lopopolo \u003crjl@hyperbo.la\u003e",
+        "authors":  "Andrew Straw \u003cstrawman@astraw.com\u003e|Renﾃｩ Kijewski \u003crene.kijewski@fu-berlin.de\u003e|Ryan Lopopolo \u003crjl@hyperbo.la\u003e",
         "repository":  "https://github.com/strawlab/iana-time-zone",
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
@@ -416,7 +443,7 @@
     {
         "name":  "iana-time-zone-haiku",
         "version":  "0.1.2",
-        "authors":  "René Kijewski \u003ccrates.io@k6i.de\u003e",
+        "authors":  "Renﾃｩ Kijewski \u003ccrates.io@k6i.de\u003e",
         "repository":  "https://github.com/strawlab/iana-time-zone",
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
@@ -1026,6 +1053,24 @@
         "description":  "Fast LZW compression and decompression."
     },
     {
+        "name":  "windows",
+        "version":  "0.54.0",
+        "authors":  "Microsoft",
+        "repository":  "https://github.com/microsoft/windows-rs",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Rust for Windows"
+    },
+    {
+        "name":  "windows-core",
+        "version":  "0.54.0",
+        "authors":  "Microsoft",
+        "repository":  "https://github.com/microsoft/windows-rs",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Rust for Windows"
+    },
+    {
         "name":  "windows-core",
         "version":  "0.62.2",
         "authors":  null,
@@ -1063,6 +1108,15 @@
     },
     {
         "name":  "windows-result",
+        "version":  "0.1.2",
+        "authors":  "Microsoft",
+        "repository":  "https://github.com/microsoft/windows-rs",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Windows error handling"
+    },
+    {
+        "name":  "windows-result",
         "version":  "0.4.1",
         "authors":  null,
         "repository":  "https://github.com/microsoft/windows-rs",
@@ -1078,6 +1132,87 @@
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
         "description":  "Windows string types"
+    },
+    {
+        "name":  "windows-targets",
+        "version":  "0.52.6",
+        "authors":  "Microsoft",
+        "repository":  "https://github.com/microsoft/windows-rs",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Import libs for Windows"
+    },
+    {
+        "name":  "windows_aarch64_gnullvm",
+        "version":  "0.52.6",
+        "authors":  "Microsoft",
+        "repository":  "https://github.com/microsoft/windows-rs",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Import lib for Windows"
+    },
+    {
+        "name":  "windows_aarch64_msvc",
+        "version":  "0.52.6",
+        "authors":  "Microsoft",
+        "repository":  "https://github.com/microsoft/windows-rs",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Import lib for Windows"
+    },
+    {
+        "name":  "windows_i686_gnu",
+        "version":  "0.52.6",
+        "authors":  "Microsoft",
+        "repository":  "https://github.com/microsoft/windows-rs",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Import lib for Windows"
+    },
+    {
+        "name":  "windows_i686_gnullvm",
+        "version":  "0.52.6",
+        "authors":  "Microsoft",
+        "repository":  "https://github.com/microsoft/windows-rs",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Import lib for Windows"
+    },
+    {
+        "name":  "windows_i686_msvc",
+        "version":  "0.52.6",
+        "authors":  "Microsoft",
+        "repository":  "https://github.com/microsoft/windows-rs",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Import lib for Windows"
+    },
+    {
+        "name":  "windows_x86_64_gnu",
+        "version":  "0.52.6",
+        "authors":  "Microsoft",
+        "repository":  "https://github.com/microsoft/windows-rs",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Import lib for Windows"
+    },
+    {
+        "name":  "windows_x86_64_gnullvm",
+        "version":  "0.52.6",
+        "authors":  "Microsoft",
+        "repository":  "https://github.com/microsoft/windows-rs",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Import lib for Windows"
+    },
+    {
+        "name":  "windows_x86_64_msvc",
+        "version":  "0.52.6",
+        "authors":  "Microsoft",
+        "repository":  "https://github.com/microsoft/windows-rs",
+        "license":  "Apache-2.0 OR MIT",
+        "license_file":  null,
+        "description":  "Import lib for Windows"
     },
     {
         "name":  "wit-bindgen",
@@ -1698,7 +1833,7 @@
         "repository":  "https://github.com/servo/rust-fnv",
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
-        "description":  "Fowler–Noll–Vo hash function"
+        "description":  "Fowler窶哲oll窶天o hash function"
     },
     {
         "name":  "foldhash",
@@ -2099,7 +2234,7 @@
     {
         "name":  "lazy_static",
         "version":  "1.5.0",
-        "authors":  "Marvin Löbel \u003cloebel.marvin@gmail.com\u003e",
+        "authors":  "Marvin Lﾃｶbel \u003cloebel.marvin@gmail.com\u003e",
         "repository":  "https://github.com/rust-lang-nursery/lazy-static.rs",
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
@@ -2360,7 +2495,7 @@
     {
         "name":  "oneshot",
         "version":  "0.1.11",
-        "authors":  "Linus Färnstrand \u003cfaern@faern.net\u003e",
+        "authors":  "Linus Fﾃ､rnstrand \u003cfaern@faern.net\u003e",
         "repository":  "https://github.com/faern/oneshot",
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
@@ -2751,7 +2886,7 @@
         "repository":  "https://github.com/rapidfuzz/strsim-rs",
         "license":  "MIT",
         "license_file":  null,
-        "description":  "Implementations of string similarity metrics. Includes Hamming, Levenshtein, OSA, Damerau-Levenshtein, Jaro, Jaro-Winkler, and Sørensen-Dice."
+        "description":  "Implementations of string similarity metrics. Includes Hamming, Levenshtein, OSA, Damerau-Levenshtein, Jaro, Jaro-Winkler, and Sﾃｸrensen-Dice."
     },
     {
         "name":  "strum",
@@ -3340,15 +3475,6 @@
     },
     {
         "name":  "windows-targets",
-        "version":  "0.52.6",
-        "authors":  "Microsoft",
-        "repository":  "https://github.com/microsoft/windows-rs",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "Import libs for Windows"
-    },
-    {
-        "name":  "windows-targets",
         "version":  "0.53.5",
         "authors":  null,
         "repository":  "https://github.com/microsoft/windows-rs",
@@ -3367,15 +3493,6 @@
     },
     {
         "name":  "windows_aarch64_gnullvm",
-        "version":  "0.52.6",
-        "authors":  "Microsoft",
-        "repository":  "https://github.com/microsoft/windows-rs",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "Import lib for Windows"
-    },
-    {
-        "name":  "windows_aarch64_gnullvm",
         "version":  "0.53.1",
         "authors":  null,
         "repository":  "https://github.com/microsoft/windows-rs",
@@ -3386,15 +3503,6 @@
     {
         "name":  "windows_aarch64_msvc",
         "version":  "0.48.5",
-        "authors":  "Microsoft",
-        "repository":  "https://github.com/microsoft/windows-rs",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "Import lib for Windows"
-    },
-    {
-        "name":  "windows_aarch64_msvc",
-        "version":  "0.52.6",
         "authors":  "Microsoft",
         "repository":  "https://github.com/microsoft/windows-rs",
         "license":  "Apache-2.0 OR MIT",
@@ -3421,26 +3529,8 @@
     },
     {
         "name":  "windows_i686_gnu",
-        "version":  "0.52.6",
-        "authors":  "Microsoft",
-        "repository":  "https://github.com/microsoft/windows-rs",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "Import lib for Windows"
-    },
-    {
-        "name":  "windows_i686_gnu",
         "version":  "0.53.1",
         "authors":  null,
-        "repository":  "https://github.com/microsoft/windows-rs",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "Import lib for Windows"
-    },
-    {
-        "name":  "windows_i686_gnullvm",
-        "version":  "0.52.6",
-        "authors":  "Microsoft",
         "repository":  "https://github.com/microsoft/windows-rs",
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
@@ -3466,15 +3556,6 @@
     },
     {
         "name":  "windows_i686_msvc",
-        "version":  "0.52.6",
-        "authors":  "Microsoft",
-        "repository":  "https://github.com/microsoft/windows-rs",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "Import lib for Windows"
-    },
-    {
-        "name":  "windows_i686_msvc",
         "version":  "0.53.1",
         "authors":  null,
         "repository":  "https://github.com/microsoft/windows-rs",
@@ -3493,15 +3574,6 @@
     },
     {
         "name":  "windows_x86_64_gnu",
-        "version":  "0.52.6",
-        "authors":  "Microsoft",
-        "repository":  "https://github.com/microsoft/windows-rs",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "Import lib for Windows"
-    },
-    {
-        "name":  "windows_x86_64_gnu",
         "version":  "0.53.1",
         "authors":  null,
         "repository":  "https://github.com/microsoft/windows-rs",
@@ -3512,15 +3584,6 @@
     {
         "name":  "windows_x86_64_gnullvm",
         "version":  "0.48.5",
-        "authors":  "Microsoft",
-        "repository":  "https://github.com/microsoft/windows-rs",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "Import lib for Windows"
-    },
-    {
-        "name":  "windows_x86_64_gnullvm",
-        "version":  "0.52.6",
         "authors":  "Microsoft",
         "repository":  "https://github.com/microsoft/windows-rs",
         "license":  "Apache-2.0 OR MIT",
@@ -3539,15 +3602,6 @@
     {
         "name":  "windows_x86_64_msvc",
         "version":  "0.48.5",
-        "authors":  "Microsoft",
-        "repository":  "https://github.com/microsoft/windows-rs",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "Import lib for Windows"
-    },
-    {
-        "name":  "windows_x86_64_msvc",
-        "version":  "0.52.6",
         "authors":  "Microsoft",
         "repository":  "https://github.com/microsoft/windows-rs",
         "license":  "Apache-2.0 OR MIT",
@@ -3755,7 +3809,7 @@
     {
         "name":  "encode_unicode",
         "version":  "1.0.0",
-        "authors":  "Torbjørn Birch Moltu \u003ct.b.moltu@lyse.net\u003e",
+        "authors":  "Torbjﾃｸrn Birch Moltu \u003ct.b.moltu@lyse.net\u003e",
         "repository":  "https://github.com/tormol/encode_unicode",
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
@@ -3991,7 +4045,7 @@
         "version":  "0.1.0",
         "authors":  null,
         "repository":  null,
-        "license":  null,
+        "license":  "MIT",
         "license_file":  null,
         "description":  null
     },
@@ -4500,15 +4554,6 @@
         "description":  "Bindings to Cocoa Foundation for macOS"
     },
     {
-        "name":  "codepage",
-        "version":  "0.1.2",
-        "authors":  "Henri Sivonen \u003chsivonen@hsivonen.fi\u003e",
-        "repository":  "https://github.com/hsivonen/codepage",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "Mapping between Windows code page numbers and encoding_rs character encodings"
-    },
-    {
         "name":  "codespan-reporting",
         "version":  "0.11.1",
         "authors":  "Brendan Zabarauskas \u003cbjzaba@yahoo.com.au\u003e",
@@ -4754,7 +4799,7 @@
     {
         "name":  "enumflags2",
         "version":  "0.7.12",
-        "authors":  "maik klein \u003cmaikklein@googlemail.com\u003e|Maja Kądziołka \u003cmaya@compilercrim.es\u003e",
+        "authors":  "maik klein \u003cmaikklein@googlemail.com\u003e|Maja Kﾄ・zioﾅＬa \u003cmaya@compilercrim.es\u003e",
         "repository":  "https://github.com/meithecatte/enumflags2",
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
@@ -4763,7 +4808,7 @@
     {
         "name":  "enumflags2_derive",
         "version":  "0.7.12",
-        "authors":  "maik klein \u003cmaikklein@googlemail.com\u003e|Maja Kądziołka \u003cmaya@compilercrim.es\u003e",
+        "authors":  "maik klein \u003cmaikklein@googlemail.com\u003e|Maja Kﾄ・zioﾅＬa \u003cmaya@compilercrim.es\u003e",
         "repository":  "https://github.com/meithecatte/enumflags2",
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
@@ -5040,15 +5085,6 @@
         "description":  "Hermit system calls definitions."
     },
     {
-        "name":  "hex",
-        "version":  "0.4.3",
-        "authors":  "KokaKiwi \u003ckokakiwi@kokakiwi.net\u003e",
-        "repository":  "https://github.com/KokaKiwi/rust-hex",
-        "license":  "Apache-2.0 OR MIT",
-        "license_file":  null,
-        "description":  "Encoding and decoding data into/from hexadecimal representation."
-    },
-    {
         "name":  "hexf-parse",
         "version":  "0.2.1",
         "authors":  "Kang Seonghoon \u003cpublic+rust@mearie.org\u003e",
@@ -5123,7 +5159,7 @@
     {
         "name":  "khronos-egl",
         "version":  "6.0.0",
-        "authors":  "Timothée Haudebourg \u003cauthor@haudebourg.net\u003e|Sean Kerr \u003csean@metatomic.io\u003e",
+        "authors":  "Timothﾃｩe Haudebourg \u003cauthor@haudebourg.net\u003e|Sean Kerr \u003csean@metatomic.io\u003e",
         "repository":  "https://github.com/timothee-haudebourg/khronos-egl",
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
@@ -5519,7 +5555,7 @@
     {
         "name":  "proc-macro-crate",
         "version":  "1.3.1",
-        "authors":  "Bastian Köcher \u003cgit@kchr.de\u003e",
+        "authors":  "Bastian Kﾃｶcher \u003cgit@kchr.de\u003e",
         "repository":  "https://github.com/bkchr/proc-macro-crate",
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
@@ -5528,7 +5564,7 @@
     {
         "name":  "proc-macro-crate",
         "version":  "3.4.0",
-        "authors":  "Bastian Köcher \u003cgit@kchr.de\u003e",
+        "authors":  "Bastian Kﾃｶcher \u003cgit@kchr.de\u003e",
         "repository":  "https://github.com/bkchr/proc-macro-crate",
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
@@ -5825,7 +5861,7 @@
     {
         "name":  "ttf-parser",
         "version":  "0.25.1",
-        "authors":  "Caleb Maclennan \u003ccaleb@alerque.com\u003e|Laurenz Stampfl \u003claurenz.stampfl@gmail.com\u003e|Yevhenii Reizner \u003crazrfalcon@gmail.com\u003e|خالد حسني (Khaled Hosny) \u003ckhaled@aliftype.com\u003e",
+        "authors":  "Caleb Maclennan \u003ccaleb@alerque.com\u003e|Laurenz Stampfl \u003claurenz.stampfl@gmail.com\u003e|Yevhenii Reizner \u003crazrfalcon@gmail.com\u003e|ﾘｮﾘｧﾙ・ｯ ﾘｭﾘｳﾙ・・(Khaled Hosny) \u003ckhaled@aliftype.com\u003e",
         "repository":  "https://github.com/harfbuzz/ttf-parser",
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
@@ -6185,7 +6221,7 @@
     {
         "name":  "x11rb",
         "version":  "0.13.2",
-        "authors":  "Uli Schlachter \u003cpsychon@znc.in\u003e|Eduardo Sánchez Muñoz \u003ceduardosm-dev@e64.io\u003e|notgull \u003cjtnunley01@gmail.com\u003e",
+        "authors":  "Uli Schlachter \u003cpsychon@znc.in\u003e|Eduardo Sﾃ｡nchez Muﾃｱoz \u003ceduardosm-dev@e64.io\u003e|notgull \u003cjtnunley01@gmail.com\u003e",
         "repository":  "https://github.com/psychon/x11rb",
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
@@ -6194,7 +6230,7 @@
     {
         "name":  "x11rb-protocol",
         "version":  "0.13.2",
-        "authors":  "Uli Schlachter \u003cpsychon@znc.in\u003e|Eduardo Sánchez Muñoz \u003ceduardosm-dev@e64.io\u003e|notgull \u003cjtnunley01@gmail.com\u003e",
+        "authors":  "Uli Schlachter \u003cpsychon@znc.in\u003e|Eduardo Sﾃ｡nchez Muﾃｱoz \u003ceduardosm-dev@e64.io\u003e|notgull \u003cjtnunley01@gmail.com\u003e",
         "repository":  "https://github.com/psychon/x11rb",
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,
@@ -6266,7 +6302,7 @@
     {
         "name":  "zbus_macros",
         "version":  "3.15.2",
-        "authors":  "Marc-André Lureau \u003cmarcandre.lureau@redhat.com\u003e|Zeeshan Ali Khan \u003czeeshanak@gnome.org\u003e",
+        "authors":  "Marc-Andrﾃｩ Lureau \u003cmarcandre.lureau@redhat.com\u003e|Zeeshan Ali Khan \u003czeeshanak@gnome.org\u003e",
         "repository":  "https://github.com/dbus2/zbus/",
         "license":  "MIT",
         "license_file":  null,
@@ -6275,7 +6311,7 @@
     {
         "name":  "zbus_macros",
         "version":  "4.4.0",
-        "authors":  "Marc-André Lureau \u003cmarcandre.lureau@redhat.com\u003e|Zeeshan Ali Khan \u003czeeshanak@gnome.org\u003e",
+        "authors":  "Marc-Andrﾃｩ Lureau \u003cmarcandre.lureau@redhat.com\u003e|Zeeshan Ali Khan \u003czeeshanak@gnome.org\u003e",
         "repository":  "https://github.com/dbus2/zbus/",
         "license":  "MIT",
         "license_file":  null,
@@ -6383,7 +6419,7 @@
     {
         "name":  "egui_extras",
         "version":  "0.27.2",
-        "authors":  "Dominik Rössler \u003cdominik@freshx.de\u003e|Emil Ernerfeldt \u003cemil.ernerfeldt@gmail.com\u003e|René Rössler \u003crene@freshx.de\u003e",
+        "authors":  "Dominik Rﾃｶssler \u003cdominik@freshx.de\u003e|Emil Ernerfeldt \u003cemil.ernerfeldt@gmail.com\u003e|Renﾃｩ Rﾃｶssler \u003crene@freshx.de\u003e",
         "repository":  "https://github.com/emilk/egui",
         "license":  "Apache-2.0 OR MIT",
         "license_file":  null,

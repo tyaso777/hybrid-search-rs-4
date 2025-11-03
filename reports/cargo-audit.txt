@@ -7,27 +7,27 @@
 [0m[0m[1m[33mURL:      [0m https://rustsec.org/advisories/RUSTSEC-2024-0388
 [0m[0m[1m[33mDependency tree:
 [0mderivative 2.2.0
-└── zbus 3.15.2
-    ├── atspi-proxies 0.3.0
-    │   ├── atspi-connection 0.3.0
-    │   │   └── atspi 0.19.0
-    │   │       └── accesskit_unix 0.6.2
-    │   │           └── accesskit_winit 0.16.1
-    │   │               └── egui-winit 0.27.2
-    │   │                   └── eframe 0.27.2
-    │   │                       ├── tokenize-lab 0.1.0
-    │   │                       ├── pdf-block-viewer 0.1.0
-    │   │                       ├── hybrid-service-gui 0.1.0
-    │   │                       ├── hybrid-orchestrator-gui 0.1.0
-    │   │                       ├── embedder-demo 0.1.0
-    │   │                       └── chunker-viewer 0.1.0
-    │   └── atspi 0.19.0
-    ├── atspi-connection 0.3.0
-    ├── atspi-common 0.3.0
-    │   ├── atspi-proxies 0.3.0
-    │   ├── atspi-connection 0.3.0
-    │   └── atspi 0.19.0
-    └── accesskit_unix 0.6.2
+笏披楳笏 zbus 3.15.2
+    笏懌楳笏 atspi-proxies 0.3.0
+    笏・  笏懌楳笏 atspi-connection 0.3.0
+    笏・  笏・  笏披楳笏 atspi 0.19.0
+    笏・  笏・      笏披楳笏 accesskit_unix 0.6.2
+    笏・  笏・          笏披楳笏 accesskit_winit 0.16.1
+    笏・  笏・              笏披楳笏 egui-winit 0.27.2
+    笏・  笏・                  笏披楳笏 eframe 0.27.2
+    笏・  笏・                      笏懌楳笏 tokenize-lab 0.1.0
+    笏・  笏・                      笏懌楳笏 pdf-block-viewer 0.1.0
+    笏・  笏・                      笏懌楳笏 hybrid-service-gui 0.1.0
+    笏・  笏・                      笏懌楳笏 hybrid-orchestrator-gui 0.1.0
+    笏・  笏・                      笏懌楳笏 embedder-demo 0.1.0
+    笏・  笏・                      笏披楳笏 chunker-viewer 0.1.0
+    笏・  笏披楳笏 atspi 0.19.0
+    笏懌楳笏 atspi-connection 0.3.0
+    笏懌楳笏 atspi-common 0.3.0
+    笏・  笏懌楳笏 atspi-proxies 0.3.0
+    笏・  笏懌楳笏 atspi-connection 0.3.0
+    笏・  笏披楳笏 atspi 0.19.0
+    笏披楳笏 accesskit_unix 0.6.2
 
 [0m[0m[1m[33mCrate:    [0m encoding
 [0m[0m[1m[33mVersion:  [0m 0.2.33
@@ -38,28 +38,28 @@
 [0m[0m[1m[33mURL:      [0m https://rustsec.org/advisories/RUSTSEC-2021-0153
 [0m[0m[1m[33mDependency tree:
 [0mencoding 0.2.33
-└── lindera-dictionary 1.4.1
-    ├── lindera-unidic 1.4.1
-    │   └── lindera 1.4.1
-    │       ├── tokenize-lab 0.1.0
-    │       ├── lindera-tantivy 1.1.0
-    │       │   ├── tokenize-lab 0.1.0
-    │       │   └── chunking-store 0.1.0
-    │       │       ├── hybrid-service-gui 0.1.0
-    │       │       ├── hybrid-service 0.1.0
-    │       │       │   └── hybrid-service-gui 0.1.0
-    │       │       ├── hybrid-orchestrator-gui 0.1.0
-    │       │       └── hybrid-orchestrator 0.1.0
-    │       └── chunking-store 0.1.0
-    ├── lindera-ko-dic 1.4.1
-    │   └── lindera 1.4.1
-    ├── lindera-ipadic-neologd 1.4.1
-    │   └── lindera 1.4.1
-    ├── lindera-ipadic 1.4.1
-    │   └── lindera 1.4.1
-    ├── lindera-cc-cedict 1.4.1
-    │   └── lindera 1.4.1
-    └── lindera 1.4.1
+笏披楳笏 lindera-dictionary 1.4.1
+    笏懌楳笏 lindera-unidic 1.4.1
+    笏・  笏披楳笏 lindera 1.4.1
+    笏・      笏懌楳笏 tokenize-lab 0.1.0
+    笏・      笏懌楳笏 lindera-tantivy 1.1.0
+    笏・      笏・  笏懌楳笏 tokenize-lab 0.1.0
+    笏・      笏・  笏披楳笏 chunking-store 0.1.0
+    笏・      笏・      笏懌楳笏 hybrid-service-gui 0.1.0
+    笏・      笏・      笏懌楳笏 hybrid-service 0.1.0
+    笏・      笏・      笏・  笏披楳笏 hybrid-service-gui 0.1.0
+    笏・      笏・      笏懌楳笏 hybrid-orchestrator-gui 0.1.0
+    笏・      笏・      笏披楳笏 hybrid-orchestrator 0.1.0
+    笏・      笏披楳笏 chunking-store 0.1.0
+    笏懌楳笏 lindera-ko-dic 1.4.1
+    笏・  笏披楳笏 lindera 1.4.1
+    笏懌楳笏 lindera-ipadic-neologd 1.4.1
+    笏・  笏披楳笏 lindera 1.4.1
+    笏懌楳笏 lindera-ipadic 1.4.1
+    笏・  笏披楳笏 lindera 1.4.1
+    笏懌楳笏 lindera-cc-cedict 1.4.1
+    笏・  笏披楳笏 lindera 1.4.1
+    笏披楳笏 lindera 1.4.1
 
 [0m[0m[1m[33mCrate:    [0m instant
 [0m[0m[1m[33mVersion:  [0m 0.1.13
@@ -70,37 +70,37 @@
 [0m[0m[1m[33mURL:      [0m https://rustsec.org/advisories/RUSTSEC-2024-0384
 [0m[0m[1m[33mDependency tree:
 [0minstant 0.1.13
-└── fastrand 1.9.0
-    └── futures-lite 1.13.0
-        ├── atspi-connection 0.3.0
-        │   └── atspi 0.19.0
-        │       └── accesskit_unix 0.6.2
-        │           └── accesskit_winit 0.16.1
-        │               └── egui-winit 0.27.2
-        │                   └── eframe 0.27.2
-        │                       ├── tokenize-lab 0.1.0
-        │                       ├── pdf-block-viewer 0.1.0
-        │                       ├── hybrid-service-gui 0.1.0
-        │                       ├── hybrid-orchestrator-gui 0.1.0
-        │                       ├── embedder-demo 0.1.0
-        │                       └── chunker-viewer 0.1.0
-        ├── async-process 1.8.1
-        │   └── zbus 3.15.2
-        │       ├── atspi-proxies 0.3.0
-        │       │   ├── atspi-connection 0.3.0
-        │       │   └── atspi 0.19.0
-        │       ├── atspi-connection 0.3.0
-        │       ├── atspi-common 0.3.0
-        │       │   ├── atspi-proxies 0.3.0
-        │       │   ├── atspi-connection 0.3.0
-        │       │   └── atspi 0.19.0
-        │       └── accesskit_unix 0.6.2
-        ├── async-io 1.13.0
-        │   ├── zbus 3.15.2
-        │   └── async-process 1.8.1
-        ├── async-fs 1.6.0
-        │   └── zbus 3.15.2
-        └── accesskit_unix 0.6.2
+笏披楳笏 fastrand 1.9.0
+    笏披楳笏 futures-lite 1.13.0
+        笏懌楳笏 atspi-connection 0.3.0
+        笏・  笏披楳笏 atspi 0.19.0
+        笏・      笏披楳笏 accesskit_unix 0.6.2
+        笏・          笏披楳笏 accesskit_winit 0.16.1
+        笏・              笏披楳笏 egui-winit 0.27.2
+        笏・                  笏披楳笏 eframe 0.27.2
+        笏・                      笏懌楳笏 tokenize-lab 0.1.0
+        笏・                      笏懌楳笏 pdf-block-viewer 0.1.0
+        笏・                      笏懌楳笏 hybrid-service-gui 0.1.0
+        笏・                      笏懌楳笏 hybrid-orchestrator-gui 0.1.0
+        笏・                      笏懌楳笏 embedder-demo 0.1.0
+        笏・                      笏披楳笏 chunker-viewer 0.1.0
+        笏懌楳笏 async-process 1.8.1
+        笏・  笏披楳笏 zbus 3.15.2
+        笏・      笏懌楳笏 atspi-proxies 0.3.0
+        笏・      笏・  笏懌楳笏 atspi-connection 0.3.0
+        笏・      笏・  笏披楳笏 atspi 0.19.0
+        笏・      笏懌楳笏 atspi-connection 0.3.0
+        笏・      笏懌楳笏 atspi-common 0.3.0
+        笏・      笏・  笏懌楳笏 atspi-proxies 0.3.0
+        笏・      笏・  笏懌楳笏 atspi-connection 0.3.0
+        笏・      笏・  笏披楳笏 atspi 0.19.0
+        笏・      笏披楳笏 accesskit_unix 0.6.2
+        笏懌楳笏 async-io 1.13.0
+        笏・  笏懌楳笏 zbus 3.15.2
+        笏・  笏披楳笏 async-process 1.8.1
+        笏懌楳笏 async-fs 1.6.0
+        笏・  笏披楳笏 zbus 3.15.2
+        笏披楳笏 accesskit_unix 0.6.2
 
 [0m[0m[1m[33mCrate:    [0m paste
 [0m[0m[1m[33mVersion:  [0m 1.0.15
@@ -111,32 +111,32 @@
 [0m[0m[1m[33mURL:      [0m https://rustsec.org/advisories/RUSTSEC-2024-0436
 [0m[0m[1m[33mDependency tree:
 [0mpaste 1.0.15
-├── tokenizers 0.22.1
-│   └── embedding-provider 0.1.0
-│       ├── hybrid-service-gui 0.1.0
-│       ├── hybrid-service 0.1.0
-│       │   └── hybrid-service-gui 0.1.0
-│       ├── hybrid-orchestrator-gui 0.1.0
-│       ├── hybrid-orchestrator 0.1.0
-│       └── embedder-demo 0.1.0
-├── metal 0.27.0
-│   └── wgpu-hal 0.19.5
-│       ├── wgpu-core 0.19.4
-│       │   └── wgpu 0.19.4
-│       │       ├── egui-wgpu 0.27.2
-│       │       │   └── eframe 0.27.2
-│       │       │       ├── tokenize-lab 0.1.0
-│       │       │       ├── pdf-block-viewer 0.1.0
-│       │       │       ├── hybrid-service-gui 0.1.0
-│       │       │       ├── hybrid-orchestrator-gui 0.1.0
-│       │       │       ├── embedder-demo 0.1.0
-│       │       │       └── chunker-viewer 0.1.0
-│       │       └── eframe 0.27.2
-│       └── wgpu 0.19.4
-├── macro_rules_attribute 0.2.2
-│   └── tokenizers 0.22.1
-└── accesskit_windows 0.15.1
-    └── accesskit_winit 0.16.1
-        └── egui-winit 0.27.2
-            └── eframe 0.27.2
+笏懌楳笏 tokenizers 0.22.1
+笏・  笏披楳笏 embedding-provider 0.1.0
+笏・      笏懌楳笏 hybrid-service-gui 0.1.0
+笏・      笏懌楳笏 hybrid-service 0.1.0
+笏・      笏・  笏披楳笏 hybrid-service-gui 0.1.0
+笏・      笏懌楳笏 hybrid-orchestrator-gui 0.1.0
+笏・      笏懌楳笏 hybrid-orchestrator 0.1.0
+笏・      笏披楳笏 embedder-demo 0.1.0
+笏懌楳笏 metal 0.27.0
+笏・  笏披楳笏 wgpu-hal 0.19.5
+笏・      笏懌楳笏 wgpu-core 0.19.4
+笏・      笏・  笏披楳笏 wgpu 0.19.4
+笏・      笏・      笏懌楳笏 egui-wgpu 0.27.2
+笏・      笏・      笏・  笏披楳笏 eframe 0.27.2
+笏・      笏・      笏・      笏懌楳笏 tokenize-lab 0.1.0
+笏・      笏・      笏・      笏懌楳笏 pdf-block-viewer 0.1.0
+笏・      笏・      笏・      笏懌楳笏 hybrid-service-gui 0.1.0
+笏・      笏・      笏・      笏懌楳笏 hybrid-orchestrator-gui 0.1.0
+笏・      笏・      笏・      笏懌楳笏 embedder-demo 0.1.0
+笏・      笏・      笏・      笏披楳笏 chunker-viewer 0.1.0
+笏・      笏・      笏披楳笏 eframe 0.27.2
+笏・      笏披楳笏 wgpu 0.19.4
+笏懌楳笏 macro_rules_attribute 0.2.2
+笏・  笏披楳笏 tokenizers 0.22.1
+笏披楳笏 accesskit_windows 0.15.1
+    笏披楳笏 accesskit_winit 0.16.1
+        笏披楳笏 egui-winit 0.27.2
+            笏披楳笏 eframe 0.27.2
 

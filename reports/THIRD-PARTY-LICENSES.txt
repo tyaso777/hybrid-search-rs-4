@@ -1,6 +1,6 @@
 ﻿THIRD-PARTY LICENSES (cargo-about)
 
-Generated: 2025-10-30 01:33:33 UTC
+Generated: 2025-11-03 22:53:07 UTC
 This file contains license texts for third-party crates used by this project.
 Workspace/local crates are excluded.
 
@@ -246,6 +246,7 @@ Used by:
 - block2 0.3.0  https://github.com/madsmtm/objc2
 - block-sys 0.2.1  https://github.com/madsmtm/objc2
 - bytes 1.10.1  https://github.com/tokio-rs/bytes
+- calamine 0.23.1  https://github.com/tafia/calamine
 - calamine 0.31.0  https://github.com/tafia/calamine
 - calloop 0.12.4  https://github.com/Smithay/calloop
 - calloop 0.13.0  https://github.com/Smithay/calloop
