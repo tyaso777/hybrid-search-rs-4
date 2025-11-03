@@ -84,6 +84,12 @@ enum FilesSortKey {
     Inserted,
 }
 
+#[derive(Debug, Clone)]
+enum UiProgressEvent {
+    FileStart { index: usize, total: usize, path: String },
+    Service(ProgressEvent),
+}
+
 #[derive(Debug)]
 struct ServiceInitTask {
     rx: Receiver<Result<Arc<HybridService>, String>>,
@@ -158,7 +164,11 @@ struct AppState {
     chunk_penalize_page_no_nl: bool,
 
     // Ingest job (async)
-    ingest_rx: Option<Receiver<ProgressEvent>>,
+    ingest_rx: Option<Receiver<UiProgressEvent>>,
+    // For tri‑level progress: per‑file index/total and name
+    ingest_file_idx: usize,
+    ingest_file_total: usize,
+    ingest_file_name: String,
     ingest_cancel: Option<CancelToken>,
     ingest_running: bool,
     ingest_done: usize,
@@ -574,12 +584,7 @@ impl AppState {
                             None => String::from("-"),
                         }
                     }
-                    fn trunc(s: &str, n: usize) -> String {
-                        if s.chars().count() <= n { return s.to_string(); }
-                        let mut out: String = s.chars().take(n).collect();
-                        out.push('\u{2026}');
-                        out
-                    }
+                    // removed unused helper trunc(s, n)
                     for rec in &self.files {
                         body.row(22.0, |mut row_ui| {
                             // select
@@ -642,27 +647,7 @@ impl AppState {
         }
     }
 
-    fn delete_by_doc_id(&mut self, doc_id: &str) {
-        if self.svc.is_none() { self.status = "Service not initialized".into(); return; }
-        if !self.ensure_store_paths_current() { return; }
-        let filters = vec![FilterClause { kind: FilterKind::Must, op: FilterOp::DocIdEq(doc_id.to_string()) }];
-        self.files_deleting = true;
-        if let Some(svc) = &self.svc {
-            match svc.delete_by_filter(&filters, 1000) {
-                Ok(rep) => {
-                    self.status = format!("Deleted: db={} ids={}, batches={}", rep.db_deleted, rep.total_ids, rep.batches);
-                    self.files_delete_pending = None;
-                    self.files_selected_doc = None;
-                    self.files_selected_display.clear();
-                    self.files_selected_detail.clear();
-                    // Refresh current page
-                    self.refresh_files();
-                }
-                Err(e) => { self.status = format!("Delete failed: {e}"); }
-            }
-        }
-        self.files_deleting = false;
-    }
+    // removed unused method delete_by_doc_id (replaced by bulk delete flow)
 
     fn delete_selected_files(&mut self) {
         if self.svc.is_none() { self.status = "Service not initialized".into(); return; }
@@ -1206,6 +1191,9 @@ impl AppState {
             chunk_penalize_page_no_nl: true,
 
             ingest_rx: None,
+            ingest_file_idx: 0,
+            ingest_file_total: 0,
+            ingest_file_name: String::new(),
             ingest_cancel: None,
             ingest_running: false,
             ingest_done: 0,
@@ -1517,7 +1505,6 @@ impl App for AppState {
 impl AppState {
     fn ui_insert(&mut self, ui: &mut egui::Ui) {
         ui.heading("Insert");
-        ui.add_enabled_ui(!self.ingest_running, |ui| {
             // Sub-tabs for Insert
             ui.horizontal(|ui| {
                 // Tab buttons with underline
@@ -1554,6 +1541,7 @@ impl AppState {
 
             match self.insert_mode {
                 InsertMode::File => {
+                    ui.add_enabled_ui(!self.ingest_running, |ui| {
                     // Row 1: Choose File, [File path]
                     ui.horizontal(|ui| {
                         if ui.button("Choose File").clicked() {
@@ -1594,75 +1582,99 @@ impl AppState {
 
                     // Row 5: Ingest File
                     if ui.add_enabled(!self.ingest_running, Button::new("Ingest File")).clicked() { self.do_ingest_file(); }
-                }
+                    });
+                },
                 InsertMode::Files => {
-                    // Row 1: Choose Folder, [Folder path]
-                    ui.horizontal(|ui| {
-                        if ui.button("Choose Folder").clicked() {
-                            if let Some(p) = FileDialog::new().pick_folder() {
-                                self.ingest_folder_path = p.display().to_string();
+                    // Disable interactive controls while ingesting
+                    ui.add_enabled_ui(!self.ingest_running, |ui| {
+                        // Row 1: Choose Folder, [Folder path]
+                        ui.horizontal(|ui| {
+                            if ui.button("Choose Folder").clicked() {
+                                if let Some(p) = FileDialog::new().pick_folder() {
+                                    self.ingest_folder_path = p.display().to_string();
+                                }
                             }
-                        }
-                        ui.add(TextEdit::singleline(&mut self.ingest_folder_path).desired_width(420.0));
-                    });
-                    // Row 2: Extensions + Encoding + Depth
-                    ui.horizontal(|ui| { ui.label("Extensions (comma)");
-                        ui.add(TextEdit::singleline(&mut self.ingest_exts).desired_width(220.0));
-                        ui.label("Encoding");
-                        let encs = ["auto", "utf-8", "shift_jis", "windows-1252", "utf-16le", "utf-16be"];
-                        ComboBox::from_id_source("ingest_files_encoding")
-                            .selected_text(self.ingest_encoding.clone())
-                            .show_ui(ui, |ui| {
-                                for e in encs { ui.selectable_value(&mut self.ingest_encoding, e.to_string(), e); }
+                            ui.add(TextEdit::singleline(&mut self.ingest_folder_path).desired_width(420.0));
+                        });
+                        // Row 2: Extensions + Encoding + Depth
+                        ui.horizontal(|ui| { ui.label("Extensions (comma)");
+                            ui.add(TextEdit::singleline(&mut self.ingest_exts).desired_width(220.0));
+                            ui.label("Encoding");
+                            let encs = ["auto", "utf-8", "shift_jis", "windows-1252", "utf-16le", "utf-16be"];
+                            ComboBox::from_id_source("ingest_files_encoding")
+                                .selected_text(self.ingest_encoding.clone())
+                                .show_ui(ui, |ui| {
+                                    for e in encs { ui.selectable_value(&mut self.ingest_encoding, e.to_string(), e); }
+                                });
+                            ui.label("Depth");
+                            ui.add(DragValue::new(&mut self.ingest_depth).clamp_range(0..=16));
+                        });
+                        // Row 3: Scan buttons under Extensions
+                        ui.horizontal(|ui| { ui.checkbox(&mut self.ingest_only_unregistered, "Check unregistered files"); });
+                        ui.horizontal(|ui| {
+                            if ui.button("Scan").clicked() {
+                                if self.ingest_only_unregistered { self.scan_ingest_folder_unregistered(); } else { self.scan_ingest_folder(); }
+                            }
+                        ui.separator();
+                        });
+                        ui.horizontal(|ui| {
+                            let has_items = !self.ingest_files.is_empty();
+                            let selected_count = self.ingest_files.iter().filter(|i| i.include).count();
+                            let any_selected = selected_count > 0;
+                            let can_ingest = has_items && any_selected && !self.ingest_running;
+                            if ui.add_enabled(can_ingest, Button::new("Ingest Selected")).clicked() {
+                                self.do_ingest_files_batch();
+                            }
+                            // Show selection summary
+                            if has_items {
+                                ui.label(format!("Selected: {} / Total: {}", selected_count, self.ingest_files.len()));
+                            }
+                            ui.checkbox(&mut self.ingest_show_abs_paths, "Absolute paths");
+                        });
+                    }); // end disabled controls block
+                    // Inline progress under the button (two bars): chunk progress and file progress
+                    if self.ingest_running {
+                        // 1) Chunk progress
+                        let frac_chunks: f32 = if self.ingest_total > 0 { (self.ingest_done as f32 / self.ingest_total as f32).clamp(0.0, 1.0) } else { 0.0 };
+                        ui.horizontal(|ui| {
+                            ui.add(ProgressBar::new(frac_chunks).desired_width(420.0).show_percentage());
+                            ui.label(format!("{} / {} (batch {})", self.ingest_done, self.ingest_total, self.ingest_last_batch));
+                        });
+                        // 2) File progress (finished files count over total)
+                        if self.ingest_file_total > 0 {
+                            let finished_files = self.ingest_file_idx.saturating_sub(1) as f32;
+                            let total_files = self.ingest_file_total as f32;
+                            let frac_files: f32 = (finished_files / total_files).clamp(0.0, 1.0);
+                            ui.horizontal(|ui| {
+                                ui.add(ProgressBar::new(frac_files).desired_width(420.0).show_percentage());
+                                ui.label(format!("File {} / {}: {}", self.ingest_file_idx, self.ingest_file_total, self.ingest_file_name));
                             });
-                        ui.label("Depth");
-                        ui.add(DragValue::new(&mut self.ingest_depth).clamp_range(0..=16));
-                    });
-                    // Row 3: Scan buttons under Extensions
-                    ui.horizontal(|ui| { ui.checkbox(&mut self.ingest_only_unregistered, "Check unregistered files"); });
-                    ui.horizontal(|ui| {
-                        if ui.button("Scan").clicked() {
-                            if self.ingest_only_unregistered { self.scan_ingest_folder_unregistered(); } else { self.scan_ingest_folder(); }
                         }
-                    ui.separator();
-                    });
-                    ui.horizontal(|ui| {
-                        let has_items = !self.ingest_files.is_empty();
-                        let selected_count = self.ingest_files.iter().filter(|i| i.include).count();
-                        let any_selected = selected_count > 0;
-                        let can_ingest = has_items && any_selected && !self.ingest_running;
-                        if ui.add_enabled(can_ingest, Button::new("Ingest Selected")).clicked() {
-                            self.do_ingest_files_batch();
-                        }
-                        // Show selection summary
-                        if has_items {
-                            ui.label(format!("Selected: {} / Total: {}", selected_count, self.ingest_files.len()));
-                        }
-                        ui.checkbox(&mut self.ingest_show_abs_paths, "Absolute paths");
-                    });
+                    }
                     ui.add_space(4.0);
-                    // Results table or empty message
-                    if self.ingest_files.is_empty() {
-                        ui.label("No files scanned.");
-                    } else {
-                        let tbl_id = if self.ingest_show_abs_paths { "ingest_files_table_abs" } else { "ingest_files_table_rel" };
-                        ui.push_id(tbl_id, |ui| {
-                            egui::ScrollArea::horizontal().id_source("ingest_files_table_h").show(ui, |ui| {
-                                // Use a narrower default for the File column when showing relative paths
-                                let file_col_w: f32 = if self.ingest_show_abs_paths { 520.0 } else { 520.0 * 0.7 };
-                                let table = TableBuilder::new(ui)
-                                    .striped(true)
-                                    .resizable(true)
-                                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                                    .column(Column::initial(28.0))    // include checkbox
-                                    .column(Column::initial(file_col_w))   // File (path)
-                                    .column(Column::initial(72.0))    // Size (0.6x)
-                                    .column(Column::initial(80.0))    // Date (yyyy/mm/dd, 0.8x)
-                                    .column(Column::initial(112.0))   // Encoding override (0.8x)
-                                    .column(Column::initial(220.0));  // Preview (first chars)
+                    // Results table or empty message (disabled during ingest)
+                    ui.add_enabled_ui(!self.ingest_running, |ui| {
+                        if self.ingest_files.is_empty() {
+                            ui.label("No files scanned.");
+                        } else {
+                            let tbl_id = if self.ingest_show_abs_paths { "ingest_files_table_abs" } else { "ingest_files_table_rel" };
+                            ui.push_id(tbl_id, |ui| {
+                                egui::ScrollArea::horizontal().id_source("ingest_files_table_h").show(ui, |ui| {
+                                    // Use a narrower default for the File column when showing relative paths
+                                    let file_col_w: f32 = if self.ingest_show_abs_paths { 520.0 } else { 520.0 * 0.7 };
+                                    let table = TableBuilder::new(ui)
+                                        .striped(true)
+                                        .resizable(true)
+                                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                        .column(Column::initial(28.0))    // include checkbox
+                                        .column(Column::initial(file_col_w))   // File (path)
+                                        .column(Column::initial(72.0))    // Size (0.6x)
+                                        .column(Column::initial(80.0))    // Date (yyyy/mm/dd, 0.8x)
+                                        .column(Column::initial(112.0))   // Encoding override (0.8x)
+                                        .column(Column::initial(220.0));  // Preview (first chars)
 
-                                table
-                                    .header(20.0, |mut header| {
+                                    table
+                                        .header(20.0, |mut header| {
                                         header.col(|ui| {
                                             let total = self.ingest_files.len();
                                             let selected = self.ingest_files.iter().filter(|i| i.include).count();
@@ -1761,30 +1773,19 @@ impl AppState {
                         });
                         // (Ingest button moved above the table)
                     }
-                }
+                    }); // end disabled table block
+                },
                 InsertMode::Text => {
+                    ui.add_enabled_ui(!self.ingest_running, |ui| {
                     // Text input with the action button placed below
                     ui.label("Text");
                     ui.add(TextEdit::multiline(&mut self.input_text).desired_rows(4).desired_width(600.0));
                     if ui.add(Button::new("Insert Text")).clicked() { self.do_insert_text(); }
+                    });
                 }
             }
-        });
         // Preview popup is rendered after main UI in update()
-        if self.ingest_running {
-            ui.horizontal(|ui| {
-                let frac = if self.ingest_total > 0 { (self.ingest_done as f32 / self.ingest_total as f32).clamp(0.0, 1.0) } else { 0.0 };
-                ui.add(ProgressBar::new(frac).desired_width(400.0).show_percentage());
-                ui.label(format!("{} / {} (batch {})", self.ingest_done, self.ingest_total, self.ingest_last_batch));
-                if ui.add(Button::new("Cancel")).clicked() {
-                    if let Some(ct) = &self.ingest_cancel { ct.cancel(); }
-                }
-                if let Some(started) = self.ingest_started {
-                    let secs = started.elapsed().as_secs_f32();
-                    ui.label(format!("{:.1}s", secs));
-                }
-            });
-        }
+        // Moved progress bars next to the Ingest Selected button; no extra bar here.
     }
 
     fn do_preview_chunks(&mut self) {
@@ -1977,7 +1978,7 @@ impl AppState {
         let Some(svc) = self.svc.as_ref() else { self.status = "Model not initialized".into(); return; };
         let svc = Arc::clone(svc);
         let doc_hint_opt = if self.doc_hint.trim().is_empty() { None } else { Some(self.doc_hint.trim().to_string()) };
-        let (tx, rx) = mpsc::channel::<ProgressEvent>();
+        let (tx, rx) = mpsc::channel::<UiProgressEvent>();
         let cancel = CancelToken::new();
         self.ingest_rx = Some(rx);
         self.ingest_cancel = Some(cancel.clone());
@@ -1998,7 +1999,8 @@ impl AppState {
         let merge_min = self.chunk_merge_min.trim().parse().unwrap_or(100);
         std::thread::spawn(move || {
             let hint = doc_hint_opt.as_deref();
-            let tx2 = tx.clone(); let cb: Box<dyn FnMut(ProgressEvent) + Send> = Box::new(move |ev: ProgressEvent| { let _ = tx2.send(ev); });
+            let tx2 = tx.clone(); let cb: Box<dyn FnMut(ProgressEvent) + Send> = Box::new(move |ev: ProgressEvent| { let _ = tx2.send(UiProgressEvent::Service(ev)); });
+            let _ = tx.send(UiProgressEvent::FileStart { index: 1, total: 1, path: path_owned.clone() });
             let _ = svc.ingest_file_with_progress_custom(
                 &path_owned, hint,
                 enc_opt.as_deref(),
@@ -2148,7 +2150,7 @@ impl AppState {
             .collect();
         if selected.is_empty() { self.status = "No files selected".into(); return; }
         let svc = Arc::clone(svc);
-        let (tx, rx) = mpsc::channel::<ProgressEvent>();
+        let (tx, rx) = mpsc::channel::<UiProgressEvent>();
         let cancel = CancelToken::new();
         self.ingest_rx = Some(rx);
         self.ingest_cancel = Some(cancel.clone());
@@ -2169,19 +2171,20 @@ impl AppState {
         std::thread::spawn(move || {
             for (idx, (p, enc_override)) in selected.iter().enumerate() {
                 let hint = doc_hint.as_deref();
-                let tx2 = tx.clone(); let cb: Box<dyn FnMut(ProgressEvent) + Send> = Box::new(move |ev: ProgressEvent| { let _ = tx2.send(ev); });
+                let tx2 = tx.clone(); let cb: Box<dyn FnMut(ProgressEvent) + Send> = Box::new(move |ev: ProgressEvent| { let _ = tx2.send(UiProgressEvent::Service(ev)); });
                 // Choose per-file encoding if provided; otherwise use global
                 let enc_use_owned: Option<String> = match enc_override {
                     Some(s) if !s.is_empty() => Some(s.clone()),
                     _ => enc_opt.clone(),
                 };
+                let _ = tx.send(UiProgressEvent::FileStart { index: idx + 1, total: selected.len(), path: p.clone() });
                 let _ = svc.ingest_file_with_progress_custom(
                     p, hint,
                     enc_use_owned.as_deref(),
                     min, max, cap, merge_min, ps, pp,
                     Some(&cancel), Some(cb)
                 );
-                if cancel.is_canceled() { let _ = tx.send(ProgressEvent::Canceled); return; }
+                if cancel.is_canceled() { let _ = tx.send(UiProgressEvent::Service(ProgressEvent::Canceled)); return; }
                 if idx + 1 == selected.len() { /* Finished will arrive from service */ }
             }
         });
@@ -2193,49 +2196,69 @@ impl AppState {
                 match rx.try_recv() {
                     Ok(ev) => {
                         match ev {
-                            ProgressEvent::Start { total_chunks } => {
+                            UiProgressEvent::FileStart { index, total, path } => {
+                                self.ingest_file_idx = index;
+                                self.ingest_file_total = total;
+                                // Show file name only for brevity
+                                let name = std::path::Path::new(&path).file_name().and_then(|s| s.to_str()).unwrap_or("");
+                                self.ingest_file_name = name.to_string();
+                            }
+                            UiProgressEvent::Service(ProgressEvent::Start { total_chunks }) => {
                                 self.ingest_total = total_chunks;
                                 self.ingest_done = 0;
                                 self.ingest_last_batch = 0;
                                 if self.ingest_started.is_none() { self.ingest_started = Some(Instant::now()); }
                                 self.status = format!("Embedding {} chunks...", total_chunks);
                             }
-                            ProgressEvent::EmbedBatch { done, total, batch } => {
+                            UiProgressEvent::Service(ProgressEvent::EmbedBatch { done, total, batch }) => {
                                 self.ingest_done = done;
                                 self.ingest_total = total;
                                 self.ingest_last_batch = batch;
                                 self.status = format!("Embedding: {} / {} (batch {})", done, total, batch);
                             }
-                            ProgressEvent::UpsertDb { total } => {
+                            UiProgressEvent::Service(ProgressEvent::UpsertDb { total }) => {
                                 self.status = format!("Upserting into DB ({} chunks)...", total);
                             }
-                            ProgressEvent::IndexText { total } => {
+                            UiProgressEvent::Service(ProgressEvent::IndexText { total }) => {
                                 self.status = format!("Indexing text ({} chunks)...", total);
                             }
-                            ProgressEvent::IndexVector { total } => {
+                            UiProgressEvent::Service(ProgressEvent::IndexVector { total }) => {
                                 self.status = format!("Indexing vectors ({} chunks)...", total);
                             }
-                            ProgressEvent::SaveIndexes => {
+                            UiProgressEvent::Service(ProgressEvent::SaveIndexes) => {
                                 self.status = "Saving indexes...".into();
                             }
-                            ProgressEvent::Finished { total } => {
-                                self.ingest_running = false;
-                                self.ingest_cancel = None;
-                                self.ingest_rx = None;
-                                let secs = self.ingest_started.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
-                                self.status = format!("Ingest finished ({} chunks) in {:.1}s.", total, secs);
-                                self.ingest_started = None;
-                                // Tantivy upsert is handled in the service now
-                                self.ingest_doc_key = None;
-                                break;
+                            UiProgressEvent::Service(ProgressEvent::Finished { total }) => {
+                                // Service emits Finished per file. Only finalize when the last file is done.
+                                let is_last_file = self.ingest_file_total == 0 || self.ingest_file_idx >= self.ingest_file_total;
+                                if is_last_file {
+                                    self.ingest_running = false;
+                                    self.ingest_cancel = None;
+                                    self.ingest_rx = None;
+                                    let secs = self.ingest_started.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
+                                    self.status = format!("Ingest finished ({} chunks) in {:.1}s.", total, secs);
+                                    self.ingest_started = None;
+                                    self.ingest_file_idx = 0; self.ingest_file_total = 0; self.ingest_file_name.clear();
+                                    // Tantivy upsert is handled in the service now
+                                    self.ingest_doc_key = None;
+                                    break;
+                                } else {
+                                    // Intermediate file finished; keep running for next file.
+                                    self.status = format!("Finished file {} / {}", self.ingest_file_idx, self.ingest_file_total);
+                                    // Reset per-file chunk counters for clearer next-file progress
+                                    self.ingest_done = 0;
+                                    self.ingest_total = 0;
+                                    self.ingest_last_batch = 0;
+                                }
                             }
-                            ProgressEvent::Canceled => {
+                            UiProgressEvent::Service(ProgressEvent::Canceled) => {
                                 self.ingest_running = false;
                                 self.ingest_cancel = None;
                                 self.ingest_rx = None;
                                 let secs = self.ingest_started.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
                                 self.status = format!("Ingest canceled after {:.1}s.", secs);
                                 self.ingest_started = None;
+                                self.ingest_file_idx = 0; self.ingest_file_total = 0; self.ingest_file_name.clear();
                                 break;
                             }
                         }
