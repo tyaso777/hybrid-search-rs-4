@@ -72,7 +72,7 @@ fn build_embedder_from_args(args: &[String]) -> Result<OnnxStdIoEmbedder, String
 fn do_insert(mut tail: Vec<String>) -> Result<(), String> {
     let default_db = String::from("target/demo/chunks.db");
     // Detect optional db path as first positional arg
-    let (db_path, mut rest): (String, Vec<String>) = if !tail.is_empty() && !tail[0].starts_with('-') {
+    let (db_path, rest): (String, Vec<String>) = if !tail.is_empty() && !tail[0].starts_with('-') {
         (tail.remove(0), tail)
     } else {
         (default_db, tail)
@@ -153,7 +153,7 @@ fn do_insert(mut tail: Vec<String>) -> Result<(), String> {
 
 fn do_search(mut tail: Vec<String>) -> Result<(), String> {
     let default_db = String::from("target/demo/chunks.db");
-    let (db_path, mut rest): (String, Vec<String>) = if !tail.is_empty() && !tail[0].starts_with('-') {
+    let (db_path, rest): (String, Vec<String>) = if !tail.is_empty() && !tail[0].starts_with('-') {
         (tail.remove(0), tail)
     } else {
         (default_db, tail)

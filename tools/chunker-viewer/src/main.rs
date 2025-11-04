@@ -164,6 +164,7 @@ fn chunk_file_auto(path: &str, params: PdfChunkParams) -> Result<(FileRecord, Ve
             min_chars: params.min_chars,
             max_chars: params.max_chars,
             cap_chars: params.cap_chars,
+            short_merge_min_chars: 100,
             penalize_short_line: true,
             penalize_page_boundary_no_newline: true,
         };
@@ -223,6 +224,7 @@ fn chunk_file_auto(path: &str, params: PdfChunkParams) -> Result<(FileRecord, Ve
             min_chars: params.min_chars,
             max_chars: params.max_chars,
             cap_chars: params.cap_chars,
+            short_merge_min_chars: 100,
             penalize_short_line: true,
             penalize_page_boundary_no_newline: true,
         };
