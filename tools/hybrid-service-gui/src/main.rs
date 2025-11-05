@@ -1204,11 +1204,11 @@ impl AppState {
 
             query: String::new(),
             top_k: 10,
-            // Default to OR/VEC enabled (1.0) to match previous behavior; TV/AND left unset
+            // Default weights: favor VEC over TV (1:4). TV/AND left unset.
             w_tv: None,
             w_tv_and: None,
             w_tv_or: Some(1.0),
-            w_vec: Some(1.0),
+            w_vec: Some(4.0),
             results: Vec::new(),
             search_mode: SearchMode::Hybrid,
 
