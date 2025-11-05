@@ -1213,7 +1213,10 @@ impl AppState {
             search_mode: SearchMode::Hybrid,
 
             // Prompt defaults (JSON style)
-            prompt_header_tmpl: String::from("{\n  \"instruction\": \"\",\n  \"query\": \"<<Query:escape_json>>\",\n  \"results\": [\n"),
+            // Instruction: fixed directive; query is filled separately
+            prompt_header_tmpl: String::from(
+                "{\n  \"instruction\": \"Use the provided results from vector/BM25 search to answer the user’s query. Cite the rank numbers of all items you relied on (e.g., #2, #5). If the results are insufficient to answer, say so and avoid speculation. Answer in Japanese.\",\n  \"query\": \"<<Query:escape_json>>\",\n  \"results\": [\n"
+            ),
             prompt_item_tmpl: String::from("{\"rank\": <<Rank>>, \"file\": \"<<File:escape_json>>\", \"page\": \"<<Page:escape_json>>\", \"text\": \"<<Text:escape_json>>\"}<<Comma>>"),
             prompt_footer_tmpl: String::from("  ]\n}\n"),
             prompt_items_count: 5,
@@ -1270,8 +1273,10 @@ impl AppState {
             files_sort_asc: true,
             files_default_ord: std::collections::HashMap::new(),
         };
-        // Update default prompt header instruction to include citation guidance
-        s.prompt_header_tmpl = String::from("{\n  \"instruction\": \"\",\n  \"query\": \"<<Query:escape_json>>\",\n  \"results\": [\n" );
+        // Ensure the default prompt header uses the directive above for `instruction`
+        s.prompt_header_tmpl = String::from(
+            "{\n  \"instruction\": \"Use the provided results from vector/BM25 search to answer the user’s query. Cite the rank numbers of all items you relied on (e.g., #2, #5). If the results are insufficient to answer, say so and avoid speculation. Answer in Japanese.\",\n  \"query\": \"<<Query:escape_json>>\",\n  \"results\": [\n"
+        );
         // Seed default prompt template list
         s.seed_default_prompt_templates_if_empty();
         s
