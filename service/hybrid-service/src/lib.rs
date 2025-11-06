@@ -347,6 +347,21 @@ impl HybridService {
 
     /// Update active DB/HNSW paths at runtime and attempt to preload HNSW.
     pub fn set_store_paths(&self, db_path: PathBuf, hnsw_dir: Option<PathBuf>) {
+        // Short-circuit when paths are unchanged to avoid resetting resident caches
+        let cur_db = self
+            .db_path
+            .read()
+            .map(|p| p.clone())
+            .unwrap_or_else(|_| self.cfg.db_path.clone());
+        let cur_h = self
+            .hnsw_dir_override
+            .read()
+            .ok()
+            .and_then(|g| g.clone());
+        if cur_db == db_path && cur_h == hnsw_dir {
+            // No-op: already pointing at requested paths
+            return;
+        }
         if let Ok(mut w) = self.db_path.write() { *w = db_path; }
         if let Ok(mut w) = self.hnsw_dir_override.write() { *w = hnsw_dir; }
         // Reset resident cache and state, and try loading if index exists
