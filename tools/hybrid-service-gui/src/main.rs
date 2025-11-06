@@ -231,6 +231,10 @@ struct AppState {
     // Async preview (Insert File: small text preview)
     preview_loading: bool,
     preview_rx: Option<Receiver<Result<String, String>>>,
+    // Async chunk preview (Preview Chunks)
+    preview_chunks_loading: bool,
+    preview_chunks_rx: Option<Receiver<(String, Result<Vec<ChunkRecord>, String>)>>,
+    preview_chunks_target: Option<String>,
 
     // ONNX Runtime DLL lock (set after first successful Init)
     ort_runtime_committed: Option<String>,
@@ -1306,6 +1310,9 @@ impl AppState {
             preview_show_tab_escape: true,
             preview_loading: false,
             preview_rx: None,
+            preview_chunks_loading: false,
+            preview_chunks_rx: None,
+            preview_chunks_target: None,
 
             ort_runtime_committed: None,
             last_model_path_applied: None,
@@ -1522,6 +1529,7 @@ impl App for AppState {
         self.poll_ingest_job();
         self.poll_files_task();
         self.poll_preview_task();
+        self.poll_preview_chunks_task();
         CentralPanel::default().show(ctx, |ui| {
             // Top control bar: Init/Release (separate row to save width)
             ui.horizontal(|ui| {
@@ -1957,12 +1965,20 @@ impl AppState {
         let enc_lower = self.ingest_encoding.to_ascii_lowercase();
         let enc_opt: Option<String> = if enc_lower == "auto" { None } else { Some(enc_lower) };
 
-        // Compute chunks using file-chunker with unified text params
-        let out = file_chunker::chunk_file_with_file_record_with_params(path, enc_opt.as_deref(), &params);
-        self.preview_chunks = out.chunks;
-        self.preview_selected = None;
+        // Prepare async worker
         self.preview_visible = true;
-        self.status = format!("Preview loaded ({} chunks)", self.preview_chunks.len());
+        self.preview_chunks_loading = true;
+        self.preview_chunks.clear();
+        self.preview_selected = None;
+        let target_path = path.to_string();
+        self.preview_chunks_target = Some(target_path.clone());
+        let (tx, rx) = mpsc::channel();
+        self.preview_chunks_rx = Some(rx);
+        std::thread::spawn(move || {
+            // Compute chunks using file-chunker with unified text params
+            let out = file_chunker::chunk_file_with_file_record_with_params(&target_path, enc_opt.as_deref(), &params);
+            let _ = tx.send((target_path, Ok(out.chunks)));
+        });
     }
 
     fn ui_preview_window(&mut self, ctx: &egui::Context) {
@@ -1992,6 +2008,14 @@ impl AppState {
                 // Keyboard: ESC to close
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) { request_close = true; }
 
+                // Show spinner while loading chunk preview
+                if self.preview_chunks_loading {
+                    ui.horizontal(|ui| {
+                        ui.add(Spinner::new());
+                        ui.label("Loading chunks...");
+                    });
+                    ui.separator();
+                }
                 // Two-row layout: list (top) / selected (bottom)
                 StripBuilder::new(ui)
                     .size(Size::relative(0.55))
@@ -2030,7 +2054,9 @@ impl AppState {
                             egui::Frame::default().show(ui, |ui| {
                                 ui.heading("Selected Chunk");
                                 ui.separator();
-                                if let Some(i) = self.preview_selected { if let Some(c) = self.preview_chunks.get(i) {
+                                if self.preview_chunks_loading {
+                                    ui.horizontal(|ui| { ui.add(Spinner::new()); ui.label("Loading..."); });
+                                } else if let Some(i) = self.preview_selected { if let Some(c) = self.preview_chunks.get(i) {
                                     let text = if self.preview_show_tab_escape { escape_tabs(&c.text) } else { c.text.clone() };
                                     let page_label = match (c.page_start, c.page_end) {
                                         (Some(s), Some(e)) if s == e => format!("{}", s),
@@ -2056,6 +2082,12 @@ impl AppState {
                 });
         if request_close { open = false; }
         self.preview_visible = open;
+        if !self.preview_visible {
+            // Drop any pending preview work if window closed
+            self.preview_chunks_loading = false;
+            self.preview_chunks_rx = None;
+            self.preview_chunks_target = None;
+        }
     }
 
     fn is_text_like_path(&self, path: &str) -> bool {
@@ -2133,6 +2165,38 @@ impl AppState {
                     self.status = "Preview load failed: worker disconnected".into();
                     self.preview_loading = false;
                     self.preview_rx = None;
+                }
+            }
+        }
+    }
+
+    fn poll_preview_chunks_task(&mut self) {
+        if let Some(rx) = &self.preview_chunks_rx {
+            match rx.try_recv() {
+                Ok((path, Ok(chunks))) => {
+                    // Only accept result if it matches current target
+                    let target_ok = match &self.preview_chunks_target {
+                        Some(t) => t == &path,
+                        None => true,
+                    };
+                    if target_ok {
+                        self.preview_chunks = chunks;
+                        self.preview_selected = None;
+                        self.preview_chunks_loading = false;
+                        self.status = format!("Preview loaded ({} chunks)", self.preview_chunks.len());
+                        self.preview_chunks_rx = None;
+                    }
+                }
+                Ok((_path, Err(e))) => {
+                    self.status = format!("Preview chunks failed: {e}");
+                    self.preview_chunks_loading = false;
+                    self.preview_chunks_rx = None;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    self.status = "Preview chunks failed: worker disconnected".into();
+                    self.preview_chunks_loading = false;
+                    self.preview_chunks_rx = None;
                 }
             }
         }
