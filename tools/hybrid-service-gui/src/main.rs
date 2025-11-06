@@ -230,6 +230,10 @@ struct AppState {
 
     // ONNX Runtime DLL lock (set after first successful Init)
     ort_runtime_committed: Option<String>,
+    // Last applied embedder config snapshot (to decide whether to re-init or just apply store paths)
+    last_model_path_applied: Option<String>,
+    last_tokenizer_path_applied: Option<String>,
+    last_embed_dim_applied: Option<usize>,
 
     // Suggested filename for config save dialog
     config_last_name: String,
@@ -1259,6 +1263,9 @@ impl AppState {
             preview_show_tab_escape: true,
 
             ort_runtime_committed: None,
+            last_model_path_applied: None,
+            last_tokenizer_path_applied: None,
+            last_embed_dim_applied: None,
 
             config_last_name: String::from("hybrid_service_config.json"),
             config_store_name: String::new(),
@@ -1329,25 +1336,58 @@ impl AppState {
         let _ = fs::create_dir_all(&hnsw);
         #[cfg(feature = "tantivy")]
         let _ = fs::create_dir_all(derive_tantivy_dir(&root));
+        // Decide: re-init embedder or just apply store paths
+        let dim_ui: usize = self.embedding_dimension.trim().parse().unwrap_or(ONNX_STDIO_DEFAULTS.embedding_dimension);
+        let embedder_changed = match &self.svc {
+            None => true,
+            Some(_) => {
+                let same_model = self.last_model_path_applied.as_deref() == Some(self.model_path.trim());
+                let same_tok = self.last_tokenizer_path_applied.as_deref() == Some(self.tokenizer_path.trim());
+                let same_rt = self.ort_runtime_committed.as_deref() == Some(self.runtime_path.trim());
+                let same_dim = self.last_embed_dim_applied == Some(dim_ui);
+                !(same_model && same_tok && same_rt && same_dim)
+            }
+        };
+
+        if !embedder_changed {
+            // Fast path: apply only store paths on existing service
+            if let Some(svc) = &self.svc {
+                svc.set_store_paths(PathBuf::from(db.clone()), Some(PathBuf::from(hnsw.clone())));
+                self.status = "Applied store paths (HNSW reload in background)".into();
+                self.store_paths_stale = false;
+                self.last_store_root_applied = Some(root.clone());
+            } else {
+                // Shouldn't happen, but fall back to full init
+                let (tx, rx) = mpsc::channel();
+                self.status = "Initializing model...".into();
+                self.store_paths_stale = false;
+                self.svc_task = Some(ServiceInitTask { rx, started: Instant::now() });
+                std::thread::spawn(move || {
+                    let mut cfg = ServiceConfig::default();
+                    cfg.db_path = PathBuf::from(db);
+                    cfg.hnsw_dir = Some(PathBuf::from(hnsw));
+                    let _ = tx.send(HybridService::new(cfg).map(|s| Arc::new(s)).map_err(|e| e.to_string()));
+                });
+            }
+            return;
+        }
+
+        // Full re-init path
         let mut cfg = ServiceConfig::default();
         cfg.db_path = PathBuf::from(db);
         cfg.hnsw_dir = Some(PathBuf::from(hnsw));
         cfg.embedder.model_path = PathBuf::from(self.model_path.trim());
         cfg.embedder.tokenizer_path = PathBuf::from(self.tokenizer_path.trim());
         cfg.embedder.runtime_library_path = PathBuf::from(self.runtime_path.trim());
-        cfg.embedder.dimension = self.embedding_dimension.trim().parse().unwrap_or(ONNX_STDIO_DEFAULTS.embedding_dimension);
+        cfg.embedder.dimension = dim_ui;
         cfg.embedder.max_input_length = self.max_tokens.trim().parse().unwrap_or(ONNX_STDIO_DEFAULTS.max_input_tokens);
-        // Use default preload behavior from embedder config (no GUI override)
-        // Embed batch size
         if let Ok(bs) = self.embed_batch_size.trim().parse::<usize>() { if bs > 0 { cfg.embed_batch_size = bs; } }
-        // Auto batch params
         cfg.embed_auto = self.embed_auto;
         if let Ok(x) = self.embed_initial_batch.trim().parse::<usize>() { if x > 0 { cfg.embed_initial_batch = x; } }
         if let Ok(x) = self.embed_min_batch.trim().parse::<usize>() { if x > 0 { cfg.embed_min_batch = x; } }
 
         let (tx, rx) = mpsc::channel();
         self.status = "Initializing model...".into();
-        // We are applying the current Store Root; show 'loading' instead of 'stale'
         self.store_paths_stale = false;
         self.svc_task = Some(ServiceInitTask { rx, started: Instant::now() });
         std::thread::spawn(move || {
@@ -1403,9 +1443,11 @@ impl AppState {
                     // Mark current Store Root as applied and indices fresh
                     self.last_store_root_applied = Some(self.store_root.trim().to_string());
                     self.store_paths_stale = false;
-                    if self.ort_runtime_committed.is_none() {
-                        self.ort_runtime_committed = Some(self.runtime_path.trim().to_string());
-                    }
+                    // Record last applied embedder config snapshot
+                    self.ort_runtime_committed = Some(self.runtime_path.trim().to_string());
+                    self.last_model_path_applied = Some(self.model_path.trim().to_string());
+                    self.last_tokenizer_path_applied = Some(self.tokenizer_path.trim().to_string());
+                    self.last_embed_dim_applied = Some(self.embedding_dimension.trim().parse().unwrap_or(ONNX_STDIO_DEFAULTS.embedding_dimension));
                     self.svc_task = None;
                 }
                 Ok(Err(err)) => {
@@ -1493,7 +1535,8 @@ impl App for AppState {
                     ui.add_space(8.0);
                     ui.add_space(8.0);
                     if ui.button("Init").clicked() {
-                        if self.model_not_initialized() { self.start_service_init(); }
+                        // Always run init/apply flow: model re-init when embedder changed, otherwise store apply only
+                        self.start_service_init();
                     }
                     if ui.button("Release").clicked() {
                         self.release_model_and_indexes();
