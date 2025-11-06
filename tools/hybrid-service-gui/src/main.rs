@@ -2374,11 +2374,24 @@ impl AppState {
         ui.push_id("search_panel", |ui| {
             ui.add_enabled_ui(!self.ingest_running, |ui| {
                 ui.heading("Search");
+                // Precompute index readiness for guards
+                let vec_ready = !self.store_paths_stale && self.svc.as_ref().map(|s| matches!(s.hnsw_state(), HnswState::Ready)).unwrap_or(false);
+                #[cfg(feature = "tantivy")]
+                let text_ready = !self.store_paths_stale && self.svc.as_ref().map(|s| matches!(s.tantivy_state(), hybrid_service::TantivyState::Ready)).unwrap_or(false);
+                #[cfg(not(feature = "tantivy"))]
+                let text_ready = false;
+
                 // Row 1: Query + Search
                 ui.horizontal(|ui| {
                     ui.label("Query");
                     ui.add(TextEdit::singleline(&mut self.query).desired_width(400.0).id_source("search_query"));
-                    if ui.add(Button::new("Search")).clicked() { self.do_search_now(); }
+                    let mode_ok = match self.search_mode { SearchMode::Hybrid => vec_ready && text_ready, SearchMode::Vec => vec_ready, SearchMode::Tantivy => text_ready };
+                    ui.add_enabled_ui(mode_ok, |ui| {
+                        if ui.add(Button::new("Search")).clicked() { self.do_search_now(); }
+                    });
+                    if !mode_ok {
+                        ui.label(egui::RichText::new("(index not ready)"));
+                    }
                 });
             // Row 2: Options (TopK / Mode slider / Weights when Hybrid)
             ui.horizontal(|ui| {
@@ -2391,7 +2404,12 @@ impl AppState {
                 ui.label("Mode");
                 let mut idx = match self.search_mode { SearchMode::Hybrid => 0, SearchMode::Tantivy => 1, SearchMode::Vec => 2 };
                 if ui.add(egui::Slider::new(&mut idx, 0..=2).show_value(false).clamp_to_range(true).smart_aim(false)).changed() {
-                    self.search_mode = match idx { 1 => SearchMode::Tantivy, 2 => SearchMode::Vec, _ => SearchMode::Hybrid };
+                    let wanted = match idx { 1 => SearchMode::Tantivy, 2 => SearchMode::Vec, _ => SearchMode::Hybrid };
+                    self.search_mode = match wanted {
+                        SearchMode::Hybrid => if vec_ready && text_ready { SearchMode::Hybrid } else if text_ready { SearchMode::Tantivy } else if vec_ready { SearchMode::Vec } else { SearchMode::Tantivy },
+                        SearchMode::Vec => if vec_ready { SearchMode::Vec } else if text_ready { SearchMode::Tantivy } else { SearchMode::Vec },
+                        SearchMode::Tantivy => if text_ready { SearchMode::Tantivy } else if vec_ready { SearchMode::Vec } else { SearchMode::Tantivy },
+                    };
                 }
                 let mode_name = match self.search_mode { SearchMode::Hybrid => "Hybrid", SearchMode::Tantivy => "Tantivy", SearchMode::Vec => "VEC" };
                 ui.label(mode_name);
