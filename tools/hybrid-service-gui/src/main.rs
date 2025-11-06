@@ -90,6 +90,15 @@ enum UiProgressEvent {
     Service(ProgressEvent),
 }
 
+#[derive(Debug, Clone)]
+enum ScanEvent {
+    Progress { scanned: usize, kept: usize, total: Option<usize> },
+    Batch(Vec<IngestFileItem>),
+    Finished,
+    Canceled,
+    Error(String),
+}
+
 #[derive(Debug)]
 struct ServiceInitTask {
     rx: Receiver<Result<Arc<HybridService>, String>>,
@@ -278,6 +287,13 @@ struct AppState {
     files_default_ord: std::collections::HashMap<String, usize>,
     // Files tab: async loader channel
     files_rx: Option<Receiver<Result<Vec<FileRecord>, String>>>,
+
+    // Insert Files: async folder scan
+    ingest_scanning: bool,
+    ingest_scan_scanned: usize,
+    ingest_scan_kept: usize,
+    ingest_scan_rx: Option<Receiver<ScanEvent>>,
+    ingest_scan_cancel: Option<CancelToken>,
 }
 
 #[derive(Debug, Clone)]
@@ -1347,6 +1363,13 @@ impl AppState {
             files_sort_asc: true,
             files_default_ord: std::collections::HashMap::new(),
             files_rx: None,
+
+            // Insert Files: async folder scan
+            ingest_scanning: false,
+            ingest_scan_scanned: 0,
+            ingest_scan_kept: 0,
+            ingest_scan_rx: None,
+            ingest_scan_cancel: None,
         };
         // Ensure the default prompt header uses the directive above for `instruction`
         s.prompt_header_tmpl = String::from(
@@ -1536,6 +1559,7 @@ impl App for AppState {
         self.poll_preview_task();
         self.poll_preview_chunks_task();
         self.poll_search_task();
+        self.poll_scan_task();
         CentralPanel::default().show(ctx, |ui| {
             // Top control bar: Init/Release (separate row to save width)
             ui.horizontal(|ui| {
@@ -1764,8 +1788,8 @@ impl AppState {
                     }
                 },
                 InsertMode::Files => {
-                    // Disable interactive controls while ingesting
-                    ui.add_enabled_ui(!self.ingest_running, |ui| {
+                    // Disable interactive controls while ingesting or scanning
+                    ui.add_enabled_ui(!self.ingest_running && !self.ingest_scanning, |ui| {
                         // Row 1: Choose Folder, [Folder path]
                         ui.horizontal(|ui| {
                             if ui.button("Choose Folder").clicked() {
@@ -1792,9 +1816,9 @@ impl AppState {
                         ui.horizontal(|ui| { ui.checkbox(&mut self.ingest_only_unregistered, "Check unregistered files"); });
                         ui.horizontal(|ui| {
                             if ui.button("Scan").clicked() {
-                                if self.ingest_only_unregistered { self.scan_ingest_folder_unregistered(); } else { self.scan_ingest_folder(); }
+                                self.scan_ingest_folder_async();
                             }
-                        ui.separator();
+                            ui.separator();
                         });
                         ui.horizontal(|ui| {
                             let has_items = !self.ingest_files.is_empty();
@@ -1811,6 +1835,16 @@ impl AppState {
                             ui.checkbox(&mut self.ingest_show_abs_paths, "Absolute paths");
                         });
                     }); // end disabled controls block
+                    // Show scanning progress outside disabled block so controls above stay greyed but progress is vivid
+                    if self.ingest_scanning {
+                        ui.horizontal(|ui| {
+                            ui.add(Spinner::new());
+                            ui.label(format!("Scanning… files: {}  kept: {}", self.ingest_scan_scanned, self.ingest_scan_kept));
+                            if ui.add(Button::new("Cancel")).clicked() {
+                                if let Some(ct) = &self.ingest_scan_cancel { ct.cancel(); }
+                            }
+                        });
+                    }
                     // Inline progress under the button (two bars): chunk progress and file progress
                     if self.ingest_running {
                         // 1) Chunk progress (spinner until we know totals)
@@ -2248,6 +2282,55 @@ impl AppState {
         }
     }
 
+    fn poll_scan_task(&mut self) {
+        if let Some(rx) = &self.ingest_scan_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(ScanEvent::Batch(mut items)) => {
+                        self.ingest_files.append(&mut items);
+                    }
+                    Ok(ScanEvent::Progress { scanned, kept, .. }) => {
+                        self.ingest_scan_scanned = scanned;
+                        self.ingest_scan_kept = kept;
+                    }
+                    Ok(ScanEvent::Finished) => {
+                        // Apply current sort once at the end
+                        let base = self.ingest_folder_path.clone();
+                        let abs = self.ingest_show_abs_paths;
+                        self.apply_ingest_sort_with(base.as_str(), abs);
+                        self.status = format!("Scanned {} files (kept: {})", self.ingest_scan_scanned, self.ingest_scan_kept);
+                        self.ingest_scanning = false;
+                        self.ingest_scan_cancel = None;
+                        self.ingest_scan_rx = None;
+                        break;
+                    }
+                    Ok(ScanEvent::Canceled) => {
+                        self.status = "Scan canceled".into();
+                        self.ingest_scanning = false;
+                        self.ingest_scan_cancel = None;
+                        self.ingest_scan_rx = None;
+                        break;
+                    }
+                    Ok(ScanEvent::Error(e)) => {
+                        self.status = e;
+                        self.ingest_scanning = false;
+                        self.ingest_scan_cancel = None;
+                        self.ingest_scan_rx = None;
+                        break;
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        self.status = "Scan worker disconnected".into();
+                        self.ingest_scanning = false;
+                        self.ingest_scan_cancel = None;
+                        self.ingest_scan_rx = None;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     fn do_insert_text(&mut self) {
         // Auto-apply Store Root before writing into the DB via service
         if !self.ensure_store_paths_current() { return; }
@@ -2440,6 +2523,118 @@ impl AppState {
         self.ingest_files.extend(hashed_results);
         { let base = self.ingest_folder_path.clone(); let abs = self.ingest_show_abs_paths; self.apply_ingest_sort_with(base.as_str(), abs) };
         self.status = format!("Scanned {} files (new: {})", total, kept);
+    }
+
+    fn scan_ingest_folder_async(&mut self) {
+        // Reset list and start async scan worker
+        self.ingest_files.clear();
+        self.ingest_scan_scanned = 0;
+        self.ingest_scan_kept = 0;
+        let root = self.ingest_folder_path.trim().to_string();
+        if root.is_empty() { self.status = "Choose a folder".into(); return; }
+        let max_depth = self.ingest_depth;
+        let filters: Vec<String> = self.ingest_exts
+            .split(',')
+            .map(|s| s.trim().trim_start_matches('.').to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let use_all = filters.is_empty() || filters.iter().any(|f| f == "*");
+        let only_unreg = self.ingest_only_unregistered;
+        let cancel = CancelToken::new();
+        self.ingest_scan_cancel = Some(cancel.clone());
+        let (tx, rx) = mpsc::channel::<ScanEvent>();
+        self.ingest_scan_rx = Some(rx);
+        self.ingest_scanning = true;
+        let svc_opt = self.svc.as_ref().map(Arc::clone);
+        std::thread::spawn(move || {
+            // Optional: build known sets
+            use std::collections::HashSet;
+            let mut known: HashSet<String> = HashSet::new();
+            let mut known_sizes: HashSet<u64> = HashSet::new();
+            if only_unreg {
+                if let Some(svc) = &svc_opt {
+                    let limit: usize = 1000; let mut offset: usize = 0;
+                    loop {
+                        if cancel.is_canceled() { let _ = tx.send(ScanEvent::Canceled); return; }
+                        match svc.list_files(limit, offset) {
+                            Ok(list) => {
+                                if list.is_empty() { break; }
+                                for rec in &list {
+                                    if let Some(h) = rec.content_sha256.clone() { known.insert(h); }
+                                    if let Some(sz) = rec.file_size_bytes { known_sizes.insert(sz); }
+                                }
+                                if list.len() < limit { break; }
+                                offset += limit;
+                            }
+                            Err(e) => { let _ = tx.send(ScanEvent::Error(format!("Fetch known hashes failed: {e}"))); return; }
+                        }
+                    }
+                } else { let _ = tx.send(ScanEvent::Error("Model not initialized".into())); return; }
+            }
+            // DFS walk
+            let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(std::path::PathBuf::from(&root), 0)];
+            let mut scanned: usize = 0; let mut kept: usize = 0; let mut seq: usize = 0;
+            let mut batch: Vec<IngestFileItem> = Vec::new();
+            let mut needs_hash: Vec<(String, u64, Option<String>, usize)> = Vec::new();
+            while let Some((dir, depth)) = stack.pop() {
+                if cancel.is_canceled() { let _ = tx.send(ScanEvent::Canceled); return; }
+                let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+                for entry in rd.flatten() {
+                    if cancel.is_canceled() { let _ = tx.send(ScanEvent::Canceled); return; }
+                    let path = entry.path();
+                    if let Ok(meta) = entry.metadata() {
+                        if meta.is_dir() {
+                            if depth < max_depth { stack.push((path, depth + 1)); }
+                        } else if meta.is_file() {
+                            let pstr = path.display().to_string();
+                            let lower = pstr.to_ascii_lowercase();
+                            let matched = if use_all { true } else {
+                                let mut ok = false;
+                                for f in &filters { if lower.ends_with(&format!(".{}", f)) { ok = true; break; } }
+                                ok
+                            };
+                            if !matched { continue; }
+                            scanned += 1;
+                            if only_unreg {
+                                let fsz = meta.len();
+                                if !known_sizes.contains(&fsz) {
+                                    let mdy = meta.modified().ok().map(|st| format_ymd(st));
+                                    batch.push(IngestFileItem { include: true, path: pstr, size: fsz, ordinal: seq, encoding: None, preview_cached_enc: None, preview_cached_text: None, modified_ymd: mdy });
+                                    seq += 1; kept += 1;
+                                } else {
+                                    let mdy = meta.modified().ok().map(|st| format_ymd(st));
+                                    needs_hash.push((pstr, fsz, mdy, seq));
+                                    seq += 1;
+                                }
+                            } else {
+                                let mdy = meta.modified().ok().map(|st| format_ymd(st));
+                                batch.push(IngestFileItem { include: true, path: pstr, size: meta.len(), ordinal: seq, encoding: None, preview_cached_enc: None, preview_cached_text: None, modified_ymd: mdy });
+                                seq += 1; kept += 1;
+                            }
+                            if batch.len() >= 64 {
+                                let _ = tx.send(ScanEvent::Batch(std::mem::take(&mut batch)));
+                                let _ = tx.send(ScanEvent::Progress { scanned, kept, total: None });
+                            }
+                        }
+                    }
+                }
+            }
+            if !batch.is_empty() { let _ = tx.send(ScanEvent::Batch(batch)); }
+            // Hash queued files when required (sequential to honor cancel)
+            if only_unreg {
+                for (i, (p, fsz, mdy, ord)) in needs_hash.into_iter().enumerate() {
+                    if cancel.is_canceled() { let _ = tx.send(ScanEvent::Canceled); return; }
+                    let mut include = true;
+                    if let Some(hx) = sha256_hex_file(&p) { if known.contains(&hx) { include = false; } }
+                    let it = IngestFileItem { include, path: p, size: fsz, ordinal: ord, encoding: None, preview_cached_enc: None, preview_cached_text: None, modified_ymd: mdy };
+                    let _ = tx.send(ScanEvent::Batch(vec![it]));
+                    if include { kept += 1; }
+                    if (i + 1) % 16 == 0 { let _ = tx.send(ScanEvent::Progress { scanned, kept, total: None }); }
+                }
+            }
+            let _ = tx.send(ScanEvent::Progress { scanned, kept, total: None });
+            let _ = tx.send(ScanEvent::Finished);
+        });
     }
     fn do_ingest_files_batch(&mut self) {
         if !self.ensure_store_paths_current() { return; }
