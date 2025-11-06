@@ -189,6 +189,9 @@ struct AppState {
     w_vec: Option<f32>,
     results: Vec<HitRow>,
     search_mode: SearchMode,
+    // Async Search
+    search_loading: bool,
+    search_rx: Option<Receiver<Result<Vec<HitRow>, String>>>,
 
     // Prompt builder (Search tab)
     prompt_header_tmpl: String,
@@ -1271,6 +1274,8 @@ impl AppState {
             w_vec: Some(4.0),
             results: Vec::new(),
             search_mode: SearchMode::Hybrid,
+            search_loading: false,
+            search_rx: None,
 
             // Prompt defaults (JSON style)
             // Instruction: fixed directive; query is filled separately
@@ -1530,6 +1535,7 @@ impl App for AppState {
         self.poll_files_task();
         self.poll_preview_task();
         self.poll_preview_chunks_task();
+        self.poll_search_task();
         CentralPanel::default().show(ctx, |ui| {
             // Top control bar: Init/Release (separate row to save width)
             ui.horizontal(|ui| {
@@ -2218,6 +2224,30 @@ impl AppState {
         }
     }
 
+    fn poll_search_task(&mut self) {
+        if let Some(rx) = &self.search_rx {
+            match rx.try_recv() {
+                Ok(Ok(rows)) => {
+                    self.results = rows;
+                    self.search_loading = false;
+                    self.search_rx = None;
+                    self.status = format!("Results: {}", self.results.len());
+                }
+                Ok(Err(e)) => {
+                    self.search_loading = false;
+                    self.search_rx = None;
+                    self.status = format!("Search failed: {e}");
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    self.search_loading = false;
+                    self.search_rx = None;
+                    self.status = "Search worker disconnected".into();
+                }
+            }
+        }
+    }
+
     fn do_insert_text(&mut self) {
         // Auto-apply Store Root before writing into the DB via service
         if !self.ensure_store_paths_current() { return; }
@@ -2563,11 +2593,13 @@ impl AppState {
                     ui.label("Query");
                     ui.add(TextEdit::singleline(&mut self.query).desired_width(400.0).id_source("search_query"));
                     let mode_ok = match self.search_mode { SearchMode::Hybrid => vec_ready && text_ready, SearchMode::Vec => vec_ready, SearchMode::Tantivy => text_ready };
-                    ui.add_enabled_ui(mode_ok, |ui| {
+                    ui.add_enabled_ui(mode_ok && !self.search_loading, |ui| {
                         if ui.add(Button::new("Search")).clicked() { self.do_search_now(); }
                     });
                     if !mode_ok {
                         ui.label(egui::RichText::new("(index not ready)"));
+                    } else if self.search_loading {
+                        ui.add(Spinner::new());
                     }
                 });
             // Row 2: Options (TopK / Mode slider / Weights when Hybrid)
@@ -2868,106 +2900,108 @@ impl AppState {
     }
 
     fn do_search_now(&mut self) {
-        // Auto-apply Store Root if user edited
+        // Apply Store Root first
         if !self.ensure_store_paths_current() { return; }
         let q_owned = self.query.clone();
-        let q = q_owned.trim();
+        let q = q_owned.trim().to_string();
         if q.is_empty() { self.status = "Enter query".into(); return; }
-        let filters: &[FilterClause] = &[];
-        let top_k = self.top_k;
-        // Allow FTS-only search without model initialization
-        // Build union of results from TV, TV(AND), TV(OR), VEC
-        use chunking_store::sqlite_repo::SqliteRepo;
-        let repo = match SqliteRepo::open(self.db_path.trim()) { Ok(r) => r, Err(e) => { self.status = format!("Open DB failed: {e}"); return; } };
-        // FTS5 is not used for search ranking here; skip any FTS maintenance.
-
-        // Tantivy queries (skip when mode = VEC); now routed via service
-        #[cfg(feature = "tantivy")]
-        let (tv, tv_and, tv_or) = if matches!(self.search_mode, SearchMode::Vec) {
-            (Vec::new(), Vec::new(), Vec::new())
-        } else {
-            if let Some(svc) = &self.svc {
-                match svc.tantivy_triple(q, top_k, filters) {
-                    Ok(t) => t,
-                    Err(e) => { self.status = format!("Tantivy search failed: {}", e); return; }
-                }
-            } else { (Vec::new(), Vec::new(), Vec::new()) }
-        };
-        #[cfg(not(feature = "tantivy"))]
-        let (tv, tv_and, tv_or) = (Vec::new(), Vec::new(), Vec::new());
-
-        // Vector query (optional): use service.search_hybrid with w_text=0 for vector-only scoring
-        let vec_matches: Vec<chunking_store::TextMatch> = if matches!(self.search_mode, SearchMode::Tantivy) {
-            Vec::new()
-        } else {
-            if let Some(svc) = &self.svc {
-                match svc.search_hybrid(q, top_k, filters, 0.0, 1.0) {
-                    Ok(hits) => hits.into_iter().map(|h| chunking_store::TextMatch { chunk_id: chunk_model::ChunkId(h.chunk.chunk_id.0), score: h.score, raw_score: h.score }).collect(),
-                    Err(_) => Vec::new(),
-                }
-            } else { Vec::new() }
-        };
-
-        // Aggregate by chunk_id
-        use std::collections::HashMap;
-        let mut agg: HashMap<String, (Option<f32>, Option<f32>, Option<f32>, Option<f32>)> = HashMap::new();
-        for m in tv { let e = agg.entry(m.chunk_id.0).or_default(); e.0 = Some(m.score); }
-        for m in tv_and { let e = agg.entry(m.chunk_id.0).or_default(); e.1 = Some(m.score); }
-        for m in tv_or { let e = agg.entry(m.chunk_id.0).or_default(); e.2 = Some(m.score); }
-        for m in vec_matches { let e = agg.entry(m.chunk_id.0).or_default(); e.3 = Some(m.score); }
-
-        // Sort by selected mode
-        let mut items: Vec<(String, (Option<f32>, Option<f32>, Option<f32>, Option<f32>))> = agg.into_iter().collect();
-        let wt_raw = self.w_tv.unwrap_or(0.0);
-        let wa_raw = self.w_tv_and.unwrap_or(0.0);
-        let wo_raw = self.w_tv_or.unwrap_or(0.0);
-        let wv_raw = self.w_vec.unwrap_or(0.0);
-        let denom = (wt_raw + wa_raw + wo_raw + wv_raw).max(1e-6);
-        let wt = wt_raw / denom;
-        let wa = wa_raw / denom;
-        let wo = wo_raw / denom;
-        let wv = wv_raw / denom;
-        items.sort_by(|a, b| {
-            let (tv_a, tv_and_a, tv_or_a, vec_a) = (a.1.0.unwrap_or(0.0), a.1.1.unwrap_or(0.0), a.1.2.unwrap_or(0.0), a.1.3.unwrap_or(0.0));
-            let (tv_b, tv_and_b, tv_or_b, vec_b) = (b.1.0.unwrap_or(0.0), b.1.1.unwrap_or(0.0), b.1.2.unwrap_or(0.0), b.1.3.unwrap_or(0.0));
-            let key_a = match self.search_mode {
-                SearchMode::Hybrid => wt * tv_a + wa * tv_and_a + wo * tv_or_a + wv * vec_a,
-                SearchMode::Tantivy => tv_a.max(tv_and_a).max(tv_or_a),
-                SearchMode::Vec => vec_a,
-            };
-            let key_b = match self.search_mode {
-                SearchMode::Hybrid => wt * tv_b + wa * tv_and_b + wo * tv_or_b + wv * vec_b,
-                SearchMode::Tantivy => tv_b.max(tv_and_b).max(tv_or_b),
-                SearchMode::Vec => vec_b,
-            };
-            key_b.partial_cmp(&key_a).unwrap_or(std::cmp::Ordering::Equal)
-        });
-        if items.len() > top_k { items.truncate(top_k); }
-
-        // Fetch records in batch
-        let ids: Vec<chunk_model::ChunkId> = items.iter().map(|(cid, _)| chunk_model::ChunkId(cid.clone())).collect();
-        let recs = match repo.get_chunks_by_ids(&ids) { Ok(r) => r, Err(e) => { self.status = format!("Fetch records failed: {e}"); return; } };
-        let mut rec_map: HashMap<String, chunk_model::ChunkRecord> = HashMap::new();
-        for r in recs { rec_map.insert(r.chunk_id.0.clone(), r); }
-
+        // Prepare async search
         self.results.clear();
-        for (cid, (sc_tv, sc_and, sc_or, sc_vec)) in items.into_iter() {
-            if let Some(rec) = rec_map.remove(&cid) {
-                let file = match std::path::Path::new(&rec.source_uri).file_name().and_then(|s| s.to_str()) { Some(s) => s.to_string(), None => rec.source_uri.clone() };
-                let page = match (rec.page_start, rec.page_end) {
-                    (Some(s), Some(e)) if s == e => format!("#{}", s),
-                    (Some(s), Some(e)) => format!("#{}-{}", s, e),
-                    (Some(s), None) => format!("#{}", s),
-                    _ => page_label_from_chunk_id(&rec.chunk_id.0).unwrap_or_default(),
+        self.search_loading = true;
+        let (tx, rx) = mpsc::channel();
+        self.search_rx = Some(rx);
+        // Capture inputs
+        let db_path = self.db_path.trim().to_string();
+        let top_k = self.top_k;
+        let mode = self.search_mode;
+        let w_tv = self.w_tv;
+        let w_tv_and = self.w_tv_and;
+        let w_tv_or = self.w_tv_or;
+        let w_vec = self.w_vec;
+        let svc_opt = self.svc.as_ref().map(Arc::clone);
+        std::thread::spawn(move || {
+            use chunking_store::sqlite_repo::SqliteRepo;
+            let repo = match SqliteRepo::open(db_path.as_str()) { Ok(r) => r, Err(e) => { let _ = tx.send(Err(format!("Open DB failed: {e}"))); return; } };
+            let filters: &[FilterClause] = &[];
+            // Tantivy
+            #[cfg(feature = "tantivy")]
+            let (tv, tv_and, tv_or) = if matches!(mode, SearchMode::Vec) {
+                (Vec::new(), Vec::new(), Vec::new())
+            } else {
+                if let Some(svc) = &svc_opt {
+                    match svc.tantivy_triple(&q, top_k, filters) {
+                        Ok(t) => t,
+                        Err(e) => { let _ = tx.send(Err(format!("Tantivy search failed: {}", e))); return; }
+                    }
+                } else { (Vec::new(), Vec::new(), Vec::new()) }
+            };
+            #[cfg(not(feature = "tantivy"))]
+            let (tv, tv_and, tv_or) = (Vec::new(), Vec::new(), Vec::new());
+            // Vector
+            let vec_matches: Vec<chunking_store::TextMatch> = if matches!(mode, SearchMode::Tantivy) {
+                Vec::new()
+            } else {
+                if let Some(svc) = &svc_opt {
+                    match svc.search_hybrid(&q, top_k, filters, 0.0, 1.0) {
+                        Ok(hits) => hits.into_iter().map(|h| chunking_store::TextMatch { chunk_id: chunk_model::ChunkId(h.chunk.chunk_id.0), score: h.score, raw_score: h.score }).collect(),
+                        Err(_) => Vec::new(),
+                    }
+                } else { Vec::new() }
+            };
+            use std::collections::HashMap;
+            let mut agg: HashMap<String, (Option<f32>, Option<f32>, Option<f32>, Option<f32>)> = HashMap::new();
+            for m in tv { let e = agg.entry(m.chunk_id.0).or_default(); e.0 = Some(m.score); }
+            for m in tv_and { let e = agg.entry(m.chunk_id.0).or_default(); e.1 = Some(m.score); }
+            for m in tv_or { let e = agg.entry(m.chunk_id.0).or_default(); e.2 = Some(m.score); }
+            for m in vec_matches { let e = agg.entry(m.chunk_id.0).or_default(); e.3 = Some(m.score); }
+            let mut items: Vec<(String, (Option<f32>, Option<f32>, Option<f32>, Option<f32>))> = agg.into_iter().collect();
+            let wt_raw = w_tv.unwrap_or(0.0);
+            let wa_raw = w_tv_and.unwrap_or(0.0);
+            let wo_raw = w_tv_or.unwrap_or(0.0);
+            let wv_raw = w_vec.unwrap_or(0.0);
+            let denom = (wt_raw + wa_raw + wo_raw + wv_raw).max(1e-6);
+            let wt = wt_raw / denom;
+            let wa = wa_raw / denom;
+            let wo = wo_raw / denom;
+            let wv = wv_raw / denom;
+            items.sort_by(|a, b| {
+                let (tv_a, tv_and_a, tv_or_a, vec_a) = (a.1.0.unwrap_or(0.0), a.1.1.unwrap_or(0.0), a.1.2.unwrap_or(0.0), a.1.3.unwrap_or(0.0));
+                let (tv_b, tv_and_b, tv_or_b, vec_b) = (b.1.0.unwrap_or(0.0), b.1.1.unwrap_or(0.0), b.1.2.unwrap_or(0.0), b.1.3.unwrap_or(0.0));
+                let key_a = match mode {
+                    SearchMode::Hybrid => wt * tv_a + wa * tv_and_a + wo * tv_or_a + wv * vec_a,
+                    SearchMode::Tantivy => tv_a.max(tv_and_a).max(tv_or_a),
+                    SearchMode::Vec => vec_a,
                 };
-                // Flatten newlines/tabs for single-line preview, then truncate
-                let flat: String = rec.text.replace(['\n', '\r', '\t'], " ");
-                let mut text_preview: String = flat.chars().take(80).collect();
-                if flat.chars().count() > 80 { text_preview.push('\u{2026}'); }
-                self.results.push(HitRow { cid: rec.chunk_id.0, file, file_path: rec.source_uri.clone(), page, text_preview, text_full: rec.text, tv: sc_tv, tv_and: sc_and, tv_or: sc_or, vec: sc_vec });
+                let key_b = match mode {
+                    SearchMode::Hybrid => wt * tv_b + wa * tv_and_b + wo * tv_or_b + wv * vec_b,
+                    SearchMode::Tantivy => tv_b.max(tv_and_b).max(tv_or_b),
+                    SearchMode::Vec => vec_b,
+                };
+                key_b.partial_cmp(&key_a).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            if items.len() > top_k { items.truncate(top_k); }
+            let ids: Vec<chunk_model::ChunkId> = items.iter().map(|(cid, _)| chunk_model::ChunkId(cid.clone())).collect();
+            let recs = match repo.get_chunks_by_ids(&ids) { Ok(r) => r, Err(e) => { let _ = tx.send(Err(format!("Fetch records failed: {e}"))); return; } };
+            let mut rec_map: HashMap<String, chunk_model::ChunkRecord> = HashMap::new();
+            for r in recs { rec_map.insert(r.chunk_id.0.clone(), r); }
+            let mut out_rows: Vec<HitRow> = Vec::new();
+            for (cid, (sc_tv, sc_and, sc_or, sc_vec)) in items.into_iter() {
+                if let Some(rec) = rec_map.remove(&cid) {
+                    let file = match std::path::Path::new(&rec.source_uri).file_name().and_then(|s| s.to_str()) { Some(s) => s.to_string(), None => rec.source_uri.clone() };
+                    let page = match (rec.page_start, rec.page_end) {
+                        (Some(s), Some(e)) if s == e => format!("#{}", s),
+                        (Some(s), Some(e)) => format!("#{}-{}", s, e),
+                        (Some(s), None) => format!("#{}", s),
+                        _ => page_label_from_chunk_id(&rec.chunk_id.0).unwrap_or_default(),
+                    };
+                    let flat: String = rec.text.replace(['\n', '\r', '\t'], " ");
+                    let mut text_preview: String = flat.chars().take(80).collect();
+                    if flat.chars().count() > 80 { text_preview.push('\u{2026}'); }
+                    out_rows.push(HitRow { cid: rec.chunk_id.0, file, file_path: rec.source_uri.clone(), page, text_preview, text_full: rec.text, tv: sc_tv, tv_and: sc_and, tv_or: sc_or, vec: sc_vec });
+                }
             }
-        }
-        self.status = format!("Results: {}", self.results.len());
+            let _ = tx.send(Ok(out_rows));
+        });
     }
 
     fn render_prompt(&self) -> String {
