@@ -886,6 +886,8 @@ impl AppState {
         // Store
         self.store_root = cfg.store_root;
         self.refresh_store_paths();
+        // Treat config load as an explicit apply so first Search doesn't re-apply
+        self.last_store_root_applied = Some(self.store_root.clone());
         // Chunking params
         self.chunk_min = cfg.chunk_min.to_string();
         self.chunk_max = cfg.chunk_max.to_string();
@@ -1388,6 +1390,8 @@ impl AppState {
                     }
                     // Seed env var right away
                     std::env::set_var("HYBRID_STORE_ROOT", self.store_root.trim());
+                    // Mark current Store Root as applied so first Search won't re-apply paths
+                    self.last_store_root_applied = Some(self.store_root.trim().to_string());
                     if self.ort_runtime_committed.is_none() {
                         self.ort_runtime_committed = Some(self.runtime_path.trim().to_string());
                     }
