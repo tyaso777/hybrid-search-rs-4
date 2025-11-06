@@ -241,6 +241,8 @@ struct AppState {
 
     // Validation message for Store Root (shown under the field on failure)
     store_root_error: String,
+    // When true, the current service/index may not reflect the UI store yet
+    store_paths_stale: bool,
 
     // Files tab
     files: Vec<FileRecord>,
@@ -719,6 +721,7 @@ impl AppState {
             svc.set_store_paths(PathBuf::from(self.db_path.trim()), Some(PathBuf::from(self.hnsw_dir.trim())));
         }
         self.last_store_root_applied = Some(root.clone());
+        self.store_paths_stale = false;
         self.status = format!("{}: {}", reason, root);
     }
     fn ui_config(&mut self, ui: &mut egui::Ui) {
@@ -847,6 +850,9 @@ impl AppState {
         // Store
         self.store_root = cfg.store.store_root;
         self.refresh_store_paths();
+        // Mark paths as stale until user applies or re-inits, but consider them applied for skipping re-apply
+        self.store_paths_stale = true;
+        self.last_store_root_applied = Some(self.store_root.clone());
         std::env::set_var("HYBRID_STORE_ROOT", self.store_root.trim());
         #[cfg(feature = "tantivy")]
         { self.tantivy = None; }
@@ -886,7 +892,8 @@ impl AppState {
         // Store
         self.store_root = cfg.store_root;
         self.refresh_store_paths();
-        // Treat config load as an explicit apply so first Search doesn't re-apply
+        // Mark paths as stale until user applies or re-inits, but consider them applied for skipping re-apply
+        self.store_paths_stale = true;
         self.last_store_root_applied = Some(self.store_root.clone());
         // Chunking params
         self.chunk_min = cfg.chunk_min.to_string();
@@ -1259,6 +1266,7 @@ impl AppState {
             last_store_root_applied: None,
 
             store_root_error: String::new(),
+            store_paths_stale: false,
 
             // Files tab
             files: Vec::new(),
@@ -1390,8 +1398,9 @@ impl AppState {
                     }
                     // Seed env var right away
                     std::env::set_var("HYBRID_STORE_ROOT", self.store_root.trim());
-                    // Mark current Store Root as applied so first Search won't re-apply paths
+                    // Mark current Store Root as applied and indices fresh
                     self.last_store_root_applied = Some(self.store_root.trim().to_string());
+                    self.store_paths_stale = false;
                     if self.ort_runtime_committed.is_none() {
                         self.ort_runtime_committed = Some(self.runtime_path.trim().to_string());
                     }
@@ -1466,13 +1475,15 @@ impl App for AppState {
                     let model_color = match model_status { "ready" => ok, "loading" | "released" => warn, _ => err };
                     let dll_color = match dll_status { "fixed" => ok, "editable" => warn, _ => warn };
                     let index_color = match index_status { "ready" => ok, "loading" | "absent" => warn, "error" => err, _ => warn };
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(format!("Model: {}", model_status)).color(model_color));
-                        ui.label(", ");
-                        ui.label(egui::RichText::new(format!("RuntimeDLL: {}", dll_status)).color(dll_color));
-                        ui.label(", ");
-                        ui.label(egui::RichText::new(format!("Index: {}", index_status)).color(index_color));
-                    });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(format!("Model: {}", model_status)).color(model_color));
+                ui.label(", ");
+                ui.label(egui::RichText::new(format!("RuntimeDLL: {}", dll_status)).color(dll_color));
+                ui.label(", ");
+                let idx_disp = if self.store_paths_stale { "stale" } else { index_status };
+                let idx_color = if self.store_paths_stale { ui.visuals().warn_fg_color } else { index_color };
+                ui.label(egui::RichText::new(format!("Index: {}", idx_disp)).color(idx_color));
+            });
                     // compact controls with a clear right-side divider as well
                     ui.add_space(8.0);
                     ui.add_space(8.0);
