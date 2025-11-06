@@ -1,4 +1,5 @@
 pub mod sqlite_repo;
+#[cfg(feature = "fts")]
 pub mod fts5_index;
 pub mod tantivy_index;
 pub mod hnsw_index;

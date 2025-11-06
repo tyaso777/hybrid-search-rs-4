@@ -21,6 +21,7 @@ bytemuck = { version = "1", features = ["extern_crate_alloc"] }
 
 [features]
 tantivy-impl = ["dep:lindera-tantivy", "dep:lindera"]
+fts = []
 
 [dependencies.lindera-tantivy]
 version = "1"

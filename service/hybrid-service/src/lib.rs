@@ -4,6 +4,7 @@ use std::sync::{Arc, RwLock, atomic::{AtomicBool, AtomicU64, Ordering}};
 
 use chrono::Utc;
 use chunk_model::{ChunkId, ChunkRecord, DocumentId, FileRecord};
+#[cfg(all(not(feature = "tantivy"), feature = "fts"))]
 use chunking_store::fts5_index::Fts5Index;
 use chunking_store::hnsw_index::HnswIndex;
 use chunking_store::orchestrator::{delete_by_filter_orchestrated, ingest_chunks_orchestrated, DeleteReport};
@@ -614,9 +615,13 @@ impl HybridService {
         if records.is_empty() { return Ok(()); }
         let mut repo = self.open_repo()?;
 
-        // Prepare FTS maintainer (triggers handle it but keep API consistent)
-        let fts = Fts5Index::new();
+        // Prepare text index maintainers (optional FTS)
+        #[cfg(feature = "fts")]
+        let fts = chunking_store::fts5_index::Fts5Index::new();
+        #[cfg(feature = "fts")]
         let text_m: [&dyn chunking_store::TextIndexMaintainer; 1] = [&fts];
+        #[cfg(not(feature = "fts"))]
+        let text_m: [&dyn chunking_store::TextIndexMaintainer; 0] = [];
 
         // Prepare/load HNSW
         let hdir = self.hnsw_dir();
@@ -923,20 +928,35 @@ impl HybridService {
     }
 
     /// Fallback text-only search via FTS5 when Tantivy feature is disabled.
-    #[cfg(not(feature = "tantivy"))]
+    #[cfg(all(not(feature = "tantivy"), feature = "fts"))]
     pub fn search_text(&self, query: &str, top_k: usize, filters: &[FilterClause]) -> Result<Vec<SearchHit>, ServiceError> {
-        let fts = Fts5Index::new();
+        let fts = chunking_store::fts5_index::Fts5Index::new();
         let opts = SearchOptions { top_k, fetch_factor: 10 };
         self.with_repo(|repo| Ok(fts.search(repo, query, filters, &opts)))
     }
+    /// Fallback when neither Tantivy nor FTS are enabled: return empty.
+    #[cfg(all(not(feature = "tantivy"), not(feature = "fts")))]
+    pub fn search_text(&self, _query: &str, _top_k: usize, _filters: &[FilterClause]) -> Result<Vec<SearchHit>, ServiceError> {
+        Ok(Vec::new())
+    }
 
-    /// Hybrid search: fuse FTS (text) and HNSW (vector) with weighted sum.
+    /// Hybrid search: fuse Text (Tantivy or FTS) and HNSW (vector) with weighted sum.
     pub fn search_hybrid(&self, query: &str, top_k: usize, filters: &[FilterClause], w_text: f32, w_vec: f32) -> Result<Vec<SearchHit>, ServiceError> {
-        let fts = Fts5Index::new();
         let opts = SearchOptions { top_k, fetch_factor: 10 };
 
-        // Text matches via FTS with repo guard
-        let mut text_matches = self.with_repo(|repo| Ok(TextSearcher::search_ids(&fts, repo, query, filters, &opts)))?;
+        // Text matches (prefer Tantivy when enabled)
+        #[cfg(feature = "tantivy")]
+        let mut text_matches: Vec<chunking_store::TextMatch> = match self.with_tantivy(|ti, repo| chunking_store::TextSearcher::search_ids(ti, repo, query, filters, &opts))? {
+            Some(v) => v,
+            None => Vec::new(),
+        };
+        #[cfg(all(not(feature = "tantivy"), feature = "fts"))]
+        let mut text_matches: Vec<chunking_store::TextMatch> = {
+            let fts = chunking_store::fts5_index::Fts5Index::new();
+            self.with_repo(|repo| Ok(chunking_store::TextSearcher::search_ids(&fts, repo, query, filters, &opts)))?
+        };
+        #[cfg(all(not(feature = "tantivy"), not(feature = "fts")))]
+        let mut text_matches: Vec<chunking_store::TextMatch> = Vec::new();
 
         // Vector matches via HNSW guard (optional)
         self.ensure_warm();
@@ -978,8 +998,12 @@ impl HybridService {
     /// Delete by filters across DB and both indexes.
     pub fn delete_by_filter(&self, filters: &[FilterClause], batch_size: usize) -> Result<DeleteReport, ServiceError> {
         let mut repo = self.open_repo()?;
-        let fts = Fts5Index::new();
+        #[cfg(feature = "fts")]
+        let fts = chunking_store::fts5_index::Fts5Index::new();
+        #[cfg(feature = "fts")]
         let text_m: [&dyn chunking_store::TextIndexMaintainer; 1] = [&fts];
+        #[cfg(not(feature = "fts"))]
+        let text_m: [&dyn chunking_store::TextIndexMaintainer; 0] = [];
         // Load HNSW (if exists)
         let hdir = self.hnsw_dir();
         let mut hnsw = if Path::new(&hdir).join("map.tsv").exists() {
