@@ -1471,6 +1471,25 @@ impl App for AppState {
         self.poll_service_task();
         self.poll_ingest_job();
         CentralPanel::default().show(ctx, |ui| {
+            // Top control bar: Init/Release (separate row to save width)
+            ui.horizontal(|ui| {
+                ui.add_enabled_ui(!self.ingest_running, |ui| {
+                    if ui.button("Init").clicked() {
+                        // Always run init/apply flow: model re-init when embedder changed, otherwise store apply only
+                        self.start_service_init();
+                    }
+                    if ui.button("Release").clicked() {
+                        self.release_model_and_indexes();
+                    }
+                });
+                if self.ingest_running {
+                    ui.add(Spinner::new());
+                    if ui.add(Button::new("Cancel")).clicked() {
+                        if let Some(ct) = &self.ingest_cancel { ct.cancel(); }
+                    }
+                }
+            });
+
             ui.horizontal(|ui| {
                 ui.add_enabled_ui(!self.ingest_running, |ui| {
                     // Top-level tabs with underline accent (Config first)
@@ -1522,45 +1541,42 @@ impl App for AppState {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(format!("Model: {}", model_status)).color(model_color));
                 ui.label(", ");
-                ui.label(egui::RichText::new(format!("RuntimeDLL: {}", dll_status)).color(dll_color));
+                ui.label(egui::RichText::new(format!("DLL: {}", dll_status)).color(dll_color));
                 ui.label(", ");
                 // Index indicator priority: init in progress -> loading, else stale flag, else service-reported state
                 let idx_disp = if self.svc_task.is_some() { "loading" }
                     else if self.store_paths_stale { "stale" }
                     else { index_status };
                 let idx_color = if self.svc_task.is_some() || self.store_paths_stale { ui.visuals().warn_fg_color } else { index_color };
-                ui.label(egui::RichText::new(format!("Index: {}", idx_disp)).color(idx_color));
+                ui.label(egui::RichText::new(format!("Vector (HNSW): {}", idx_disp)).color(idx_color));
                 // Show Tantivy (text index) status separately when available
                 #[cfg(feature = "tantivy")]
                 {
-                    let tv_status = if let Some(svc) = &self.svc {
+                    // Text index priority: init in progress -> loading, else stale flag, else service-reported state
+                    let tv_status = if self.svc_task.is_some() {
+                        "loading"
+                    } else if self.store_paths_stale {
+                        "stale"
+                    } else if let Some(svc) = &self.svc {
                         match svc.tantivy_state() { hybrid_service::TantivyState::Absent => "absent", hybrid_service::TantivyState::Loading => "loading", hybrid_service::TantivyState::Ready => "ready", hybrid_service::TantivyState::Error => "error" }
-                    } else if self.svc_task.is_some() { "loading" } else { "absent" };
-                    let tv_color = match tv_status { "ready" => ok, "loading" | "absent" => warn, _ => err };
+                    } else { "absent" };
+                    let tv_color = match tv_status {
+                        "ready" => ok,
+                        "loading" | "absent" | "stale" => warn,
+                        "error" => err,
+                        _ => warn,
+                    };
                     ui.label(", ");
-                    ui.label(egui::RichText::new(format!("TextIndex: {}", tv_status)).color(tv_color));
+                    ui.label(egui::RichText::new(format!("Text (Tantivy): {}", tv_status)).color(tv_color));
                 }
             });
                     // compact controls with a clear right-side divider as well
                     ui.add_space(8.0);
                     ui.add_space(8.0);
-                    if ui.button("Init").clicked() {
-                        // Always run init/apply flow: model re-init when embedder changed, otherwise store apply only
-                        self.start_service_init();
-                    }
-                    if ui.button("Release").clicked() {
-                        self.release_model_and_indexes();
-                    }
                     // trailing divider (double) to close the group
                     ui.separator();
                     ui.separator();
                 });
-                if self.ingest_running {
-                    ui.add(Spinner::new());
-                    if ui.add(Button::new("Cancel")).clicked() {
-                        if let Some(ct) = &self.ingest_cancel { ct.cancel(); }
-                    }
-                }
             });
             
             ui.separator();
