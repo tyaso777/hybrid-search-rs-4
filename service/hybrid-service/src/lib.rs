@@ -180,8 +180,18 @@ impl HybridService {
         {
             let cache = Arc::clone(&hnsw);
             let state = Arc::clone(&hnsw_state);
+            let db_arc = Arc::clone(&db_path);
+            let hnsw_arc = Arc::clone(&hnsw_dir_override);
             let dbp_for_warm = cfg.db_path.clone();
             std::thread::spawn(move || {
+                // Verify target still current for this service instance
+                let cur_db = db_arc.read().map(|p| p.clone()).unwrap_or_else(|_| dbp_for_warm.clone());
+                let cur_h = hnsw_arc.read().ok().and_then(|g| g.clone());
+                let cur_hdir = match cur_h { Some(d) => d, None => derive_hnsw_dir(&cur_db) };
+                if cur_hdir != hdir {
+                    // Store paths changed; abort without touching state/cache
+                    return;
+                }
                 let exists = Path::new(&hdir).join("map.tsv").exists();
                 if !exists {
                     let _ = state.write().map(|mut s| *s = HnswState::Absent);
@@ -190,6 +200,12 @@ impl HybridService {
                 let _ = state.write().map(|mut s| *s = HnswState::Loading);
                 match HnswIndex::load(&hdir, dim_cfg) {
                     Ok(h) => {
+                        // Re‑check on commit
+                        let cur_db2 = db_arc.read().map(|p| p.clone()).unwrap_or_else(|_| dbp_for_warm.clone());
+                        let cur_h2 = hnsw_arc.read().ok().and_then(|g| g.clone());
+                        let cur_hdir2 = match cur_h2 { Some(d) => d, None => derive_hnsw_dir(&cur_db2) };
+                        if cur_hdir2 != hdir { return; }
+
                         let _ = cache.write().map(|mut guard| *guard = Some(h));
                         // Optional KNN warm-up: open repo and run a trivial 1-NN to touch pages
                         if let Ok(repo) = SqliteRepo::open(&dbp_for_warm) {
@@ -220,7 +236,13 @@ impl HybridService {
                 .join("tantivy");
             let tv_cache = Arc::clone(&tantivy);
             let tv_state = Arc::clone(&tantivy_state);
+            let db_arc = Arc::clone(&db_path);
+            let dbp_for_warm = cfg.db_path.clone();
             std::thread::spawn(move || {
+                // Verify that current derived tantivy dir still matches target
+                let cur_db = db_arc.read().map(|p| p.clone()).unwrap_or_else(|_| dbp_for_warm.clone());
+                let cur_tdir = cur_db.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from(".")).join("tantivy");
+                if cur_tdir != tdir { return; }
                 let _ = tv_state.write().map(|mut s| *s = TantivyState::Loading);
                 if std::fs::create_dir_all(&tdir).is_err() {
                     let _ = tv_state.write().map(|mut s| *s = TantivyState::Error);
@@ -228,6 +250,10 @@ impl HybridService {
                 }
                 match TantivyIndex::open_or_create_dir(&tdir) {
                     Ok(idx) => {
+                        // Re-check before commit
+                        let cur_db2 = db_arc.read().map(|p| p.clone()).unwrap_or_else(|_| dbp_for_warm.clone());
+                        let cur_tdir2 = cur_db2.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from(".")).join("tantivy");
+                        if cur_tdir2 != tdir { return; }
                         let _ = tv_cache.write().map(|mut w| *w = Some(idx));
                         let _ = tv_state.write().map(|mut s| *s = TantivyState::Ready);
                     }
@@ -406,7 +432,14 @@ impl HybridService {
         let db_for_warm = self.db_path.read().map(|p| p.clone()).unwrap_or_else(|_| self.cfg.db_path.clone());
         let cache = Arc::clone(&self.hnsw);
         let state = Arc::clone(&self.hnsw_state);
+        let db_arc = Arc::clone(&self.db_path);
+        let h_arc = Arc::clone(&self.hnsw_dir_override);
         std::thread::spawn(move || {
+            // Verify target still current
+            let cur_db = db_arc.read().map(|p| p.clone()).unwrap_or_else(|_| db_for_warm.clone());
+            let cur_h = h_arc.read().ok().and_then(|g| g.clone());
+            let cur_hdir = match cur_h { Some(d) => d, None => derive_hnsw_dir(&cur_db) };
+            if cur_hdir != hdir { return; }
             let idx = Path::new(&hdir).join("map.tsv");
             if !idx.exists() {
                 let _ = state.write().map(|mut s| *s = HnswState::Absent);
@@ -415,6 +448,11 @@ impl HybridService {
             let _ = state.write().map(|mut s| *s = HnswState::Loading);
             match HnswIndex::load(&hdir, dim) {
                 Ok(h) => {
+                    // Re-check before commit
+                    let cur_db2 = db_arc.read().map(|p| p.clone()).unwrap_or_else(|_| db_for_warm.clone());
+                    let cur_h2 = h_arc.read().ok().and_then(|g| g.clone());
+                    let cur_hdir2 = match cur_h2 { Some(d) => d, None => derive_hnsw_dir(&cur_db2) };
+                    if cur_hdir2 != hdir { return; }
                     let _ = cache.write().map(|mut w| *w = Some(h));
                     // KNN warm-up
                     if let Ok(repo) = SqliteRepo::open(&db_for_warm) {
@@ -438,7 +476,12 @@ impl HybridService {
             let tdir = self.tantivy_dir();
             let tv_cache = Arc::clone(&self.tantivy);
             let tv_state = Arc::clone(&self.tantivy_state);
+            let db_arc2 = Arc::clone(&self.db_path);
             std::thread::spawn(move || {
+                // Verify still current derived tantivy dir before state changes
+                let cur_db = db_arc2.read().map(|p| p.clone()).unwrap_or_else(|_| PathBuf::from("."));
+                let cur_tdir = cur_db.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from(".")).join("tantivy");
+                if cur_tdir != tdir { return; }
                 let _ = tv_state.write().map(|mut s| *s = TantivyState::Loading);
                 if std::fs::create_dir_all(&tdir).is_err() {
                     let _ = tv_state.write().map(|mut s| *s = TantivyState::Error);
@@ -446,6 +489,10 @@ impl HybridService {
                 }
                 match TantivyIndex::open_or_create_dir(&tdir) {
                     Ok(idx) => {
+                        // Re-check before commit
+                        let cur_db2 = db_arc2.read().map(|p| p.clone()).unwrap_or_else(|_| PathBuf::from("."));
+                        let cur_tdir2 = cur_db2.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from(".")).join("tantivy");
+                        if cur_tdir2 != tdir { return; }
                         let _ = tv_cache.write().map(|mut w| *w = Some(idx));
                         let _ = tv_state.write().map(|mut s| *s = TantivyState::Ready);
                     }
@@ -454,6 +501,14 @@ impl HybridService {
                     }
                 }
             });
+        }
+    }
+
+    #[cfg(feature = "tantivy")]
+    pub fn tantivy_state(&self) -> TantivyState {
+        match self.tantivy_state.read() {
+            Ok(s) => s.clone(),
+            Err(_) => TantivyState::Error,
         }
     }
 

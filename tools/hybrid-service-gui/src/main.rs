@@ -1530,6 +1530,16 @@ impl App for AppState {
                     else { index_status };
                 let idx_color = if self.svc_task.is_some() || self.store_paths_stale { ui.visuals().warn_fg_color } else { index_color };
                 ui.label(egui::RichText::new(format!("Index: {}", idx_disp)).color(idx_color));
+                // Show Tantivy (text index) status separately when available
+                #[cfg(feature = "tantivy")]
+                {
+                    let tv_status = if let Some(svc) = &self.svc {
+                        match svc.tantivy_state() { hybrid_service::TantivyState::Absent => "absent", hybrid_service::TantivyState::Loading => "loading", hybrid_service::TantivyState::Ready => "ready", hybrid_service::TantivyState::Error => "error" }
+                    } else if self.svc_task.is_some() { "loading" } else { "absent" };
+                    let tv_color = match tv_status { "ready" => ok, "loading" | "absent" => warn, _ => err };
+                    ui.label(", ");
+                    ui.label(egui::RichText::new(format!("TextIndex: {}", tv_status)).color(tv_color));
+                }
             });
                     // compact controls with a clear right-side divider as well
                     ui.add_space(8.0);
