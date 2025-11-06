@@ -29,6 +29,7 @@ impl SqliteRepo {
         Ok(repo)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn conn(&self) -> &Connection { &self.conn }
 
     fn init(&self) -> rusqlite::Result<()> {

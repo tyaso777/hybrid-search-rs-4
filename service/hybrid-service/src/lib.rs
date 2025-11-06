@@ -8,7 +8,7 @@ use chunk_model::{ChunkId, ChunkRecord, DocumentId, FileRecord};
 use chunking_store::fts5_index::Fts5Index;
 use chunking_store::hnsw_index::HnswIndex;
 use chunking_store::orchestrator::{delete_by_filter_orchestrated, ingest_chunks_orchestrated, DeleteReport};
-use chunking_store::{ChunkStoreRead, FilterClause, SearchHit, SearchOptions, TextSearcher, VectorSearcher};
+use chunking_store::{ChunkStoreRead, FilterClause, SearchHit, SearchOptions, VectorSearcher};
 use chunking_store::sqlite_repo::SqliteRepo;
 #[cfg(feature = "tantivy")]
 use chunking_store::tantivy_index::{TantivyIndex, TokenCombine};
