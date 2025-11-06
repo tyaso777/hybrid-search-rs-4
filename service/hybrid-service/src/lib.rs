@@ -370,7 +370,6 @@ impl HybridService {
         self.ensure_store_paths_from_provider();
         let path = self.db_path.read().map(|p| p.clone()).unwrap_or_else(|_| self.cfg.db_path.clone());
         let repo = SqliteRepo::open(&path).map_err(|e| ServiceError::Repo(e.to_string()))?;
-        let _ = repo.maybe_rebuild_fts();
         Ok(repo)
     }
 
@@ -898,7 +897,33 @@ impl HybridService {
         Ok((doc_id, chunk_id))
     }
 
-    /// Text-only search via FTS5 with filters.
+    /// Text-only search (prefer Tantivy when available) with filters.
+    #[cfg(feature = "tantivy")]
+    pub fn search_text(&self, query: &str, top_k: usize, filters: &[FilterClause]) -> Result<Vec<SearchHit>, ServiceError> {
+        let opts = SearchOptions { top_k, fetch_factor: 10 };
+        let tmatches: Vec<chunking_store::TextMatch> = match self.with_tantivy(|ti, repo| chunking_store::TextSearcher::search_ids(ti, repo, query, filters, &opts))? {
+            Some(v) => v,
+            None => Vec::new(),
+        };
+        if tmatches.is_empty() { return Ok(Vec::new()); }
+        // Map scores by chunk_id for materialization
+        let mut score_map: HashMap<String, f32> = HashMap::new();
+        let ids: Vec<ChunkId> = tmatches
+            .into_iter()
+            .map(|m| { score_map.insert(m.chunk_id.0.clone(), m.score); m.chunk_id })
+            .collect();
+        let recs = self.with_repo(|repo| repo.get_chunks_by_ids(&ids).map_err(|e| ServiceError::Repo(e.to_string())))?;
+        let mut out: Vec<SearchHit> = Vec::with_capacity(recs.len());
+        for rec in recs {
+            if let Some(score) = score_map.get(&rec.chunk_id.0) {
+                out.push(SearchHit { chunk: rec, score: *score });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Fallback text-only search via FTS5 when Tantivy feature is disabled.
+    #[cfg(not(feature = "tantivy"))]
     pub fn search_text(&self, query: &str, top_k: usize, filters: &[FilterClause]) -> Result<Vec<SearchHit>, ServiceError> {
         let fts = Fts5Index::new();
         let opts = SearchOptions { top_k, fetch_factor: 10 };
