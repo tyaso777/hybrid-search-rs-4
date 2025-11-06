@@ -1347,6 +1347,8 @@ impl AppState {
 
         let (tx, rx) = mpsc::channel();
         self.status = "Initializing model...".into();
+        // We are applying the current Store Root; show 'loading' instead of 'stale'
+        self.store_paths_stale = false;
         self.svc_task = Some(ServiceInitTask { rx, started: Instant::now() });
         std::thread::spawn(move || {
             let res = HybridService::new(cfg).map(|s| Arc::new(s)).map_err(|e| e.to_string());
@@ -1480,8 +1482,11 @@ impl App for AppState {
                 ui.label(", ");
                 ui.label(egui::RichText::new(format!("RuntimeDLL: {}", dll_status)).color(dll_color));
                 ui.label(", ");
-                let idx_disp = if self.store_paths_stale { "stale" } else { index_status };
-                let idx_color = if self.store_paths_stale { ui.visuals().warn_fg_color } else { index_color };
+                // Index indicator priority: init in progress -> loading, else stale flag, else service-reported state
+                let idx_disp = if self.svc_task.is_some() { "loading" }
+                    else if self.store_paths_stale { "stale" }
+                    else { index_status };
+                let idx_color = if self.svc_task.is_some() || self.store_paths_stale { ui.visuals().warn_fg_color } else { index_color };
                 ui.label(egui::RichText::new(format!("Index: {}", idx_disp)).color(idx_color));
             });
                     // compact controls with a clear right-side divider as well
