@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock, atomic::{AtomicBool, Ordering}};
+use std::sync::{Arc, RwLock, atomic::{AtomicBool, AtomicU64, Ordering}};
 
 use chrono::Utc;
 use chunk_model::{ChunkId, ChunkRecord, DocumentId, FileRecord};
@@ -72,6 +72,8 @@ pub struct HybridService {
     tantivy: Arc<RwLock<Option<TantivyIndex>>>,
     #[cfg(feature = "tantivy")]
     tantivy_state: Arc<RwLock<TantivyState>>,
+    /// Monotonic epoch to invalidate stale background loads when paths change
+    store_epoch: Arc<AtomicU64>,
 }
 
 /// State of the resident HNSW index in memory.
@@ -173,6 +175,8 @@ impl HybridService {
         let tantivy: Arc<RwLock<Option<TantivyIndex>>> = Arc::new(RwLock::new(None));
         #[cfg(feature = "tantivy")]
         let tantivy_state: Arc<RwLock<TantivyState>> = Arc::new(RwLock::new(TantivyState::Absent));
+        // Epoch counter to guard background loads from committing after store change
+        let store_epoch: Arc<AtomicU64> = Arc::new(AtomicU64::new(1));
 
         // Derive HNSW dir from config and kick preload immediately using configured dimension
         let hdir = match &cfg.hnsw_dir { Some(d) => d.clone(), None => derive_hnsw_dir(&cfg.db_path) };
@@ -281,6 +285,7 @@ impl HybridService {
             tantivy,
             #[cfg(feature = "tantivy")]
             tantivy_state,
+            store_epoch,
         };
         // Warm up ONNX session once (best-effort)
         let _ = svc.embedder.embed("warmup").map(|_| svc.warmed.store(true, Ordering::Relaxed));
@@ -427,6 +432,8 @@ impl HybridService {
             let _ = self.tantivy.write().map(|mut w| *w = None);
             let _ = self.tantivy_state.write().map(|mut s| *s = TantivyState::Absent);
         }
+        // Bump epoch to invalidate in-flight background loads for previous paths
+        let _ = self.store_epoch.fetch_add(1, Ordering::SeqCst);
         let hdir = self.hnsw_dir();
         let dim = self.embedder.info().dimension;
         let db_for_warm = self.db_path.read().map(|p| p.clone()).unwrap_or_else(|_| self.cfg.db_path.clone());
@@ -434,17 +441,21 @@ impl HybridService {
         let state = Arc::clone(&self.hnsw_state);
         let db_arc = Arc::clone(&self.db_path);
         let h_arc = Arc::clone(&self.hnsw_dir_override);
+        let epoch_arc = Arc::clone(&self.store_epoch);
         std::thread::spawn(move || {
+            let epoch_start = epoch_arc.load(Ordering::SeqCst);
             // Verify target still current
             let cur_db = db_arc.read().map(|p| p.clone()).unwrap_or_else(|_| db_for_warm.clone());
             let cur_h = h_arc.read().ok().and_then(|g| g.clone());
             let cur_hdir = match cur_h { Some(d) => d, None => derive_hnsw_dir(&cur_db) };
-            if cur_hdir != hdir { return; }
+            if cur_hdir != hdir || epoch_arc.load(Ordering::SeqCst) != epoch_start { return; }
             let idx = Path::new(&hdir).join("map.tsv");
             if !idx.exists() {
+                if epoch_arc.load(Ordering::SeqCst) != epoch_start { return; }
                 let _ = state.write().map(|mut s| *s = HnswState::Absent);
                 return;
             }
+            if epoch_arc.load(Ordering::SeqCst) != epoch_start { return; }
             let _ = state.write().map(|mut s| *s = HnswState::Loading);
             match HnswIndex::load(&hdir, dim) {
                 Ok(h) => {
@@ -452,7 +463,7 @@ impl HybridService {
                     let cur_db2 = db_arc.read().map(|p| p.clone()).unwrap_or_else(|_| db_for_warm.clone());
                     let cur_h2 = h_arc.read().ok().and_then(|g| g.clone());
                     let cur_hdir2 = match cur_h2 { Some(d) => d, None => derive_hnsw_dir(&cur_db2) };
-                    if cur_hdir2 != hdir { return; }
+                    if cur_hdir2 != hdir || epoch_arc.load(Ordering::SeqCst) != epoch_start { return; }
                     let _ = cache.write().map(|mut w| *w = Some(h));
                     // KNN warm-up
                     if let Ok(repo) = SqliteRepo::open(&db_for_warm) {
@@ -464,9 +475,10 @@ impl HybridService {
                             }
                         }
                     }
+                    if epoch_arc.load(Ordering::SeqCst) != epoch_start { return; }
                     let _ = state.write().map(|mut s| *s = HnswState::Ready);
                 }
-                Err(_) => { let _ = state.write().map(|mut s| *s = HnswState::Error); }
+                Err(_) => { if epoch_arc.load(Ordering::SeqCst) != epoch_start { return; } let _ = state.write().map(|mut s| *s = HnswState::Error); }
             }
         });
 
@@ -477,13 +489,16 @@ impl HybridService {
             let tv_cache = Arc::clone(&self.tantivy);
             let tv_state = Arc::clone(&self.tantivy_state);
             let db_arc2 = Arc::clone(&self.db_path);
+            let epoch_arc2 = Arc::clone(&self.store_epoch);
             std::thread::spawn(move || {
+                let epoch_start = epoch_arc2.load(Ordering::SeqCst);
                 // Verify still current derived tantivy dir before state changes
                 let cur_db = db_arc2.read().map(|p| p.clone()).unwrap_or_else(|_| PathBuf::from("."));
                 let cur_tdir = cur_db.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from(".")).join("tantivy");
-                if cur_tdir != tdir { return; }
+                if cur_tdir != tdir || epoch_arc2.load(Ordering::SeqCst) != epoch_start { return; }
                 let _ = tv_state.write().map(|mut s| *s = TantivyState::Loading);
                 if std::fs::create_dir_all(&tdir).is_err() {
+                    if epoch_arc2.load(Ordering::SeqCst) != epoch_start { return; }
                     let _ = tv_state.write().map(|mut s| *s = TantivyState::Error);
                     return;
                 }
@@ -492,11 +507,12 @@ impl HybridService {
                         // Re-check before commit
                         let cur_db2 = db_arc2.read().map(|p| p.clone()).unwrap_or_else(|_| PathBuf::from("."));
                         let cur_tdir2 = cur_db2.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from(".")).join("tantivy");
-                        if cur_tdir2 != tdir { return; }
+                        if cur_tdir2 != tdir || epoch_arc2.load(Ordering::SeqCst) != epoch_start { return; }
                         let _ = tv_cache.write().map(|mut w| *w = Some(idx));
                         let _ = tv_state.write().map(|mut s| *s = TantivyState::Ready);
                     }
                     Err(_) => {
+                        if epoch_arc2.load(Ordering::SeqCst) != epoch_start { return; }
                         let _ = tv_state.write().map(|mut s| *s = TantivyState::Error);
                     }
                 }
