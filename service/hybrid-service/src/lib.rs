@@ -31,6 +31,8 @@ pub struct ServiceConfig {
     pub db_path: PathBuf,
     pub hnsw_dir: Option<PathBuf>,
     pub embedder: OnnxStdIoConfig,
+    /// When true, warm up HNSW + Tantivy + embedder concurrently.
+    pub aggressive_warmup: bool,
     /// Max number of chunks to embed per batch to control memory usage.
     pub embed_batch_size: usize,
     /// When true, automatically adapts batch size (backoff + bucketing).
@@ -47,6 +49,7 @@ impl Default for ServiceConfig {
             db_path: PathBuf::from("target/demo/chunks.db"),
             hnsw_dir: None,
             embedder: default_stdio_config(),
+            aggressive_warmup: true,
             embed_batch_size: 64,
             embed_auto: true,
             embed_initial_batch: 128,
@@ -188,6 +191,11 @@ impl HybridService {
             let hnsw_arc = Arc::clone(&hnsw_dir_override);
             let dbp_for_warm = cfg.db_path.clone();
             let epoch_arc = Arc::clone(&store_epoch);
+            let aggressive = cfg.aggressive_warmup;
+            #[cfg(feature = "tantivy")]
+            let tv_cache = Arc::clone(&tantivy);
+            #[cfg(feature = "tantivy")]
+            let tv_state = Arc::clone(&tantivy_state);
             std::thread::spawn(move || {
                 // Verify target still current for this service instance (epoch + path)
                 let epoch_start = epoch_arc.load(Ordering::SeqCst);
@@ -230,12 +238,41 @@ impl HybridService {
                     }
                     Err(_) => { if epoch_arc.load(Ordering::SeqCst) != epoch_start { return; } let _ = state.write().map(|mut s| *s = HnswState::Error); }
                 }
+
+                // If aggressive OFF, sequentially open Tantivy after HNSW preload
+                #[cfg(feature = "tantivy")]
+                if !aggressive {
+                    // Derive Tantivy dir from current DB path
+                    let cur_db = db_arc.read().map(|p| p.clone()).unwrap_or_else(|_| dbp_for_warm.clone());
+                    let tdir = cur_db.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from(".")).join("tantivy");
+                    if epoch_arc.load(Ordering::SeqCst) != epoch_start { return; }
+                    let _ = tv_state.write().map(|mut s| *s = TantivyState::Loading);
+                    if std::fs::create_dir_all(&tdir).is_err() {
+                        if epoch_arc.load(Ordering::SeqCst) != epoch_start { return; }
+                        let _ = tv_state.write().map(|mut s| *s = TantivyState::Error);
+                        return;
+                    }
+                    match TantivyIndex::open_or_create_dir(&tdir) {
+                        Ok(idx) => {
+                            // Re-validate target before commit
+                            let cur_db2 = db_arc.read().map(|p| p.clone()).unwrap_or_else(|_| dbp_for_warm.clone());
+                            let tdir2 = cur_db2.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from(".")).join("tantivy");
+                            if tdir2 != tdir || epoch_arc.load(Ordering::SeqCst) != epoch_start { return; }
+                            let _ = tv_cache.write().map(|mut w| *w = Some(idx));
+                            let _ = tv_state.write().map(|mut s| *s = TantivyState::Ready);
+                        }
+                        Err(_) => {
+                            if epoch_arc.load(Ordering::SeqCst) != epoch_start { return; }
+                            let _ = tv_state.write().map(|mut s| *s = TantivyState::Error);
+                        }
+                    }
+                }
             });
         }
 
         // Background open/create Tantivy index at the store root (if enabled)
         #[cfg(feature = "tantivy")]
-        {
+        if cfg.aggressive_warmup {
             // Derive Tantivy dir from DB path: <store_root>/tantivy
             let tdir = cfg
                 .db_path
@@ -296,8 +333,10 @@ impl HybridService {
             tantivy_state,
             store_epoch,
         };
-        // Warm up ONNX session once (best-effort)
-        let _ = svc.embedder.embed("warmup").map(|_| svc.warmed.store(true, Ordering::Relaxed));
+        // Warm up ONNX session once (best-effort) when aggressive
+        if svc.cfg.aggressive_warmup {
+            let _ = svc.embedder.embed("warmup").map(|_| svc.warmed.store(true, Ordering::Relaxed));
+        }
         Ok(svc)
     }
 
@@ -451,6 +490,11 @@ impl HybridService {
         let db_arc = Arc::clone(&self.db_path);
         let h_arc = Arc::clone(&self.hnsw_dir_override);
         let epoch_arc = Arc::clone(&self.store_epoch);
+        let aggressive = self.cfg.aggressive_warmup;
+        #[cfg(feature = "tantivy")]
+        let tv_cache = Arc::clone(&self.tantivy);
+        #[cfg(feature = "tantivy")]
+        let tv_state = Arc::clone(&self.tantivy_state);
         std::thread::spawn(move || {
             let epoch_start = epoch_arc.load(Ordering::SeqCst);
             // Verify target still current
@@ -489,11 +533,40 @@ impl HybridService {
                 }
                 Err(_) => { if epoch_arc.load(Ordering::SeqCst) != epoch_start { return; } let _ = state.write().map(|mut s| *s = HnswState::Error); }
             }
+
+            // If aggressive OFF, sequentially open Tantivy after HNSW reload
+            #[cfg(feature = "tantivy")]
+            if !aggressive {
+                // Derive Tantivy dir from current DB path
+                let cur_db = db_arc.read().map(|p| p.clone()).unwrap_or_else(|_| db_for_warm.clone());
+                let tdir = cur_db.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from(".")).join("tantivy");
+                if epoch_arc.load(Ordering::SeqCst) != epoch_start { return; }
+                let _ = tv_state.write().map(|mut s| *s = TantivyState::Loading);
+                if std::fs::create_dir_all(&tdir).is_err() {
+                    if epoch_arc.load(Ordering::SeqCst) != epoch_start { return; }
+                    let _ = tv_state.write().map(|mut s| *s = TantivyState::Error);
+                    return;
+                }
+                match TantivyIndex::open_or_create_dir(&tdir) {
+                    Ok(idx) => {
+                        // Re-check before commit
+                        let cur_db2 = db_arc.read().map(|p| p.clone()).unwrap_or_else(|_| db_for_warm.clone());
+                        let tdir2 = cur_db2.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from(".")).join("tantivy");
+                        if tdir2 != tdir || epoch_arc.load(Ordering::SeqCst) != epoch_start { return; }
+                        let _ = tv_cache.write().map(|mut w| *w = Some(idx));
+                        let _ = tv_state.write().map(|mut s| *s = TantivyState::Ready);
+                    }
+                    Err(_) => {
+                        if epoch_arc.load(Ordering::SeqCst) != epoch_start { return; }
+                        let _ = tv_state.write().map(|mut s| *s = TantivyState::Error);
+                    }
+                }
+            }
         });
 
         // Also (re)open Tantivy in background for the new store paths (if enabled)
         #[cfg(feature = "tantivy")]
-        {
+        if self.cfg.aggressive_warmup {
             let tdir = self.tantivy_dir();
             let tv_cache = Arc::clone(&self.tantivy);
             let tv_state = Arc::clone(&self.tantivy_state);

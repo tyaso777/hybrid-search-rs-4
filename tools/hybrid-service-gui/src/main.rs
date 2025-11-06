@@ -121,6 +121,7 @@ struct AppState {
     embed_auto: bool,
     embed_initial_batch: String,
     embed_min_batch: String,
+    aggressive_warmup: bool,
 
     // Store/index config (root -> derive artifacts)
     store_root: String,
@@ -329,7 +330,11 @@ struct ModelCfg {
     embed_auto: bool,
     embed_initial_batch: usize,
     embed_min_batch: usize,
+    #[serde(default = "default_true")]
+    aggressive_warmup: bool,
 }
+
+fn default_true() -> bool { true }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct PromptCfg {
@@ -371,6 +376,8 @@ struct HybridGuiConfigV1 {
     embed_auto: bool,
     embed_initial_batch: usize,
     embed_min_batch: usize,
+    #[serde(default = "default_true")]
+    aggressive_warmup: bool,
 }
 
 impl AppState {
@@ -805,6 +812,7 @@ impl AppState {
             });
             ui.horizontal(|ui| {
                 ui.checkbox(&mut self.embed_auto, "Auto batch");
+                ui.checkbox(&mut self.aggressive_warmup, "Aggressive warm-up (parallel indexes + embedder)");
             });
             ui.collapsing("Auto batch settings", |ui| {
                 ui.horizontal(|ui| {
@@ -842,6 +850,7 @@ impl AppState {
                 embed_auto: self.embed_auto,
                 embed_initial_batch: self.embed_initial_batch.trim().parse().unwrap_or(128),
                 embed_min_batch: self.embed_min_batch.trim().parse().unwrap_or(8),
+                aggressive_warmup: self.aggressive_warmup,
             },
             prompt: Some(PromptCfg {
                 templates: self.prompt_templates.clone(),
@@ -878,6 +887,7 @@ impl AppState {
         self.embed_auto = cfg.model.embed_auto;
         self.embed_initial_batch = cfg.model.embed_initial_batch.to_string();
         self.embed_min_batch = cfg.model.embed_min_batch.to_string();
+        self.aggressive_warmup = cfg.model.aggressive_warmup;
         // Prompt templates
         if let Some(p) = cfg.prompt {
             self.prompt_templates = p.templates;
@@ -916,6 +926,7 @@ impl AppState {
         self.embed_auto = cfg.embed_auto;
         self.embed_initial_batch = cfg.embed_initial_batch.to_string();
         self.embed_min_batch = cfg.embed_min_batch.to_string();
+        self.aggressive_warmup = cfg.aggressive_warmup;
     }
 
     fn load_config_via_dialog(&mut self) {
@@ -1168,6 +1179,7 @@ impl AppState {
             embed_auto: true,
             embed_initial_batch: String::from("128"),
             embed_min_batch: String::from("8"),
+            aggressive_warmup: true,
 
             store_root: store_default.clone(),
             db_path: derive_db_path(&store_default),
@@ -1381,6 +1393,7 @@ impl AppState {
         cfg.embedder.runtime_library_path = PathBuf::from(self.runtime_path.trim());
         cfg.embedder.dimension = dim_ui;
         cfg.embedder.max_input_length = self.max_tokens.trim().parse().unwrap_or(ONNX_STDIO_DEFAULTS.max_input_tokens);
+        cfg.aggressive_warmup = self.aggressive_warmup;
         if let Ok(bs) = self.embed_batch_size.trim().parse::<usize>() { if bs > 0 { cfg.embed_batch_size = bs; } }
         cfg.embed_auto = self.embed_auto;
         if let Ok(x) = self.embed_initial_batch.trim().parse::<usize>() { if x > 0 { cfg.embed_initial_batch = x; } }
