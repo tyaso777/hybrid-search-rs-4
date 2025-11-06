@@ -208,6 +208,36 @@ impl HybridService {
             });
         }
 
+        // Background open/create Tantivy index at the store root (if enabled)
+        #[cfg(feature = "tantivy")]
+        {
+            // Derive Tantivy dir from DB path: <store_root>/tantivy
+            let tdir = cfg
+                .db_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("tantivy");
+            let tv_cache = Arc::clone(&tantivy);
+            let tv_state = Arc::clone(&tantivy_state);
+            std::thread::spawn(move || {
+                let _ = tv_state.write().map(|mut s| *s = TantivyState::Loading);
+                if std::fs::create_dir_all(&tdir).is_err() {
+                    let _ = tv_state.write().map(|mut s| *s = TantivyState::Error);
+                    return;
+                }
+                match TantivyIndex::open_or_create_dir(&tdir) {
+                    Ok(idx) => {
+                        let _ = tv_cache.write().map(|mut w| *w = Some(idx));
+                        let _ = tv_state.write().map(|mut s| *s = TantivyState::Ready);
+                    }
+                    Err(_) => {
+                        let _ = tv_state.write().map(|mut s| *s = TantivyState::Error);
+                    }
+                }
+            });
+        }
+
         // Initialize embedder (may run concurrently with HNSW loading)
         let embedder = OnnxStdIoEmbedder::new(cfg.embedder.clone())
             .map_err(|e| ServiceError::Embed(e.to_string()))?;
@@ -401,6 +431,30 @@ impl HybridService {
                 Err(_) => { let _ = state.write().map(|mut s| *s = HnswState::Error); }
             }
         });
+
+        // Also (re)open Tantivy in background for the new store paths (if enabled)
+        #[cfg(feature = "tantivy")]
+        {
+            let tdir = self.tantivy_dir();
+            let tv_cache = Arc::clone(&self.tantivy);
+            let tv_state = Arc::clone(&self.tantivy_state);
+            std::thread::spawn(move || {
+                let _ = tv_state.write().map(|mut s| *s = TantivyState::Loading);
+                if std::fs::create_dir_all(&tdir).is_err() {
+                    let _ = tv_state.write().map(|mut s| *s = TantivyState::Error);
+                    return;
+                }
+                match TantivyIndex::open_or_create_dir(&tdir) {
+                    Ok(idx) => {
+                        let _ = tv_cache.write().map(|mut w| *w = Some(idx));
+                        let _ = tv_state.write().map(|mut s| *s = TantivyState::Ready);
+                    }
+                    Err(_) => {
+                        let _ = tv_state.write().map(|mut s| *s = TantivyState::Error);
+                    }
+                }
+            });
+        }
     }
 
     /// Ingest pre-built chunks with optional precomputed vectors.
