@@ -2056,10 +2056,19 @@ impl AppState {
 
     fn refresh_ingest_preview(&mut self) {
         use std::fs;
+        use std::io::Read;
         let path = self.ingest_file_path.trim();
         self.ingest_preview.clear();
         if path.is_empty() { return; }
-        let Ok(bytes) = fs::read(path) else { return; };
+
+        // Only attempt preview for text-like files based on extension
+        if !self.is_text_like_path(path) { return; }
+
+        // Read at most a small prefix to avoid blocking the UI on large files
+        const MAX_PREVIEW_BYTES: usize = 256 * 1024; // 256KB
+        let mut file = match fs::File::open(path) { Ok(f) => f, Err(_) => return };
+        let mut bytes: Vec<u8> = Vec::with_capacity(MAX_PREVIEW_BYTES);
+        let _ = file.by_ref().take(MAX_PREVIEW_BYTES as u64).read_to_end(&mut bytes);
         let enc = self.ingest_encoding.to_ascii_lowercase();
         let mut text = match enc.as_str() {
             "auto" => String::from_utf8_lossy(&bytes).to_string(),
