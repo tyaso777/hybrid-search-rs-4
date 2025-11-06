@@ -2553,6 +2553,8 @@ impl AppState {
             .collect();
         let use_all = filters.is_empty() || filters.iter().any(|f| f == "*");
         let only_unreg = self.ingest_only_unregistered;
+        // Capture current global encoding for preview prefetch (may be "auto")
+        let enc_global = self.ingest_encoding.trim().to_string();
         let cancel = CancelToken::new();
         self.ingest_scan_cancel = Some(cancel.clone());
         let (tx, rx) = mpsc::channel::<ScanEvent>();
@@ -2608,11 +2610,32 @@ impl AppState {
                             };
                             if !matched { continue; }
                             scanned += 1;
+                            // Heuristic: text-like preview prefetch (same logic as UI is_text_like_path)
+                            let is_text_like = {
+                                let exts = [
+                                    ".txt", ".md", ".markdown", ".csv", ".tsv", ".log", ".json", ".yaml", ".yml",
+                                    ".ini", ".toml", ".cfg", ".conf", ".rst", ".tex", ".srt", ".properties",
+                                ];
+                                exts.iter().any(|e| lower.ends_with(e))
+                            };
                             if only_unreg {
                                 let fsz = meta.len();
                                 if !known_sizes.contains(&fsz) {
                                     let mdy = meta.modified().ok().map(|st| format_ymd(st));
-                                    batch.push(IngestFileItem { include: true, path: pstr, size: fsz, ordinal: seq, encoding: None, preview_cached_enc: None, preview_cached_text: None, modified_ymd: mdy });
+                                    // Prefetch preview for text-like files using global encoding
+                                    let (pv_enc, pv_text) = if is_text_like {
+                                        (Some(enc_global.clone()), preview_text_for_file(&pstr, &enc_global, 4096, 48))
+                                    } else { (None, None) };
+                                    batch.push(IngestFileItem {
+                                        include: true,
+                                        path: pstr,
+                                        size: fsz,
+                                        ordinal: seq,
+                                        encoding: None,
+                                        preview_cached_enc: pv_enc,
+                                        preview_cached_text: pv_text,
+                                        modified_ymd: mdy,
+                                    });
                                     seq += 1; kept += 1;
                                 } else {
                                     let mdy = meta.modified().ok().map(|st| format_ymd(st));
@@ -2621,7 +2644,19 @@ impl AppState {
                                 }
                             } else {
                                 let mdy = meta.modified().ok().map(|st| format_ymd(st));
-                                batch.push(IngestFileItem { include: true, path: pstr, size: meta.len(), ordinal: seq, encoding: None, preview_cached_enc: None, preview_cached_text: None, modified_ymd: mdy });
+                                let (pv_enc, pv_text) = if is_text_like {
+                                    (Some(enc_global.clone()), preview_text_for_file(&pstr, &enc_global, 4096, 48))
+                                } else { (None, None) };
+                                batch.push(IngestFileItem {
+                                    include: true,
+                                    path: pstr,
+                                    size: meta.len(),
+                                    ordinal: seq,
+                                    encoding: None,
+                                    preview_cached_enc: pv_enc,
+                                    preview_cached_text: pv_text,
+                                    modified_ymd: mdy,
+                                });
                                 seq += 1; kept += 1;
                             }
                             if batch.len() >= 64 {
@@ -2639,7 +2674,19 @@ impl AppState {
                     if cancel.is_canceled() { let _ = tx.send(ScanEvent::Canceled); return; }
                     let mut include = true;
                     if let Some(hx) = sha256_hex_file(&p) { if known.contains(&hx) { include = false; } }
-                    let it = IngestFileItem { include, path: p, size: fsz, ordinal: ord, encoding: None, preview_cached_enc: None, preview_cached_text: None, modified_ymd: mdy };
+                    // Prefetch preview for text-like files
+                    let lower = p.to_ascii_lowercase();
+                    let is_text_like = {
+                        let exts = [
+                            ".txt", ".md", ".markdown", ".csv", ".tsv", ".log", ".json", ".yaml", ".yml",
+                            ".ini", ".toml", ".cfg", ".conf", ".rst", ".tex", ".srt", ".properties",
+                        ];
+                        exts.iter().any(|e| lower.ends_with(e))
+                    };
+                    let (pv_enc, pv_text) = if include && is_text_like {
+                        (Some(enc_global.clone()), preview_text_for_file(&p, &enc_global, 4096, 48))
+                    } else { (None, None) };
+                    let it = IngestFileItem { include, path: p, size: fsz, ordinal: ord, encoding: None, preview_cached_enc: pv_enc, preview_cached_text: pv_text, modified_ymd: mdy };
                     let _ = tx.send(ScanEvent::Batch(vec![it]));
                     if include { kept += 1; }
                     if (i + 1) % 16 == 0 { let _ = tx.send(ScanEvent::Progress { scanned, kept }); }
