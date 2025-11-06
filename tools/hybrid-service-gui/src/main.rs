@@ -1744,6 +1744,18 @@ impl AppState {
                     // Row 5: Ingest File
                     if ui.add_enabled(!self.ingest_running, Button::new("Ingest File")).clicked() { self.do_ingest_file(); }
                     });
+                    // Inline progress (single file): keep outside disabled block so it is not greyed out
+                    if self.ingest_running {
+                        if self.ingest_total == 0 {
+                            ui.horizontal(|ui| { ui.add(Spinner::new()); ui.label("Chunking…"); });
+                        } else {
+                            let frac_chunks: f32 = (self.ingest_done as f32 / self.ingest_total as f32).clamp(0.0, 1.0);
+                            ui.horizontal(|ui| {
+                                ui.add(ProgressBar::new(frac_chunks).desired_width(420.0).show_percentage());
+                                ui.label(format!("{} / {} (batch {})", self.ingest_done, self.ingest_total, self.ingest_last_batch));
+                            });
+                        }
+                    }
                 },
                 InsertMode::Files => {
                     // Disable interactive controls while ingesting
@@ -1795,12 +1807,16 @@ impl AppState {
                     }); // end disabled controls block
                     // Inline progress under the button (two bars): chunk progress and file progress
                     if self.ingest_running {
-                        // 1) Chunk progress
-                        let frac_chunks: f32 = if self.ingest_total > 0 { (self.ingest_done as f32 / self.ingest_total as f32).clamp(0.0, 1.0) } else { 0.0 };
-                        ui.horizontal(|ui| {
-                            ui.add(ProgressBar::new(frac_chunks).desired_width(420.0).show_percentage());
-                            ui.label(format!("{} / {} (batch {})", self.ingest_done, self.ingest_total, self.ingest_last_batch));
-                        });
+                        // 1) Chunk progress (spinner until we know totals)
+                        if self.ingest_total == 0 {
+                            ui.horizontal(|ui| { ui.add(Spinner::new()); ui.label("Chunking…"); });
+                        } else {
+                            let frac_chunks: f32 = (self.ingest_done as f32 / self.ingest_total as f32).clamp(0.0, 1.0);
+                            ui.horizontal(|ui| {
+                                ui.add(ProgressBar::new(frac_chunks).desired_width(420.0).show_percentage());
+                                ui.label(format!("{} / {} (batch {})", self.ingest_done, self.ingest_total, self.ingest_last_batch));
+                            });
+                        }
                         // 2) File progress (finished files count over total)
                         if self.ingest_file_total > 0 {
                             let finished_files = self.ingest_file_idx.saturating_sub(1) as f32;
