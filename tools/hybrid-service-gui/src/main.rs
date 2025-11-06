@@ -228,6 +228,9 @@ struct AppState {
     preview_chunks: Vec<ChunkRecord>,
     preview_selected: Option<usize>,
     preview_show_tab_escape: bool,
+    // Async preview (Insert File: small text preview)
+    preview_loading: bool,
+    preview_rx: Option<Receiver<Result<String, String>>>,
 
     // ONNX Runtime DLL lock (set after first successful Init)
     ort_runtime_committed: Option<String>,
@@ -1301,6 +1304,8 @@ impl AppState {
             preview_chunks: Vec::new(),
             preview_selected: None,
             preview_show_tab_escape: true,
+            preview_loading: false,
+            preview_rx: None,
 
             ort_runtime_committed: None,
             last_model_path_applied: None,
@@ -1516,6 +1521,7 @@ impl App for AppState {
         self.poll_service_task();
         self.poll_ingest_job();
         self.poll_files_task();
+        self.poll_preview_task();
         CentralPanel::default().show(ctx, |ui| {
             // Top control bar: Init/Release (separate row to save width)
             ui.horizontal(|ui| {
@@ -1710,9 +1716,16 @@ impl AppState {
                             if self.ingest_encoding != before { self.refresh_ingest_preview(); }
                         });
                         // Row 3: Preview text (separate line)
-                        let mut preview_short: String = self.ingest_preview.chars().take(60).collect();
-                        if self.ingest_preview.chars().count() > 60 { preview_short.push('\u{2026}'); }
-                        ui.label(format!("Preview: {}", preview_short.replace(['\n','\r','\t'], " ")));
+                        if self.preview_loading {
+                            ui.horizontal(|ui| {
+                                ui.add(Spinner::new());
+                                ui.label("Loading preview...");
+                            });
+                        } else {
+                            let mut preview_short: String = self.ingest_preview.chars().take(60).collect();
+                            if self.ingest_preview.chars().count() > 60 { preview_short.push('\u{2026}'); }
+                            ui.label(format!("Preview: {}", preview_short.replace(['\n','\r','\t'], " ")));
+                        }
                     }
 
                     // Row 4: [Preview Chunks] button
@@ -2057,43 +2070,72 @@ impl AppState {
     fn refresh_ingest_preview(&mut self) {
         use std::fs;
         use std::io::Read;
-        let path = self.ingest_file_path.trim();
+        let path = self.ingest_file_path.trim().to_string();
         self.ingest_preview.clear();
-        if path.is_empty() { return; }
+        if path.is_empty() { self.preview_loading = false; self.preview_rx = None; return; }
 
         // Only attempt preview for text-like files based on extension
-        if !self.is_text_like_path(path) { return; }
+        if !self.is_text_like_path(&path) { self.preview_loading = false; self.preview_rx = None; return; }
 
-        // Read at most a small prefix to avoid blocking the UI on large files
-        const MAX_PREVIEW_BYTES: usize = 256 * 1024; // 256KB
-        let mut file = match fs::File::open(path) { Ok(f) => f, Err(_) => return };
-        let mut bytes: Vec<u8> = Vec::with_capacity(MAX_PREVIEW_BYTES);
-        let _ = file.by_ref().take(MAX_PREVIEW_BYTES as u64).read_to_end(&mut bytes);
-        let enc = self.ingest_encoding.to_ascii_lowercase();
-        let mut text = match enc.as_str() {
-            "auto" => String::from_utf8_lossy(&bytes).to_string(),
-            "utf-8" | "utf8" => String::from_utf8_lossy(&bytes).to_string(),
-            "shift_jis" | "sjis" | "cp932" | "windows-31j" => {
-                let (cow, _, _) = encoding_rs::SHIFT_JIS.decode(&bytes); cow.into_owned()
+        // Start async worker to read a small prefix and decode
+        self.preview_loading = true;
+        let (tx, rx) = mpsc::channel();
+        self.preview_rx = Some(rx);
+        let enc_lower = self.ingest_encoding.to_ascii_lowercase();
+        std::thread::spawn(move || {
+            // Read at most a small prefix to avoid blocking the UI on large files
+            const MAX_PREVIEW_BYTES: usize = 256 * 1024; // 256KB
+            let mut file = match fs::File::open(&path) { Ok(f) => f, Err(e) => { let _ = tx.send(Err(e.to_string())); return; } };
+            let mut bytes: Vec<u8> = Vec::with_capacity(MAX_PREVIEW_BYTES);
+            if let Err(e) = file.by_ref().take(MAX_PREVIEW_BYTES as u64).read_to_end(&mut bytes) { let _ = tx.send(Err(e.to_string())); return; }
+            let mut text = match enc_lower.as_str() {
+                "auto" => String::from_utf8_lossy(&bytes).to_string(),
+                "utf-8" | "utf8" => String::from_utf8_lossy(&bytes).to_string(),
+                "shift_jis" | "sjis" | "cp932" | "windows-31j" => {
+                    let (cow, _, _) = encoding_rs::SHIFT_JIS.decode(&bytes); cow.into_owned()
+                }
+                "windows-1252" | "cp1252" => { let (cow, _, _) = encoding_rs::WINDOWS_1252.decode(&bytes); cow.into_owned() }
+                "utf-16le" | "utf16le" => {
+                    let mut u16s: Vec<u16> = Vec::with_capacity(bytes.len()/2);
+                    let mut i = 0usize; if bytes.len() >= 2 && bytes[0]==0xFF && bytes[1]==0xFE { i = 2; }
+                    while i + 1 < bytes.len() { u16s.push(u16::from_le_bytes([bytes[i], bytes[i+1]])); i += 2; }
+                    String::from_utf16_lossy(&u16s)
+                }
+                "utf-16be" | "utf16be" => {
+                    let mut u16s: Vec<u16> = Vec::with_capacity(bytes.len()/2);
+                    let mut i = 0usize; if bytes.len() >= 2 && bytes[0]==0xFE && bytes[1]==0xFF { i = 2; }
+                    while i + 1 < bytes.len() { u16s.push(u16::from_be_bytes([bytes[i], bytes[i+1]])); i += 2; }
+                    String::from_utf16_lossy(&u16s)
+                }
+                _ => String::from_utf8_lossy(&bytes).to_string(),
+            };
+            // normalize CRLF
+            text = text.replace('\r', "");
+            let _ = tx.send(Ok(text));
+        });
+    }
+
+    fn poll_preview_task(&mut self) {
+        if let Some(rx) = &self.preview_rx {
+            match rx.try_recv() {
+                Ok(Ok(text)) => {
+                    self.ingest_preview = text;
+                    self.preview_loading = false;
+                    self.preview_rx = None;
+                }
+                Ok(Err(e)) => {
+                    self.status = format!("Preview load failed: {e}");
+                    self.preview_loading = false;
+                    self.preview_rx = None;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    self.status = "Preview load failed: worker disconnected".into();
+                    self.preview_loading = false;
+                    self.preview_rx = None;
+                }
             }
-            "windows-1252" | "cp1252" => { let (cow, _, _) = encoding_rs::WINDOWS_1252.decode(&bytes); cow.into_owned() }
-            "utf-16le" | "utf16le" => {
-                let mut u16s: Vec<u16> = Vec::with_capacity(bytes.len()/2);
-                let mut i = 0usize; if bytes.len() >= 2 && bytes[0]==0xFF && bytes[1]==0xFE { i = 2; }
-                while i + 1 < bytes.len() { u16s.push(u16::from_le_bytes([bytes[i], bytes[i+1]])); i += 2; }
-                String::from_utf16_lossy(&u16s)
-            }
-            "utf-16be" | "utf16be" => {
-                let mut u16s: Vec<u16> = Vec::with_capacity(bytes.len()/2);
-                let mut i = 0usize; if bytes.len() >= 2 && bytes[0]==0xFE && bytes[1]==0xFF { i = 2; }
-                while i + 1 < bytes.len() { u16s.push(u16::from_be_bytes([bytes[i], bytes[i+1]])); i += 2; }
-                String::from_utf16_lossy(&u16s)
-            }
-            _ => String::from_utf8_lossy(&bytes).to_string(),
-        };
-        // normalize CRLF
-        text = text.replace('\r', "");
-        self.ingest_preview = text;
+        }
     }
 
     fn do_insert_text(&mut self) {
