@@ -902,6 +902,74 @@ impl HybridService {
         Ok((doc_id, chunk_id))
     }
 
+    /// Ingest a single text snippet with progress callbacks and optional cancel.
+    pub fn ingest_text_with_progress(
+        &self,
+        text: &str,
+        doc_id_hint: Option<&str>,
+        cancel: Option<&CancelToken>,
+        mut progress: Option<Box<dyn FnMut(ProgressEvent) + Send>>,
+    ) -> Result<(DocumentId, ChunkId), ServiceError> {
+        let text = text.trim();
+        if text.is_empty() { return Err(ServiceError::Embed("text is empty".into())); }
+        // IDs
+        let (doc_id, chunk_id) = make_ids_from_text(doc_id_hint, text);
+        // Build record
+        let rec = ChunkRecord {
+            schema_version: chunk_model::SCHEMA_MAJOR,
+            doc_id: doc_id.clone(),
+            chunk_id: chunk_id.clone(),
+            source_uri: "user://input".into(),
+            source_mime: "text/plain".into(),
+            extracted_at: Utc::now().to_rfc3339(),
+            page_start: None,
+            page_end: None,
+            text: text.to_string(),
+            section_path: None,
+            meta: std::collections::BTreeMap::new(),
+            extra: std::collections::BTreeMap::new(),
+        };
+        // Progress start (total chunks = 1)
+        if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::Start { total_chunks: 1 }); }
+        if let Some(ct) = cancel { if ct.is_canceled() { if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::Canceled); } return Err(ServiceError::Embed("canceled".into())); } }
+        // Embed via existing batched helper (one item)
+        let texts_refs: [&str; 1] = [text];
+        let vecs = {
+            let cb_opt: Option<&mut (dyn FnMut(ProgressEvent) + Send)> =
+                progress.as_mut().map(|b| &mut **b as &mut (dyn FnMut(ProgressEvent) + Send));
+            self.embed_texts_batched(&texts_refs, cancel, cb_opt)?
+        };
+        // Upsert
+        if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::UpsertDb { total: 1 }); }
+        let vectors = vec![(rec.chunk_id.clone(), vecs.into_iter().next().unwrap_or_default())];
+        self.ingest_chunks(&[rec], Some(&vectors))?;
+        #[cfg(feature = "tantivy")]
+        {
+            let records: Vec<ChunkRecord> = {
+                let mut r = Vec::new();
+                r.push(ChunkRecord {
+                    schema_version: chunk_model::SCHEMA_MAJOR,
+                    doc_id: doc_id.clone(),
+                    chunk_id: chunk_id.clone(),
+                    source_uri: "user://input".into(),
+                    source_mime: "text/plain".into(),
+                    extracted_at: Utc::now().to_rfc3339(),
+                    page_start: None,
+                    page_end: None,
+                    text: text.to_string(),
+                    section_path: None,
+                    meta: std::collections::BTreeMap::new(),
+                    extra: std::collections::BTreeMap::new(),
+                });
+                r
+            };
+            let _ = self.with_tantivy(|ti, _repo| { let _ = ti.upsert_records(&records); () });
+        }
+        if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::IndexText { total: 1 }); }
+        if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::Finished { total: 1 }); }
+        Ok((doc_id, chunk_id))
+    }
+
     /// Text-only search (prefer Tantivy when available) with filters.
     #[cfg(feature = "tantivy")]
     pub fn search_text(&self, query: &str, top_k: usize, filters: &[FilterClause]) -> Result<Vec<SearchHit>, ServiceError> {

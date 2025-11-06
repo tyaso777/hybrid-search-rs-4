@@ -308,6 +308,10 @@ struct AppState {
     ingest_scan_kept: usize,
     ingest_scan_rx: Option<Receiver<ScanEvent>>,
     ingest_scan_cancel: Option<CancelToken>,
+
+    // Insert Text: async insert
+    text_insert_running: bool,
+    text_insert_rx: Option<Receiver<Result<(DocumentId, ChunkId), String>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1453,6 +1457,10 @@ impl AppState {
             ingest_scan_kept: 0,
             ingest_scan_rx: None,
             ingest_scan_cancel: None,
+
+            // Insert Text: async insert
+            text_insert_running: false,
+            text_insert_rx: None,
         };
         // Ensure the default prompt header uses the directive above for `instruction`
         s.prompt_header_tmpl = String::from(
@@ -1644,6 +1652,7 @@ impl App for AppState {
         self.poll_preview_chunks_task();
         self.poll_search_task();
         self.poll_scan_task();
+        self.poll_text_insert_task();
         CentralPanel::default().show(ctx, |ui| {
             // Top control bar: Init/Release (separate row to save width)
             ui.horizontal(|ui| {
@@ -2077,12 +2086,26 @@ impl AppState {
                     }); // end disabled table block
                 },
                 InsertMode::Text => {
-                    ui.add_enabled_ui(!self.ingest_running, |ui| {
-                    // Text input with the action button placed below
-                    ui.label("Text");
-                    ui.add(TextEdit::multiline(&mut self.input_text).desired_rows(4).desired_width(600.0));
-                    if ui.add(Button::new("Insert Text")).clicked() { self.do_insert_text(); }
+                    ui.add_enabled_ui(!self.ingest_running && !self.text_insert_running, |ui| {
+                        // Text input with the action button placed below
+                        ui.label("Text");
+                        ui.add(TextEdit::multiline(&mut self.input_text).desired_rows(4).desired_width(600.0));
+                        if ui.add(Button::new("Insert Text")).clicked() { self.do_insert_text(); }
                     });
+                    if self.text_insert_running || self.ingest_running {
+                        if self.ingest_total == 0 {
+                            ui.horizontal(|ui| { ui.add(Spinner::new()); ui.label("Chunking…"); });
+                        } else {
+                            let frac_chunks: f32 = (self.ingest_done as f32 / self.ingest_total as f32).clamp(0.0, 1.0);
+                            ui.horizontal(|ui| {
+                                ui.add(ProgressBar::new(frac_chunks).desired_width(420.0).show_percentage());
+                                ui.label(format!("{} / {} (batch {})", self.ingest_done, self.ingest_total, self.ingest_last_batch));
+                                if ui.add(Button::new("Cancel")).clicked() {
+                                    if let Some(ct) = &self.ingest_cancel { ct.cancel(); }
+                                }
+                            });
+                        }
+                    }
                 }
             }
         // Preview popup is rendered after main UI in update()
@@ -2415,27 +2438,60 @@ impl AppState {
         }
     }
 
-    fn do_insert_text(&mut self) {
-        // Auto-apply Store Root before writing into the DB via service
-        if !self.ensure_store_paths_current() { return; }
-        let text = self.input_text.trim().to_string();
-        if text.is_empty() { self.status = "Enter some text to insert".into(); return; }
-        let Some(svc) = self.svc.as_ref() else { self.status = "Model not initialized".into(); return; };
-        match svc.ingest_text(&text, if self.doc_hint.trim().is_empty() { None } else { Some(self.doc_hint.trim()) }) {
-            Ok((doc_id, chunk_id)) => {
-                // Upsert into Tantivy (optional)
-                #[cfg(feature = "tantivy")]
-                {
-                    if let Err(err) = self.ensure_tantivy_open() { self.status = format!("Tantivy init failed: {err}"); return; }
-                    if let Some(idx) = &self.tantivy {
-                        let rec = rec_clone_for_tantivy(&doc_id, &chunk_id, &text);
-                        if let Err(e) = idx.upsert_records(&[rec]) { self.status = format!("Tantivy upsert failed: {e}"); return; }
-                    }
+    fn poll_text_insert_task(&mut self) {
+        if let Some(rx) = &self.text_insert_rx {
+            match rx.try_recv() {
+                Ok(Ok((doc_id, chunk_id))) => {
+                    self.text_insert_running = false;
+                    self.text_insert_rx = None;
+                    self.status = format!("Inserted chunk {} (doc={})", chunk_id.0, doc_id.0);
                 }
-                self.status = format!("Inserted chunk {} (doc={})", chunk_id.0, doc_id.0);
+                Ok(Err(e)) => {
+                    self.text_insert_running = false;
+                    self.text_insert_rx = None;
+                    self.status = format!("Insert failed: {}", e);
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    self.text_insert_running = false;
+                    self.text_insert_rx = None;
+                    self.status = "Insert worker disconnected".into();
+                }
             }
-            Err(e) => { self.status = format!("Insert failed: {e}"); }
         }
+    }
+
+    fn do_insert_text(&mut self) {
+        // Apply Store Root before writing into the DB via service
+        if !self.ensure_store_paths_current() { return; }
+        let text_owned = self.input_text.trim().to_string();
+        if text_owned.is_empty() { self.status = "Enter some text to insert".into(); return; }
+        let Some(svc) = self.svc.as_ref() else { self.status = "Model not initialized".into(); return; };
+        // Result channel (doc_id, chunk_id)
+        let (tx_res, rx_res) = mpsc::channel::<Result<(DocumentId, ChunkId), String>>();
+        self.text_insert_rx = Some(rx_res);
+        // Progress channel (reuse ingest_* counters)
+        let (tx_ev, rx_ev) = mpsc::channel::<UiProgressEvent>();
+        self.ingest_rx = Some(rx_ev);
+        self.ingest_running = true;
+        self.ingest_done = 0;
+        self.ingest_total = 0;
+        self.ingest_last_batch = 0;
+        self.ingest_started = Some(Instant::now());
+        // Cancel support
+        let cancel = CancelToken::new();
+        self.ingest_cancel = Some(cancel.clone());
+        let svc = Arc::clone(svc);
+        let hint_opt = if self.doc_hint.trim().is_empty() { None } else { Some(self.doc_hint.trim().to_string()) };
+        std::thread::spawn(move || {
+            let tx2 = tx_ev.clone();
+            let cb: Box<dyn FnMut(ProgressEvent) + Send> = Box::new(move |ev: ProgressEvent| { let _ = tx2.send(UiProgressEvent::Service(ev)); });
+            let res = svc.ingest_text_with_progress(&text_owned, hint_opt.as_deref(), Some(&cancel), Some(cb))
+                .map_err(|e| e.to_string());
+            let _ = tx_res.send(res);
+        });
+        self.text_insert_running = true;
+        self.status = "Inserting text…".into();
     }
 
     fn do_ingest_file(&mut self) {
