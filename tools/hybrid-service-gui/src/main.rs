@@ -21,7 +21,7 @@ use egui_extras::{Column, TableBuilder, StripBuilder, Size};
 use eframe::{App, CreationContext, Frame, NativeOptions};
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
-use rayon::prelude::*;
+// use rayon::prelude::*; // no parallel iterators in this module currently
 
 use hybrid_service::{HybridService, ServiceConfig, CancelToken, ProgressEvent, HnswState};
 use embedding_provider::config::ONNX_STDIO_DEFAULTS;
@@ -30,7 +30,7 @@ use chunking_store::ChunkStoreRead;
 // Removed unused FilterKind/FilterOp after moving Tantivy ops into service
 #[cfg(feature = "tantivy")]
 use chunking_store::tantivy_index::TantivyIndex;
-use chunk_model::{ChunkId, DocumentId, ChunkRecord, FileRecord, SCHEMA_MAJOR};
+use chunk_model::{ChunkId, DocumentId, ChunkRecord, FileRecord};
 
 fn main() -> eframe::Result<()> {
     let options = NativeOptions::default();
@@ -92,7 +92,7 @@ enum UiProgressEvent {
 
 #[derive(Debug, Clone)]
 enum ScanEvent {
-    Progress { scanned: usize, kept: usize, total: Option<usize> },
+    Progress { scanned: usize, kept: usize },
     Batch(Vec<IngestFileItem>),
     Finished,
     Canceled,
@@ -149,6 +149,7 @@ struct AppState {
     #[cfg(feature = "tantivy")]
     tantivy: Option<TantivyIndex>,
     #[cfg(feature = "tantivy")]
+    #[allow(dead_code)]
     last_tantivy_dir_applied: Option<String>,
 
     // Service
@@ -1242,6 +1243,7 @@ impl AppState {
     }
 
     #[cfg(feature = "tantivy")]
+    #[allow(dead_code)]
     fn ensure_tantivy_open(&mut self) -> Result<(), String> {
         let need_reopen = match &self.last_tantivy_dir_applied {
             Some(applied) => applied != &self.tantivy_dir,
@@ -2396,7 +2398,7 @@ impl AppState {
                     Ok(ScanEvent::Batch(mut items)) => {
                         self.ingest_files.append(&mut items);
                     }
-                    Ok(ScanEvent::Progress { scanned, kept, .. }) => {
+                    Ok(ScanEvent::Progress { scanned, kept }) => {
                         self.ingest_scan_scanned = scanned;
                         self.ingest_scan_kept = kept;
                     }
@@ -2535,135 +2537,6 @@ impl AppState {
         });
     }
 
-    fn scan_ingest_folder(&mut self) {
-        self.ingest_files.clear();
-        let root = self.ingest_folder_path.trim();
-        if root.is_empty() { self.status = "Choose a folder".into(); return; }
-        let max_depth = self.ingest_depth;
-        let filters: Vec<String> = self.ingest_exts.split(',').map(|s| s.trim().trim_start_matches('.').to_ascii_lowercase()).filter(|s| !s.is_empty()).collect();
-        let use_all = filters.is_empty() || filters.iter().any(|f| f == "*");
-        let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(std::path::PathBuf::from(root), 0)];
-        let mut seq: usize = 0;
-        while let Some((dir, depth)) = stack.pop() {
-            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
-            for entry in rd.flatten() {
-                let path = entry.path();
-                if let Ok(meta) = entry.metadata() {
-                    if meta.is_dir() {
-                        if depth < max_depth { stack.push((path, depth + 1)); }
-                    } else if meta.is_file() {
-                        let pstr = path.display().to_string();
-                        let lower = pstr.to_ascii_lowercase();
-                        let matched = if use_all { true } else {
-                            let mut ok = false;
-                            for f in &filters {
-                                if lower.ends_with(&format!(".{}", f)) { ok = true; break; }
-                            }
-                            ok
-                        };
-                        if matched {
-                            let mdy = meta.modified().ok().map(|st| format_ymd(st));
-                            self.ingest_files.push(IngestFileItem { include: true, path: pstr, size: meta.len(), ordinal: seq, encoding: None, preview_cached_enc: None, preview_cached_text: None, modified_ymd: mdy });
-                            seq += 1;
-                        }
-                    }
-                }
-            }
-        }
-        { let base = self.ingest_folder_path.clone(); let abs = self.ingest_show_abs_paths; self.apply_ingest_sort_with(base.as_str(), abs) };
-        self.status = format!("Scanned {} files", self.ingest_files.len());
-    }
-
-    fn scan_ingest_folder_unregistered(&mut self) {
-        if !self.ensure_store_paths_current() { return; }
-        let Some(svc) = &self.svc else { self.status = "Model not initialized".into(); return; };
-
-        use std::collections::HashSet;
-        let mut known: HashSet<String> = HashSet::new();
-        let mut known_sizes: HashSet<u64> = HashSet::new();
-        let limit: usize = 1000;
-        let mut offset: usize = 0;
-        loop {
-            match svc.list_files(limit, offset) {
-                Ok(list) => {
-                    if list.is_empty() { break; }
-                    for rec in &list {
-                        if let Some(h) = rec.content_sha256.clone() { known.insert(h); }
-                        if let Some(sz) = rec.file_size_bytes { known_sizes.insert(sz); }
-                    }
-                    if list.len() < limit { break; }
-                    offset += limit;
-                }
-                Err(e) => { self.status = format!("Fetch known hashes failed: {e}"); return; }
-            }
-        }
-
-        self.ingest_files.clear();
-        let root = self.ingest_folder_path.trim();
-        if root.is_empty() { self.status = "Choose a folder".into(); return; }
-        let max_depth = self.ingest_depth;
-        let filters: Vec<String> = self.ingest_exts
-            .split(',')
-            .map(|s| s.trim().trim_start_matches('.').to_ascii_lowercase())
-            .filter(|s| !s.is_empty())
-            .collect();
-        let use_all = filters.is_empty() || filters.iter().any(|f| f == "*");
-        let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(std::path::PathBuf::from(root), 0)];
-        let mut total: usize = 0; let mut kept: usize = 0;
-        let mut immediate: Vec<IngestFileItem> = Vec::new();
-        let mut needs_hash: Vec<(String, u64, Option<String>, usize)> = Vec::new();
-        let mut seq: usize = 0;
-        while let Some((dir, depth)) = stack.pop() {
-            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
-            for entry in rd.flatten() {
-                let path = entry.path();
-                if let Ok(meta) = entry.metadata() {
-                    if meta.is_dir() {
-                        if depth < max_depth { stack.push((path, depth + 1)); }
-                    } else if meta.is_file() {
-                        let pstr = path.display().to_string();
-                        let lower = pstr.to_ascii_lowercase();
-                        let matched = if use_all { true } else {
-                            let mut ok = false;
-                            for f in &filters { if lower.ends_with(&format!(".{}", f)) { ok = true; break; } }
-                            ok
-                        };
-                        if !matched { continue; }
-                        total += 1;
-                        let fsz = meta.len();
-                        if !known_sizes.contains(&fsz) {
-                            // No DB file with this size: definitely new, no hashing required
-                            { let mdy = meta.modified().ok().map(|st| format_ymd(st)); immediate.push(IngestFileItem { include: true, path: pstr, size: fsz, ordinal: seq, encoding: None, preview_cached_enc: None, preview_cached_text: None, modified_ymd: mdy }); seq += 1; }
-                            kept += 1;
-                        } else {
-                            // Size exists in DB: queue for hashing
-                            { let mdy = meta.modified().ok().map(|st| format_ymd(st)); needs_hash.push((pstr, fsz, mdy, seq)); seq += 1; }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Hash the queued files in parallel
-        let hashed_results: Vec<IngestFileItem> = needs_hash
-            .par_iter()
-            .map(|(p, fsz, mdy, ord)| {
-                let mut include = true;
-                if let Some(hx) = sha256_hex_file(p) {
-                    if known.contains(&hx) { include = false; }
-                }
-                IngestFileItem { include, path: p.clone(), size: *fsz, ordinal: *ord, encoding: None, preview_cached_enc: None, preview_cached_text: None, modified_ymd: mdy.clone() }
-            })
-            .collect();
-
-        for it in &hashed_results { if it.include { kept += 1; } }
-
-        self.ingest_files.clear();
-        self.ingest_files.extend(immediate);
-        self.ingest_files.extend(hashed_results);
-        { let base = self.ingest_folder_path.clone(); let abs = self.ingest_show_abs_paths; self.apply_ingest_sort_with(base.as_str(), abs) };
-        self.status = format!("Scanned {} files (new: {})", total, kept);
-    }
 
     fn scan_ingest_folder_async(&mut self) {
         // Reset list and start async scan worker
@@ -2753,7 +2626,7 @@ impl AppState {
                             }
                             if batch.len() >= 64 {
                                 let _ = tx.send(ScanEvent::Batch(std::mem::take(&mut batch)));
-                                let _ = tx.send(ScanEvent::Progress { scanned, kept, total: None });
+                                let _ = tx.send(ScanEvent::Progress { scanned, kept });
                             }
                         }
                     }
@@ -2769,10 +2642,10 @@ impl AppState {
                     let it = IngestFileItem { include, path: p, size: fsz, ordinal: ord, encoding: None, preview_cached_enc: None, preview_cached_text: None, modified_ymd: mdy };
                     let _ = tx.send(ScanEvent::Batch(vec![it]));
                     if include { kept += 1; }
-                    if (i + 1) % 16 == 0 { let _ = tx.send(ScanEvent::Progress { scanned, kept, total: None }); }
+                    if (i + 1) % 16 == 0 { let _ = tx.send(ScanEvent::Progress { scanned, kept }); }
                 }
             }
-            let _ = tx.send(ScanEvent::Progress { scanned, kept, total: None });
+            let _ = tx.send(ScanEvent::Progress { scanned, kept });
             let _ = tx.send(ScanEvent::Finished);
         });
     }
@@ -3529,24 +3402,7 @@ fn page_label_from_chunk_id(cid: &str) -> Option<String> {
     None
 }
 
-#[cfg(feature = "tantivy")]
-fn rec_clone_for_tantivy(doc: &DocumentId, cid: &ChunkId, text: &str) -> ChunkRecord {
-    use std::collections::BTreeMap;
-    ChunkRecord {
-        schema_version: SCHEMA_MAJOR,
-        doc_id: DocumentId(doc.0.clone()),
-        chunk_id: ChunkId(cid.0.clone()),
-        source_uri: "user://input".into(),
-        source_mime: "text/plain".into(),
-        extracted_at: chrono::Utc::now().to_rfc3339(),
-        page_start: None,
-        page_end: None,
-        text: text.to_string(),
-        section_path: None,
-        meta: BTreeMap::new(),
-        extra: BTreeMap::new(),
-    }
-}
+// removed unused rec_clone_for_tantivy (was only used for older Tantivy upsert path)
 
 // --- Japanese font fallback (CJK) ------------------------------------------------------------
 fn install_japanese_fallback_fonts(ctx: &egui::Context) {
