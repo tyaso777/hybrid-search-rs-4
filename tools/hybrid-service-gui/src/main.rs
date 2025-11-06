@@ -266,6 +266,8 @@ struct AppState {
     files_sort_asc: bool,
     // Preserve default order across toggles
     files_default_ord: std::collections::HashMap<String, usize>,
+    // Files tab: async loader channel
+    files_rx: Option<Receiver<Result<Vec<FileRecord>, String>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -694,24 +696,44 @@ impl AppState {
         let offset = self.files_page.saturating_mul(self.files_page_size);
         let limit = self.files_page_size;
         self.files_loading = true;
-        // Synchronous fetch; can move to a thread if needed later
+        let (tx, rx) = mpsc::channel();
+        self.files_rx = Some(rx);
         if let Some(svc) = &self.svc {
-            match svc.list_files(limit, offset) {
-                Ok(list) => {
+            let svc = Arc::clone(svc);
+            std::thread::spawn(move || {
+                let res = svc.list_files(limit, offset).map_err(|e| e.to_string());
+                let _ = tx.send(res);
+            });
+        }
+    }
+
+    fn poll_files_task(&mut self) {
+        if let Some(rx) = &self.files_rx {
+            match rx.try_recv() {
+                Ok(Ok(list)) => {
                     self.files = list;
-                    // Capture default order by doc_id for tri-state sort (Default)
                     self.files_default_ord.clear();
                     for (i, rec) in self.files.iter().enumerate() {
                         self.files_default_ord.insert(rec.doc_id.0.clone(), i);
                     }
-                    // Apply current sort selection
                     self.apply_files_sort();
                     self.status = format!("Loaded files page {} ({} items)", self.files_page + 1, self.files.len());
+                    self.files_loading = false;
+                    self.files_rx = None;
                 }
-                Err(e) => { self.status = format!("List files failed: {e}"); }
+                Ok(Err(e)) => {
+                    self.status = format!("List files failed: {e}");
+                    self.files_loading = false;
+                    self.files_rx = None;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    self.status = "List files failed: worker disconnected".into();
+                    self.files_loading = false;
+                    self.files_rx = None;
+                }
             }
         }
-        self.files_loading = false;
     }
     fn apply_store_root_now(&mut self, reason: &str) {
         // Take an owned copy to avoid borrowing self across mutable calls
@@ -1307,6 +1329,7 @@ impl AppState {
             files_sort_key: FilesSortKey::Default,
             files_sort_asc: true,
             files_default_ord: std::collections::HashMap::new(),
+            files_rx: None,
         };
         // Ensure the default prompt header uses the directive above for `instruction`
         s.prompt_header_tmpl = String::from(
@@ -1492,6 +1515,7 @@ impl App for AppState {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
         self.poll_service_task();
         self.poll_ingest_job();
+        self.poll_files_task();
         CentralPanel::default().show(ctx, |ui| {
             // Top control bar: Init/Release (separate row to save width)
             ui.horizontal(|ui| {
