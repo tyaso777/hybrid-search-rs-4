@@ -99,6 +99,14 @@ enum ScanEvent {
     Error(String),
 }
 
+#[derive(Debug, Clone)]
+enum DeleteEvent {
+    Progress { processed: usize, total: usize, deleted: usize },
+    Finished { deleted: usize },
+    Canceled,
+    Error(String),
+}
+
 #[derive(Debug)]
 struct ServiceInitTask {
     rx: Receiver<Result<Arc<HybridService>, String>>,
@@ -287,6 +295,12 @@ struct AppState {
     files_default_ord: std::collections::HashMap<String, usize>,
     // Files tab: async loader channel
     files_rx: Option<Receiver<Result<Vec<FileRecord>, String>>>,
+    // Files tab: async delete selected
+    files_del_rx: Option<Receiver<DeleteEvent>>,
+    files_del_cancel: Option<CancelToken>,
+    files_del_processed: usize,
+    files_del_total: usize,
+    files_del_deleted: usize,
 
     // Insert Files: async folder scan
     ingest_scanning: bool,
@@ -505,6 +519,13 @@ impl AppState {
             if ui.add_enabled(sel_count > 0 && !self.files_deleting, Button::new(egui::RichText::new(format!("Delete Selected ({})", sel_count)).color(egui::Color32::RED))).clicked() {
                 self.delete_selected_files();
             }
+            if self.files_deleting {
+                ui.add(Spinner::new());
+                ui.label(format!("Deleting… {} / {} (deleted: {})", self.files_del_processed, self.files_del_total, self.files_del_deleted));
+                if ui.add(Button::new("Cancel")).clicked() {
+                    if let Some(ct) = &self.files_del_cancel { ct.cancel(); }
+                }
+            }
         });
 
         ui.separator();
@@ -696,24 +717,30 @@ impl AppState {
         let ids: Vec<String> = self.files_selected_set.iter().cloned().collect();
         if ids.is_empty() { self.status = "No files selected".into(); return; }
         self.files_deleting = true;
-        let mut total_deleted = 0usize;
+        self.files_del_processed = 0;
+        self.files_del_total = ids.len();
+        self.files_del_deleted = 0;
+        let (tx, rx) = mpsc::channel::<DeleteEvent>();
+        self.files_del_rx = Some(rx);
+        let cancel = CancelToken::new();
+        self.files_del_cancel = Some(cancel.clone());
         if let Some(svc) = &self.svc {
-            for doc in &ids {
-                let filters = vec![FilterClause { kind: FilterKind::Must, op: FilterOp::DocIdEq(doc.clone()) }];
-                match svc.delete_by_filter(&filters, 1000) {
-                    Ok(rep) => { total_deleted += rep.db_deleted as usize; },
-                    Err(e) => { self.status = format!("Delete failed for {}: {}", doc, e); }
+            let svc = Arc::clone(svc);
+            let total_count = self.files_del_total;
+            std::thread::spawn(move || {
+                let mut deleted_total: usize = 0;
+                for (i, doc) in ids.into_iter().enumerate() {
+                    if cancel.is_canceled() { let _ = tx.send(DeleteEvent::Canceled); return; }
+                    let filters = vec![FilterClause { kind: FilterKind::Must, op: FilterOp::DocIdEq(doc.clone()) }];
+                    match svc.delete_by_filter(&filters, 1000) {
+                        Ok(rep) => { deleted_total += rep.db_deleted as usize; },
+                        Err(e) => { let _ = tx.send(DeleteEvent::Error(format!("Delete failed for {}: {}", doc, e))); return; }
+                    }
+                    let _ = tx.send(DeleteEvent::Progress { processed: i + 1, total: total_count, deleted: deleted_total });
                 }
-            }
+                let _ = tx.send(DeleteEvent::Finished { deleted: deleted_total });
+            });
         }
-        self.files_selected_set.clear();
-        self.files_delete_pending = None;
-        self.files_selected_doc = None;
-        self.files_selected_display.clear();
-        self.files_selected_detail.clear();
-        self.files_deleting = false;
-        self.refresh_files();
-        self.status = format!("Deleted {} records", total_deleted);
     }
 
     fn refresh_files(&mut self) {
@@ -757,6 +784,57 @@ impl AppState {
                     self.status = "List files failed: worker disconnected".into();
                     self.files_loading = false;
                     self.files_rx = None;
+                }
+            }
+        }
+    }
+
+    fn poll_delete_task(&mut self) {
+        if let Some(rx) = &self.files_del_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(DeleteEvent::Progress { processed, total, deleted }) => {
+                        self.files_del_processed = processed;
+                        if total > 0 { self.files_del_total = total; }
+                        self.files_del_deleted = deleted;
+                    }
+                    Ok(DeleteEvent::Finished { deleted }) => {
+                        self.files_deleting = false;
+                        self.files_del_cancel = None;
+                        self.files_del_rx = None;
+                        self.status = format!("Deleted {} records", deleted);
+                        // Clear selections
+                        self.files_selected_set.clear();
+                        self.files_delete_pending = None;
+                        self.files_selected_doc = None;
+                        self.files_selected_display.clear();
+                        self.files_selected_detail.clear();
+                        // Refresh list
+                        self.refresh_files();
+                        break;
+                    }
+                    Ok(DeleteEvent::Canceled) => {
+                        self.files_deleting = false;
+                        self.files_del_cancel = None;
+                        self.files_del_rx = None;
+                        self.status = "Delete canceled".into();
+                        break;
+                    }
+                    Ok(DeleteEvent::Error(e)) => {
+                        self.files_deleting = false;
+                        self.files_del_cancel = None;
+                        self.files_del_rx = None;
+                        self.status = e;
+                        break;
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        self.files_deleting = false;
+                        self.files_del_cancel = None;
+                        self.files_del_rx = None;
+                        self.status = "Delete worker disconnected".into();
+                        break;
+                    }
                 }
             }
         }
@@ -1363,6 +1441,11 @@ impl AppState {
             files_sort_asc: true,
             files_default_ord: std::collections::HashMap::new(),
             files_rx: None,
+            files_del_rx: None,
+            files_del_cancel: None,
+            files_del_processed: 0,
+            files_del_total: 0,
+            files_del_deleted: 0,
 
             // Insert Files: async folder scan
             ingest_scanning: false,
@@ -1556,6 +1639,7 @@ impl App for AppState {
         self.poll_service_task();
         self.poll_ingest_job();
         self.poll_files_task();
+        self.poll_delete_task();
         self.poll_preview_task();
         self.poll_preview_chunks_task();
         self.poll_search_task();
