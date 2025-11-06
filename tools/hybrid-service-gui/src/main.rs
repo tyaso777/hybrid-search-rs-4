@@ -734,6 +734,12 @@ impl AppState {
         self.last_store_root_applied = Some(root.clone());
         self.store_paths_stale = false;
         self.status = format!("{}: {}", reason, root);
+        // Auto refresh Files tab when store root changes and service is present
+        if self.svc.is_some() {
+            self.files_page = 0;
+            self.files.clear();
+            self.refresh_files();
+        }
     }
     fn ui_config(&mut self, ui: &mut egui::Ui) {
         ui.heading("Model / Store Config");
