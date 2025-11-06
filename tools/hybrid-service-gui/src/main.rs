@@ -1333,7 +1333,6 @@ impl AppState {
         }
     }
 
-    fn model_not_initialized(&self) -> bool { self.svc.is_none() && self.svc_task.is_none() }
 
     fn release_model_and_indexes(&mut self) {
         // Drop service (ONNX session + resident HNSW) and Tantivy handle if any
@@ -1467,6 +1466,10 @@ impl AppState {
                     self.last_model_path_applied = Some(self.model_path.trim().to_string());
                     self.last_tokenizer_path_applied = Some(self.tokenizer_path.trim().to_string());
                     self.last_embed_dim_applied = Some(self.embedding_dimension.trim().parse().unwrap_or(ONNX_STDIO_DEFAULTS.embedding_dimension));
+                    // Auto-refresh Files after Init completion (Store Root may have changed via config)
+                    self.files_page = 0;
+                    self.files.clear();
+                    self.refresh_files();
                     self.svc_task = None;
                 }
                 Ok(Err(err)) => {
