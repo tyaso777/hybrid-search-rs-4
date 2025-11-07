@@ -940,6 +940,16 @@ impl HybridService {
                 (None, Some(u)) => Some(u),
                 _ => None,
             };
+            // Compute SHA-256 of the text body
+            let content_sha256 = {
+                use sha2::{Digest, Sha256};
+                let mut hasher = Sha256::new();
+                hasher.update(text.as_bytes());
+                let digest = hasher.finalize();
+                let mut hex = String::with_capacity(64);
+                for b in digest { hex.push_str(&format!("{:02x}", b)); }
+                Some(hex)
+            };
             let mut meta = std::collections::BTreeMap::new();
             let extra = std::collections::BTreeMap::new();
             chunk_model::FileRecord {
@@ -948,11 +958,11 @@ impl HybridService {
                 doc_revision: None,
                 source_uri: "user://input".into(),
                 source_mime: "text/plain".into(),
-                file_size_bytes: Some(text.as_bytes().len() as u64),
-                content_sha256: None,
+                file_size_bytes: None,
+                content_sha256,
                 page_count: None,
                 extracted_at: rec.extracted_at.clone(),
-                created_at_meta: None,
+                created_at_meta: Some(rec.extracted_at.clone()),
                 updated_at_meta: None,
                 title_guess: None,
                 author_guess,
