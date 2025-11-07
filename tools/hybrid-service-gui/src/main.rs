@@ -2091,7 +2091,14 @@ impl AppState {
                     ui.add_enabled_ui(!self.ingest_running && !self.text_insert_running, |ui| {
                         // Text input with the action button placed below
                         ui.label("Text");
-                        ui.add(TextEdit::multiline(&mut self.input_text).desired_rows(4).desired_width(600.0));
+                        // Wrap the editor in a bounded ScrollArea so long text doesn't push the button off-screen
+                        egui::ScrollArea::vertical()
+                            .id_source("insert_text_editor_scroll")
+                            .max_height(180.0)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.add(TextEdit::multiline(&mut self.input_text).desired_width(600.0));
+                            });
                         if ui.add(Button::new("Insert Text")).clicked() { self.do_insert_text(); }
                     });
                     if self.text_insert_running || self.ingest_running {
