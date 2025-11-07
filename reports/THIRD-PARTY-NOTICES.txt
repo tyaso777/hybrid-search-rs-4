@@ -1,6 +1,6 @@
 ﻿Third-Party Notices
 
-Generated: 2025-11-03 22:51:51 UTC
+Generated: 2025-11-07 01:06:57 UTC
 This file lists third-party Rust crates used by this project, with their licenses and repositories.
 This is an informational summary; refer to each crate for authoritative license text.
 
