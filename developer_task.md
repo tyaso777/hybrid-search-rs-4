@@ -43,6 +43,18 @@
 - [x] Insert FileのChoose Fileボタンを非同期化。テキスト用のPreview作成の重い処理は軽くする。
 - [x] Insert FileのIngest Fileについて進捗バーを出してほしい。
 - [x] Filesタブを触ると画面が固まる。読み込み中です＋非同期処理 というのが良さそう
+- [x] Searchボタンを非同期化する。
+- [x] Folder Scan(Insert)について、Scanボタンを非同期化する。
+- [x] FilesタブのDelete Selectedを非同期化する。
+- [x] FilesタブのInsert Files table: per-row preview readを非同期化する。
+- [x] Insert textを非同期化する。
+- [x] Insert TextについてText内にスクロールを入れる。
+- [x] Insert TextについてもチャンクPreview入れる？⇒今はそもそもチャンクしていないようです。
+- [x] FTSはプロジェクトから完全にけしたい。⇒大体消した。
+- [x] Insert textした場合のデータがFilesタブに出てこないので消せない。
+- [x] Store rootを変えてもFilesタブに前のが残っている場合がある。自動リフレッシュしたい。
+- [x] InsertしたらFilesタブの内容は自動リフレッシュされる？
+- [x] 各ボタンを押したときに非同期処理＋画面不活性化処理をサーチボタンなど各ボタンに導入する。
 
 ## File‑Chunk 
 - [ ] チャンク結果が良いかのテストを作成する。「第1章と第1項が同じチャンクに入っているか」などをテストするのでどうか。
@@ -62,29 +74,17 @@
 ## GUI
 - [ ] ログ出力機能が欲しい
 - [ ] hnswは読み込み時間かかっている。
-- [x] Searchボタンを非同期化する。
-- [x] Folder Scan(Insert)について、Scanボタンを非同期化する。
-- [x] FilesタブのDelete Selectedを非同期化する。
-- [x] FilesタブのInsert Files table: per-row preview readを非同期化する。
-- [x] Insert textを非同期化する。
-- [ ] Insert textした場合のデータがFilesタブに出てこないので消せない。
 - [ ] FilesタブのFileリスト一括CSV出力＋CSVからのInsert Files機能がほしい
-- [ ] Insert TextについてもｔPreview入れる。
-- [ ] Insert TextについてText内にスクロールを入れる。横にもスクロールを入れる。
 - [ ] 非同期化を入れたが実際改善したのか家の環境だとよくわからない。
 - [ ] Files一括入力ボタン、既存ファイルと被っていないかざっとチェックする機能も欲しい。⇒Hash比較実装済。ファイル名比較もほしいか。
 - [ ] 自分のストアルート集は自分のファイルとして保存したいね。=> 怒られそう => ファイルとして保存できたら良さそう。
-- [ ] Store rootを変えてもFilesタブに前のが残っている場合がある。自動リフレッシュしたい。
 - [ ] モデルの読み込みが遅い。ファイルを一度コピーする処理?
-- [ ] 各ボタンを押したときに非同期処理＋画面不活性化処理をサーチボタンなど各ボタンに導入する。
-
 
 ## Docs
 
 ## refactor
 
 ## Others
-- [ ] FTSはプロジェクトから完全にけしたい。
 - [ ] Rerankerも導入できる気がする。メモリのサイズはちょっと分からない。
 - [ ] Qwen3-VL is now available on llama.cpp!=>CPU＋EXEでOCR実行できる！すごい！
 
