@@ -2810,6 +2810,12 @@ impl AppState {
                                     self.ingest_file_idx = 0; self.ingest_file_total = 0; self.ingest_file_name.clear();
                                     // Tantivy upsert is handled in the service now
                                     self.ingest_doc_key = None;
+                                    // Auto-refresh Files so newly ingested documents appear in the list
+                                    if self.svc.is_some() {
+                                        self.files_page = 0;
+                                        self.files.clear();
+                                        self.refresh_files();
+                                    }
                                     break;
                                 } else {
                                     // Intermediate file finished; keep running for next file.
