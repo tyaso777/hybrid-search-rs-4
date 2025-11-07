@@ -2454,6 +2454,12 @@ impl AppState {
                     self.text_insert_running = false;
                     self.text_insert_rx = None;
                     self.status = format!("Inserted chunk {} (doc={})", chunk_id.0, doc_id.0);
+                    // Auto-refresh Files so the new Insert Text entry appears
+                    if self.svc.is_some() {
+                        self.files_page = 0;
+                        self.files.clear();
+                        self.refresh_files();
+                    }
                 }
                 Ok(Err(e)) => {
                     self.text_insert_running = false;

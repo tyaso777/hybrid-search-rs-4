@@ -929,6 +929,48 @@ impl HybridService {
             meta: std::collections::BTreeMap::new(),
             extra: std::collections::BTreeMap::new(),
         };
+        // Also create/update a FileRecord so it appears in the Files tab
+        let file_rec = {
+            // Build author as MACHINE\USER (best-effort, platform agnostic)
+            let pc = std::env::var("COMPUTERNAME").ok().or_else(|| std::env::var("HOSTNAME").ok());
+            let user = std::env::var("USERNAME").ok().or_else(|| std::env::var("USER").ok());
+            let author_guess = match (pc, user) {
+                (Some(p), Some(u)) => Some(format!("{}\\{}", p, u)),
+                (Some(p), None) => Some(p),
+                (None, Some(u)) => Some(u),
+                _ => None,
+            };
+            let mut meta = std::collections::BTreeMap::new();
+            let extra = std::collections::BTreeMap::new();
+            chunk_model::FileRecord {
+                schema_version: chunk_model::SCHEMA_MAJOR,
+                doc_id: doc_id.clone(),
+                doc_revision: None,
+                source_uri: "user://input".into(),
+                source_mime: "text/plain".into(),
+                file_size_bytes: Some(text.as_bytes().len() as u64),
+                content_sha256: None,
+                page_count: None,
+                extracted_at: rec.extracted_at.clone(),
+                created_at_meta: None,
+                updated_at_meta: None,
+                title_guess: None,
+                author_guess,
+                dominant_lang: None,
+                tags: Vec::new(),
+                ingest_tool: Some("insert_text".into()),
+                ingest_tool_version: None,
+                reader_backend: Some("user".into()),
+                ocr_used: None,
+                ocr_langs: Vec::new(),
+                chunk_count: Some(1),
+                total_tokens: None,
+                meta,
+                extra,
+            }
+        };
+        self.with_repo(|repo| repo.upsert_file(&file_rec).map_err(|e| ServiceError::Repo(e.to_string())))?;
+
         // Progress start (total chunks = 1)
         if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::Start { total_chunks: 1 }); }
         if let Some(ct) = cancel { if ct.is_canceled() { if let Some(cb) = progress.as_deref_mut() { cb(ProgressEvent::Canceled); } return Err(ServiceError::Embed("canceled".into())); } }
