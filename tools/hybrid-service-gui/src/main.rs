@@ -240,6 +240,8 @@ struct AppState {
     selected_base_source_path: Option<String>,
     // Context window for detail view (progressive expand)
     context_chunks: Vec<ContextChunk>,
+    context_loading: bool,
+    context_rx: Option<Receiver<Result<Vec<ContextChunk>, String>>>,
     context_expanded: bool,
     // Dangerous actions confirmation
     delete_confirm: String,
@@ -442,21 +444,24 @@ impl AppState {
 
     
 
-    // Initial 3-chunk context: prev/base/next around current base
+    // Initial 3-chunk context: prev/base/next around current base (async)
     fn rebuild_context_window_initial(&mut self) {
         self.context_chunks.clear();
+        self.context_expanded = false;
+        self.context_loading = false;
+        self.context_rx = None;
         if !self.ensure_store_paths_current() { return; }
         let Some(base_cid) = self.selected_base_cid.clone() else { return; };
         let base_text = self.selected_base_text.clone();
-        match self.fetch_neighbor_chunks(&base_cid) {
-            Ok((prev, next)) => {
-                if let Some(p) = prev { self.context_chunks.push(ContextChunk { cid: p.chunk_id.0.clone(), text: p.text.clone(), is_base: false }); }
-                self.context_chunks.push(ContextChunk { cid: base_cid.clone(), text: base_text, is_base: true });
-                if let Some(n) = next { self.context_chunks.push(ContextChunk { cid: n.chunk_id.0.clone(), text: n.text.clone(), is_base: false }); }
-            }
-            Err(e) => { self.status = format!("Neighbor fetch failed: {e}"); }
-        }
-        self.context_expanded = false;
+        let db_path = self.db_path.trim().to_string();
+        let svc_opt = self.svc.as_ref().map(Arc::clone);
+        let (tx, rx) = mpsc::channel();
+        self.context_rx = Some(rx);
+        self.context_loading = true;
+        std::thread::spawn(move || {
+            let result = AppState::build_initial_context_window(svc_opt, db_path, base_cid, base_text);
+            let _ = tx.send(result);
+        });
     }
 
     // Expand upward by one chunk (prepend)
@@ -496,6 +501,52 @@ impl AppState {
         } else {
             let repo = chunking_store::sqlite_repo::SqliteRepo::open(self.db_path.trim()).map_err(|e| e.to_string())?;
             repo.get_neighbor_chunks(&ChunkId(cid.to_string())).map_err(|e| e.to_string())
+        }
+    }
+
+    fn build_initial_context_window(
+        svc_opt: Option<Arc<HybridService>>,
+        db_path: String,
+        base_cid: String,
+        base_text: String,
+    ) -> Result<Vec<ContextChunk>, String> {
+        let neighbors = if let Some(svc) = svc_opt {
+            svc.neighbor_chunks(&base_cid).map_err(|e| e.to_string())?
+        } else {
+            let repo = chunking_store::sqlite_repo::SqliteRepo::open(db_path.as_str()).map_err(|e| e.to_string())?;
+            repo.get_neighbor_chunks(&ChunkId(base_cid.clone())).map_err(|e| e.to_string())?
+        };
+        let mut chunks = Vec::new();
+        if let Some(prev) = neighbors.0 {
+            chunks.push(ContextChunk { cid: prev.chunk_id.0.clone(), text: prev.text.clone(), is_base: false });
+        }
+        chunks.push(ContextChunk { cid: base_cid.clone(), text: base_text, is_base: true });
+        if let Some(next) = neighbors.1 {
+            chunks.push(ContextChunk { cid: next.chunk_id.0.clone(), text: next.text.clone(), is_base: false });
+        }
+        Ok(chunks)
+    }
+
+    fn poll_context_task(&mut self) {
+        if let Some(rx) = &self.context_rx {
+            match rx.try_recv() {
+                Ok(Ok(chunks)) => {
+                    self.context_chunks = chunks;
+                    self.context_loading = false;
+                    self.context_rx = None;
+                }
+                Ok(Err(err)) => {
+                    self.status = format!("Context fetch failed: {err}");
+                    self.context_loading = false;
+                    self.context_rx = None;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    self.status = "Context fetch worker disconnected".into();
+                    self.context_loading = false;
+                    self.context_rx = None;
+                }
+            }
         }
     }
     fn ui_files(&mut self, ui: &mut egui::Ui) {
@@ -1406,6 +1457,8 @@ impl AppState {
             selected_base_display: String::new(),
             selected_base_source_path: None,
             context_chunks: Vec::new(),
+            context_loading: false,
+            context_rx: None,
             context_expanded: false,
             delete_confirm: String::new(),
 
@@ -1653,6 +1706,7 @@ impl App for AppState {
         self.poll_preview_task();
         self.poll_preview_chunks_task();
         self.poll_search_task();
+        self.poll_context_task();
         self.poll_scan_task();
         self.poll_text_insert_task();
         CentralPanel::default().show(ctx, |ui| {
@@ -3133,11 +3187,13 @@ impl AppState {
                 }
                 // Place open actions between the header and the text content
                 // Navigation: prev / back-to-base / next
-                ui.horizontal(|ui| {
-                    if ui.button("<= add prev chunk").clicked() { self.expand_context_prev(); }
-                    let can_back = self.selected_base_cid.is_some() && (self.selected_base_cid != self.selected_cid || self.context_expanded);
-                    if ui.add_enabled(can_back, Button::new("reset")).clicked() { self.navigate_back_to_base(); }
-                    if ui.button("add next chunk =>").clicked() { self.expand_context_next(); }
+                ui.add_enabled_ui(!self.context_loading, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("<= add prev chunk").clicked() { self.expand_context_prev(); }
+                        let can_back = self.selected_base_cid.is_some() && (self.selected_base_cid != self.selected_cid || self.context_expanded);
+                        if ui.add_enabled(can_back, Button::new("reset")).clicked() { self.navigate_back_to_base(); }
+                        if ui.button("add next chunk =>").clicked() { self.expand_context_next(); }
+                    });
                 });
                 ui.add_space(4.0);
                 if let Some(path) = &self.selected_source_path {
@@ -3152,6 +3208,12 @@ impl AppState {
                             if let Some(p) = normalize_local_path(path) { let _ = open_in_os_folder(&p); }
                         }
                         if is_local { ui.monospace(disp); }
+                    });
+                }
+                if self.context_loading {
+                    ui.horizontal(|ui| {
+                        ui.add(Spinner::new());
+                        ui.label("Loading context...");
                     });
                 }
                 // Detail pane height: 150px
