@@ -74,6 +74,7 @@ ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained; upstream transitively via tokenizers/wgpu/accesskit. No safe upgrade yet." },
     { id = "RUSTSEC-2024-0388", reason = "derivative is unmaintained; upstream via zbus 3.x chain. No safe upgrade yet." },
     { id = "RUSTSEC-2021-0153", reason = "encoding is unmaintained; upstream via lindera-dictionary. No safe upgrade yet." },
+    { id = "RUSTSEC-2025-0119", reason = "number_prefix is unmaintained; upstream via indicatif/tokenizers. No safe upgrade yet." },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.

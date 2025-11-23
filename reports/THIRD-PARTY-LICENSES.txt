@@ -1,6 +1,6 @@
 ﻿THIRD-PARTY LICENSES (cargo-about)
 
-Generated: 2025-11-07 01:07:47 UTC
+Generated: 2025-11-23 13:08:54 UTC
 This file contains license texts for third-party crates used by this project.
 Workspace/local crates are excluded.
 

@@ -102,6 +102,25 @@
         笏・  笏披楳笏 zbus 3.15.2
         笏披楳笏 accesskit_unix 0.6.2
 
+[0m[0m[1m[33mCrate:    [0m number_prefix
+[0m[0m[1m[33mVersion:  [0m 0.4.0
+[0m[0m[1m[33mWarning:  [0m unmaintained
+[0m[0m[1m[33mTitle:    [0m number_prefix crate is unmaintained
+[0m[0m[1m[33mDate:     [0m 2025-11-17
+[0m[0m[1m[33mID:       [0m RUSTSEC-2025-0119
+[0m[0m[1m[33mURL:      [0m https://rustsec.org/advisories/RUSTSEC-2025-0119
+[0m[0m[1m[33mDependency tree:
+[0mnumber_prefix 0.4.0
+笏披楳笏 indicatif 0.17.11
+    笏披楳笏 tokenizers 0.22.1
+        笏披楳笏 embedding-provider 0.1.0
+            笏懌楳笏 hybrid-service-gui 0.1.0
+            笏懌楳笏 hybrid-service 0.1.0
+            笏・  笏披楳笏 hybrid-service-gui 0.1.0
+            笏懌楳笏 hybrid-orchestrator-gui 0.1.0
+            笏懌楳笏 hybrid-orchestrator 0.1.0
+            笏披楳笏 embedder-demo 0.1.0
+
 [0m[0m[1m[33mCrate:    [0m paste
 [0m[0m[1m[33mVersion:  [0m 1.0.15
 [0m[0m[1m[33mWarning:  [0m unmaintained
