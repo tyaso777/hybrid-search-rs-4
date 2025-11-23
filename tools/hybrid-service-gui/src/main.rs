@@ -3018,101 +3018,106 @@ impl AppState {
 
             ui.separator();
             ui.push_id("results_table", |ui| {
-                egui::ScrollArea::horizontal().id_source("results_table_h").show(ui, |ui| {
-                    let results_snapshot = self.results.clone();
-                    let show_tv = self.w_tv.is_some();
-                    let show_tv_and = self.w_tv_and.is_some();
-                    let show_tv_or = self.w_tv_or.is_some();
-                    let show_vec = self.w_vec.is_some();
+                egui::ScrollArea::vertical()
+                    .id_source("results_table_v")
+                    .max_height(230.0)
+                    .show(ui, |ui| {
+                        egui::ScrollArea::horizontal().id_source("results_table_h").show(ui, |ui| {
+                            let results_snapshot = self.results.clone();
+                            let show_tv = self.w_tv.is_some();
+                            let show_tv_and = self.w_tv_and.is_some();
+                            let show_tv_or = self.w_tv_or.is_some();
+                            let show_vec = self.w_vec.is_some();
 
-                    let mut table = TableBuilder::new(ui)
-                        .striped(true)
-                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .column(Column::initial(36.0).at_least(30.0))
-                        .column(Column::initial(220.0))   // file
-                        .column(Column::initial(80.0));    // page
+                            let mut table = TableBuilder::new(ui)
+                                .striped(true)
+                                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                .column(Column::initial(36.0).at_least(30.0))
+                                .column(Column::initial(220.0))   // file
+                                .column(Column::initial(80.0));    // page
 
-                    if show_tv { table = table.column(Column::initial(70.0)); }
-                    if show_tv_and { table = table.column(Column::initial(80.0)); }
-                    if show_tv_or { table = table.column(Column::initial(80.0)); }
-                    if show_vec { table = table.column(Column::initial(70.0)); }
+                            if show_tv { table = table.column(Column::initial(70.0)); }
+                            if show_tv_and { table = table.column(Column::initial(80.0)); }
+                            if show_tv_or { table = table.column(Column::initial(80.0)); }
+                            if show_vec { table = table.column(Column::initial(70.0)); }
 
-                    table = table.column(Column::remainder()); // text (after scores)
+                            table = table.column(Column::remainder()); // text (after scores)
 
-                    table
-                        .header(20.0, |mut header| {
-                            header.col(|ui| { ui.label("#"); });
-                            header.col(|ui| {
-                                            let active = matches!(self.ingest_sort_key, IngestSortKey::File);
-                                            let arrow = if active { if self.ingest_sort_asc { " ▲" } else { " ▼" } } else { "" };
-                                            if ui.button(format!("File{}", arrow)).clicked() {
-                                                if self.ingest_sort_key != IngestSortKey::File { self.ingest_sort_key = IngestSortKey::File; self.ingest_sort_asc = true; } else if self.ingest_sort_asc { self.ingest_sort_asc = false; } else { self.ingest_sort_key = IngestSortKey::Default; self.ingest_sort_asc = true; }
-                                                { let base = self.ingest_folder_path.clone(); let abs = self.ingest_show_abs_paths; self.apply_ingest_sort_with(base.as_str(), abs) };
-                                            }
+                            table
+                                .header(20.0, |mut header| {
+                                    header.col(|ui| { ui.label("#"); });
+                                    header.col(|ui| {
+                                                    let active = matches!(self.ingest_sort_key, IngestSortKey::File);
+                                                    let arrow = if active { if self.ingest_sort_asc { " ▲" } else { " ▼" } } else { "" };
+                                                    if ui.button(format!("File{}", arrow)).clicked() {
+                                                        if self.ingest_sort_key != IngestSortKey::File { self.ingest_sort_key = IngestSortKey::File; self.ingest_sort_asc = true; } else if self.ingest_sort_asc { self.ingest_sort_asc = false; } else { self.ingest_sort_key = IngestSortKey::Default; self.ingest_sort_asc = true; }
+                                                        { let base = self.ingest_folder_path.clone(); let abs = self.ingest_show_abs_paths; self.apply_ingest_sort_with(base.as_str(), abs) };
+                                                    }
+                                                });
+                                    header.col(|ui| { ui.label("Page"); });
+                                    if show_tv { header.col(|ui| { ui.label("TV"); }); }
+                                    if show_tv_and { header.col(|ui| { ui.label("TV(AND)"); }); }
+                                    if show_tv_or { header.col(|ui| { ui.label("TV(OR)"); }); }
+                                    if show_vec { header.col(|ui| { ui.label("VEC"); }); }
+                                    header.col(|ui| { ui.label("Text"); });
+                                })
+                                .body(|mut body| {
+                                    for (i, row) in results_snapshot.iter().enumerate() {
+                                        body.row(20.0, |mut row_ui| {
+                                            row_ui.col(|ui| { ui.label(format!("{}", i+1)); });
+                                            // Make file and page clickable to select the row
+                                            row_ui.col(|ui| {
+                                                if ui.link(&row.file).clicked() {
+                                                    self.selected_cid = Some(row.cid.clone());
+                                                    self.selected_text = row.text_full.clone();
+                                                    self.selected_display = format!("{} {}", &row.file, if row.page.is_empty() { String::new() } else { row.page.clone() });
+                                                    self.selected_source_path = Some(row.file_path.clone());
+                                                    self.selected_base_cid = Some(row.cid.clone());
+                                                    self.selected_base_text = row.text_full.clone();
+                                                    self.selected_base_display = self.selected_display.clone();
+                                                    self.selected_base_source_path = Some(row.file_path.clone());
+                                                    self.rebuild_context_window_initial();
+                                                }
+                                            });
+                                            row_ui.col(|ui| {
+                                                if !row.page.is_empty() {
+                                                    if ui.link(&row.page).clicked() {
+                                                        self.selected_cid = Some(row.cid.clone());
+                                                        self.selected_text = row.text_full.clone();
+                                                        self.selected_display = format!("{} {}", &row.file, &row.page);
+                                                        self.selected_source_path = Some(row.file_path.clone());
+                                                        self.selected_base_cid = Some(row.cid.clone());
+                                                        self.selected_base_text = row.text_full.clone();
+                                                        self.selected_base_display = self.selected_display.clone();
+                                                        self.selected_base_source_path = Some(row.file_path.clone());
+                                                        self.rebuild_context_window_initial();
+                                                    }
+                                                } else {
+                                                    ui.label(&row.page);
+                                                }
+                                            });
+                                            if show_tv { row_ui.col(|ui| { ui.label(opt_fmt(row.tv)); }); }
+                                            if show_tv_and { row_ui.col(|ui| { ui.label(opt_fmt(row.tv_and)); }); }
+                                            if show_tv_or { row_ui.col(|ui| { ui.label(opt_fmt(row.tv_or)); }); }
+                                            if show_vec { row_ui.col(|ui| { ui.label(opt_fmt(row.vec)); }); }
+                                            row_ui.col(|ui| {
+                                                ui.push_id(i, |ui| {
+                                                    if ui.link(&row.text_preview).clicked() {
+                                                        self.selected_cid = Some(row.cid.clone());
+                                                        self.selected_text = row.text_full.clone();
+                                                        self.selected_display = format!("{} {}", &row.file, if row.page.is_empty() { String::new() } else { row.page.clone() });
+                                                        self.selected_source_path = Some(row.file_path.clone());
+                                                        self.selected_base_cid = Some(row.cid.clone());
+                                                        self.selected_base_text = row.text_full.clone();
+                                                        self.selected_base_display = self.selected_display.clone();
+                                                        self.selected_base_source_path = Some(row.file_path.clone());
+                                                        self.rebuild_context_window_initial();
+                                                    }
+                                                });
+                                            });
                                         });
-                            header.col(|ui| { ui.label("Page"); });
-                            if show_tv { header.col(|ui| { ui.label("TV"); }); }
-                            if show_tv_and { header.col(|ui| { ui.label("TV(AND)"); }); }
-                            if show_tv_or { header.col(|ui| { ui.label("TV(OR)"); }); }
-                            if show_vec { header.col(|ui| { ui.label("VEC"); }); }
-                            header.col(|ui| { ui.label("Text"); });
-                        })
-                        .body(|mut body| {
-                            for (i, row) in results_snapshot.iter().enumerate() {
-                                body.row(20.0, |mut row_ui| {
-                                    row_ui.col(|ui| { ui.label(format!("{}", i+1)); });
-                                    // Make file and page clickable to select the row
-                                    row_ui.col(|ui| {
-                                        if ui.link(&row.file).clicked() {
-                                            self.selected_cid = Some(row.cid.clone());
-                                            self.selected_text = row.text_full.clone();
-                                            self.selected_display = format!("{} {}", &row.file, if row.page.is_empty() { String::new() } else { row.page.clone() });
-                                            self.selected_source_path = Some(row.file_path.clone());
-                                            self.selected_base_cid = Some(row.cid.clone());
-                                            self.selected_base_text = row.text_full.clone();
-                                            self.selected_base_display = self.selected_display.clone();
-                                            self.selected_base_source_path = Some(row.file_path.clone());
-                                            self.rebuild_context_window_initial();
-                                        }
-                                    });
-                                    row_ui.col(|ui| {
-                                        if !row.page.is_empty() {
-                                            if ui.link(&row.page).clicked() {
-                                                self.selected_cid = Some(row.cid.clone());
-                                                self.selected_text = row.text_full.clone();
-                                                self.selected_display = format!("{} {}", &row.file, &row.page);
-                                                self.selected_source_path = Some(row.file_path.clone());
-                                                self.selected_base_cid = Some(row.cid.clone());
-                                                self.selected_base_text = row.text_full.clone();
-                                                self.selected_base_display = self.selected_display.clone();
-                                                self.selected_base_source_path = Some(row.file_path.clone());
-                                                self.rebuild_context_window_initial();
-                                            }
-                                        } else {
-                                            ui.label(&row.page);
-                                        }
-                                    });
-                                    if show_tv { row_ui.col(|ui| { ui.label(opt_fmt(row.tv)); }); }
-                                    if show_tv_and { row_ui.col(|ui| { ui.label(opt_fmt(row.tv_and)); }); }
-                                    if show_tv_or { row_ui.col(|ui| { ui.label(opt_fmt(row.tv_or)); }); }
-                                    if show_vec { row_ui.col(|ui| { ui.label(opt_fmt(row.vec)); }); }
-                                    row_ui.col(|ui| {
-                                        ui.push_id(i, |ui| {
-                                            if ui.link(&row.text_preview).clicked() {
-                                                self.selected_cid = Some(row.cid.clone());
-                                                self.selected_text = row.text_full.clone();
-                                                self.selected_display = format!("{} {}", &row.file, if row.page.is_empty() { String::new() } else { row.page.clone() });
-                                                self.selected_source_path = Some(row.file_path.clone());
-                                                self.selected_base_cid = Some(row.cid.clone());
-                                                self.selected_base_text = row.text_full.clone();
-                                                self.selected_base_display = self.selected_display.clone();
-                                                self.selected_base_source_path = Some(row.file_path.clone());
-                                                self.rebuild_context_window_initial();
-                                            }
-                                        });
-                                    });
+                                    }
                                 });
-                            }
                         });
                 });
             });
@@ -3951,8 +3956,4 @@ fn format_ts_local_short(s: &str) -> String {
     }
     s.to_string()
 }
-
-
-
-
 
