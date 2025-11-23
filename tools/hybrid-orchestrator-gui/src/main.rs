@@ -1,4 +1,4 @@
-use std::env;
+﻿use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -6,7 +6,6 @@ use std::time::Instant;
 
 use chrono::Utc;
 use chunk_model::{ChunkId, ChunkRecord, DocumentId, SCHEMA_MAJOR};
-use chunking_store::fts5_index::Fts5Index;
 #[cfg(feature = "tantivy")]
 use chunking_store::tantivy_index::{TantivyIndex, TokenCombine};
 use chunking_store::hnsw_index::HnswIndex;
@@ -200,7 +199,6 @@ impl AppState {
         // Open store
         if let Some(parent) = PathBuf::from(db).parent() { let _ = fs::create_dir_all(parent); }
         let mut repo = match SqliteRepo::open(db) { Ok(r) => r, Err(e) => { self.status = format!("Open DB failed: {e}"); return; } };
-        let _ = repo.maybe_rebuild_fts();
 
         // Build record
         let (doc_id, chunk_id) = make_ids_from_text(self.doc_hint.trim(), &text);
@@ -223,8 +221,7 @@ impl AppState {
         };
 
         // Indexes
-        let fts = Fts5Index::new();
-        let text_indexes: [&dyn chunking_store::TextIndexMaintainer; 1] = [&fts];
+        let text_indexes: [&dyn chunking_store::TextIndexMaintainer; 0] = [];
         let mut hnsw = if PathBuf::from(&hdir).join("map.tsv").exists() { match HnswIndex::load(&hdir, vector.len()) { Ok(h) => h, Err(e) => { self.status = format!("Load HNSW failed: {e}"); return; } } } else { HnswIndex::new(vector.len(), 10_000) };
         let mut vec_indexes: [&mut dyn chunking_store::VectorIndexMaintainer; 1] = [&mut hnsw];
         let vectors = vec![(chunk_id.clone(), vector)];
@@ -258,15 +255,10 @@ impl AppState {
         let q = self.query.trim();
         if q.is_empty() { self.status = "Enter query".into(); return; }
         let repo = match SqliteRepo::open(db) { Ok(r) => r, Err(e) => { self.status = format!("Open DB failed: {e}"); return; } };
-        let _ = repo.maybe_rebuild_fts();
-        let fts = Fts5Index::new();
         let opts = SearchOptions { top_k: self.top_k, fetch_factor: 10 };
 
-        // Run all available engines; combine and display separate scores.
-        // Always run FTS5. Run vector if HNSW snapshot exists. Run Tantivy if available and initialized.
-        let mut fts_matches = chunking_store::TextSearcher::search_ids(&fts, &repo, q, &[], &opts);
-
-        // Vector
+        // Run available engines; combine and display separate scores.
+        // Run vector if HNSW snapshot exists. Run Tantivy if available and initialized.
         let mut vec_matches = if self.use_hybrid {
             let hdir = if self.hnsw_dir.trim().is_empty() { derive_hnsw_dir(db) } else { self.hnsw_dir.trim().to_string() };
             if let Some(e) = &self.embedder {
@@ -312,10 +304,6 @@ impl AppState {
         // Collect scores per id; compute combined ranking after gathering
         use std::collections::HashMap;
         let mut rows: HashMap<String, HitRow> = HashMap::new();
-        for m in fts_matches.drain(..) {
-            let entry = rows.entry(m.chunk_id.0).or_insert_with(HitRow::empty);
-            entry.fts = Some(m.score);
-        }
         for m in vec_matches.drain(..) {
             let entry = rows.entry(m.chunk_id.0).or_insert_with(HitRow::empty);
             entry.vec = Some(m.score);
@@ -370,8 +358,6 @@ impl AppState {
         // Open DB and indexes
         if let Some(parent) = PathBuf::from(db).parent() { let _ = std::fs::create_dir_all(parent); }
         let mut repo = match SqliteRepo::open(db) { Ok(r) => r, Err(e) => { self.status = format!("Open DB failed: {e}"); return; } };
-        let _ = repo.maybe_rebuild_fts();
-        let fts = Fts5Index::new();
 
         // HNSW
         let hdir = if self.hnsw_dir.trim().is_empty() { derive_hnsw_dir(db) } else { self.hnsw_dir.trim().to_string() };
@@ -429,9 +415,9 @@ impl AppState {
                 pairs.push((chunk_id, vec));
             }
 
-            // Orchestrated ingest into DB + FTS + HNSW
+            // Orchestrated ingest into DB + HNSW
             let mut vec_indexes: [&mut dyn chunking_store::VectorIndexMaintainer; 1] = [&mut hnsw];
-            let text_indexes: [&dyn chunking_store::TextIndexMaintainer; 1] = [&fts];
+            let text_indexes: [&dyn chunking_store::TextIndexMaintainer; 0] = [];
             if let Err(e) = ingest_chunks_orchestrated(&mut repo, &records, &text_indexes, &mut vec_indexes, Some(&pairs)) { self.status = format!("Ingest failed: {e}"); return; }
             #[cfg(feature = "tantivy")]
             if let Some(tv) = &self.tantivy { let _ = tv.upsert_records(&records); }
@@ -531,7 +517,7 @@ impl App for AppState {
                     ui.add(TextEdit::singleline(&mut self.embedding_dimension).desired_width(120.0));
                     ui.label("Max tokens:");
                     ui.add(TextEdit::singleline(&mut self.max_tokens).desired_width(120.0));
-                    ui.checkbox(&mut self.preload_model_to_memory, "モデルをメモリに先読み");
+                    ui.checkbox(&mut self.preload_model_to_memory, "モチE��をメモリに先読み");
                     let init_btn = ui.add_enabled(self.model_task.is_none(), Button::new("Initialize Model"));
                     if init_btn.clicked() { self.start_model_init(""); }
                     if self.model_task.is_some() { ui.add(Spinner::new()); ui.label("Initializing model..."); }
@@ -580,8 +566,7 @@ impl App for AppState {
                         }
                     }
                 });
-                // 単独のDB削除は廃止（全削除ボタンは下のTantivyセクションに集約）
-
+                // 単独のDB削除は廁E���E��E削除ボタンは下�ETantivyセクションに雁E��E��E
                 ui.horizontal(|ui| {
                     ui.label("HNSW Dir:");
                     ui.add(TextEdit::singleline(&mut self.hnsw_dir).desired_width(420.0));
@@ -589,8 +574,7 @@ impl App for AppState {
                         if let Some(path) = FileDialog::new().pick_folder() { self.hnsw_dir = path.display().to_string(); }
                     }
                 });
-                // 単独のHNSW削除は廃止（全削除ボタンは下のTantivyセクションに集約）
-                #[cfg(feature = "tantivy")]
+                // 単独のHNSW削除は廁E���E��E削除ボタンは下�ETantivyセクションに雁E��E��E                #[cfg(feature = "tantivy")]
                 ui.horizontal(|ui| {
                     ui.label("Tantivy Dir:");
                     ui.add(TextEdit::singleline(&mut self.tantivy_dir).desired_width(420.0));
@@ -650,15 +634,14 @@ impl App for AppState {
                         ui.heading("Results");
                         ui.add_space(4.0);
                         CollapsingHeader::new("Results legend").default_open(false).show(ui, |ui| {
-                            ui.label("#  — Row number (for reference)");
-                            ui.label("Chunk ID — Stored chunk identifier (click any cell to select)");
-                            ui.label("FTS — SQLite FTS5 text score (≈ normalized BM25). Higher is better");
-                            ui.label("TV — Tantivy default (QueryParser). Single-string input may act like a strict phrase");
-                            ui.label("TV(AND) — Lindera tokens combined with AND. All terms must match (BM25 scoring)");
-                            ui.label("TV(OR) — Lindera tokens combined with OR. Any term may match (BM25 scoring)");
-                            ui.label("VEC — Vector similarity from HNSW (≈ 0..1). Higher is more similar");
-                            ui.label("Comb — TV(AND), TV(OR) and VEC weighted sum (0.1, 0.2, 0.7) used for ordering");
-                            ui.label("Preview — Truncated text. Click a row to view full text below; selected row is bold");
+                            ui.label("#  - Row number (for reference)");
+                            ui.label("Chunk ID  - Stored chunk identifier (click any cell to select)");
+                            ui.label("TV  - Tantivy default (QueryParser). Single-string input may act like a strict phrase.");
+                            ui.label("TV(AND)  - Lindera tokens combined with AND. All terms must match (BM25 scoring).");
+                            ui.label("TV(OR)  - Lindera tokens combined with OR. Any term may match (BM25 scoring).");
+                            ui.label("VEC  - Vector similarity from HNSW (?0..1). Higher is more similar.");
+                            ui.label("Comb  - TV(AND), TV(OR) and VEC weighted sum (0.1, 0.2, 0.7) used for ordering.");
+                            ui.label("Preview  - Truncated text. Click a row to view full text below; selected row is bold.");
                         });
                         ui.add_space(6.0);
                         let header_height = 24.0;
@@ -668,18 +651,15 @@ impl App for AppState {
                                 .striped(true)
                                 .column(Column::exact(36.0))
                                 .column(Column::exact(220.0))
-                                .column(Column::exact(70.0))
-                                .column(Column::exact(70.0))
-                                .column(Column::exact(70.0))
-                                .column(Column::exact(70.0))
-                                .column(Column::exact(70.0))
-                                .column(Column::exact(70.0))
-                                .column(Column::exact(80.0))
-                                .column(Column::remainder())
+                                .column(Column::exact(70.0)) // TV
+                                .column(Column::exact(70.0)) // TV(AND)
+                                .column(Column::exact(70.0)) // TV(OR)
+                                .column(Column::exact(70.0)) // VEC
+                                .column(Column::exact(70.0)) // Comb
+                                .column(Column::remainder()) // Preview
                                 .header(header_height, |mut header| {
                                     header.col(|ui| { ui.label("#"); });
                                     header.col(|ui| { ui.label("Chunk ID"); });
-                                    header.col(|ui| { ui.label("FTS"); });
                                     header.col(|ui| { ui.label("TV"); });
                                     header.col(|ui| { ui.label("TV(AND)"); });
                                     header.col(|ui| { ui.label("TV(OR)"); });
@@ -711,15 +691,7 @@ impl App for AppState {
                                             if r.clicked() { self.selected_cid = Some(row.cid.clone()); self.selected_text = row.full.clone(); }
                                             row_rect = Some(row_rect.map_or(r.rect, |rr| rr.union(r.rect)));
                                         });
-                                        trow.col(|ui| {
-                                            let mut rt = egui::RichText::new(format!("{:.4}", row.fts.unwrap_or(0.0))).monospace();
-                                            if selected { rt = rt.strong(); }
-                                            let mut lbl = egui::Label::new(rt).sense(egui::Sense::click());
-                                            lbl = lbl.wrap(false).truncate(true);
-                                            let r = ui.add(lbl);
-                                            if r.clicked() { self.selected_cid = Some(row.cid.clone()); self.selected_text = row.full.clone(); }
-                                            row_rect = Some(row_rect.map_or(r.rect, |rr| rr.union(r.rect)));
-                                        });
+
                                         trow.col(|ui| {
                                             let mut rt = egui::RichText::new(opt_fmt(row.tv)).monospace();
                                             if selected { rt = rt.strong(); }
@@ -919,7 +891,6 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
 #[derive(Debug, Clone, Default)]
 struct HitRow {
     cid: String,
-    fts: Option<f32>,
     tv: Option<f32>,
     tv_and: Option<f32>,
     tv_or: Option<f32>,

@@ -4,10 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use chunk_model::{ChunkId, ChunkRecord, DocumentId, SCHEMA_MAJOR};
-use chunking_store::fts5_index::Fts5Index;
 use chunking_store::hnsw_index::HnswIndex;
 use chunking_store::orchestrator::ingest_chunks_orchestrated;
-use chunking_store::{SearchOptions, TextSearcher, VectorSearcher, ChunkStoreRead};
+use chunking_store::{SearchOptions, VectorSearcher, ChunkStoreRead};
 use chunking_store::sqlite_repo::SqliteRepo;
 use embedding_provider::config::default_stdio_config;
 use embedding_provider::embedder::{Embedder, OnnxStdIoConfig, OnnxStdIoEmbedder};
@@ -17,9 +16,9 @@ fn print_usage() {
         "Usage:\n\
          hybrid-orchestrator insert [db_path] --text TEXT [--doc DOC] [--hnsw DIR]\n\
          hybrid-orchestrator insert [db_path] --stdin [--doc DOC] [--hnsw DIR]\n\
-         hybrid-orchestrator search [db_path] --query Q [--k N] [--hybrid] [--hnsw DIR]\n\
+         hybrid-orchestrator search [db_path] --query Q [--k N] [--hnsw DIR]\n\
          \n\
-         Model overrides (optional for insert/search --hybrid):\n\
+         Model overrides (optional for insert/search):\n\
            --model PATH_ONNX   --tokenizer PATH_JSON   --runtime PATH_DLL   --dim N   --max-tokens N\n\
          Notes: db_path defaults to target/demo/chunks.db; hnsw defaults to <db_path>.hnsw\n"
     );
@@ -102,7 +101,6 @@ fn do_insert(mut tail: Vec<String>) -> Result<(), String> {
 
     ensure_parent_dir(&db_path).map_err(|e| e.to_string())?;
     let mut repo = SqliteRepo::open(&db_path).map_err(|e| e.to_string())?;
-    let _ = repo.maybe_rebuild_fts();
 
     let embedder = build_embedder_from_args(&rest)?;
     let vector = embedder.embed(&input_text).map_err(|e| format!("embed failed: {e}"))?;
@@ -128,8 +126,7 @@ fn do_insert(mut tail: Vec<String>) -> Result<(), String> {
     };
 
     // Prepare indexes
-    let fts = Fts5Index::new();
-    let text_indexes: [&dyn chunking_store::TextIndexMaintainer; 1] = [&fts];
+    let text_indexes: [&dyn chunking_store::TextIndexMaintainer; 0] = [];
 
     // HNSW vector index: load or init, then upsert, then save snapshot
     let hdir = hnsw_dir.unwrap_or_else(|| derive_hnsw_dir(&db_path));
@@ -161,7 +158,6 @@ fn do_search(mut tail: Vec<String>) -> Result<(), String> {
 
     let mut query: Option<String> = None;
     let mut k: usize = 10;
-    let mut do_hybrid = false;
     let mut hnsw_dir: Option<String> = None;
 
     let mut i = 0;
@@ -169,7 +165,6 @@ fn do_search(mut tail: Vec<String>) -> Result<(), String> {
         match rest[i].as_str() {
             "--query" => { if i+1<rest.len() { query = Some(rest[i+1].clone()); i+=2; } else { return Err("--query requires value".into()); } }
             "--k" => { if i+1<rest.len() { k = rest[i+1].parse().unwrap_or(10); i+=2; } else { return Err("--k requires number".into()); } }
-            "--hybrid" => { do_hybrid = true; i+=1; }
             "--hnsw" => { if i+1<rest.len() { hnsw_dir = Some(rest[i+1].clone()); i+=2; } else { return Err("--hnsw requires dir".into()); } }
             _ => { i+=1; }
         }
@@ -178,68 +173,36 @@ fn do_search(mut tail: Vec<String>) -> Result<(), String> {
     let q = match query { Some(s) => s, None => return Err("--query required".into()) };
 
     let repo = SqliteRepo::open(&db_path).map_err(|e| e.to_string())?;
-    let _ = repo.maybe_rebuild_fts();
-    let fts = Fts5Index::new();
     let opts = SearchOptions { top_k: k, fetch_factor: 10 };
 
-    // Text-only path
-    if !do_hybrid {
-        let hits = fts.search(&repo, &q, &[], &opts);
-        println!("FTS hits: {}", hits.len());
-        for (i, h) in hits.iter().enumerate() {
-            let text = &h.chunk.text;
-            let preview = truncate_chars(text, 60);
-            println!("{:>2}. [{}] score={:.4} {}", i+1, h.chunk.chunk_id.0, h.score, preview);
-        }
-        return Ok(());
-    }
-
-    // Hybrid: FTS + vector
     let embedder = build_embedder_from_args(&rest)?;
     let qvec = embedder.embed(&q).map_err(|e| format!("embed failed: {e}"))?;
 
-    // Load HNSW (optional)
     let hdir = hnsw_dir.unwrap_or_else(|| derive_hnsw_dir(&db_path));
     let maybe_hnsw = if Path::new(&hdir).join("map.tsv").exists() {
         match HnswIndex::load(&hdir, qvec.len()) { Ok(h) => Some(h), Err(e) => { eprintln!("warn: HNSW load: {}", e); None } }
     } else { None };
 
-    let mut text_matches = TextSearcher::search_ids(&fts, &repo, &q, &[], &opts);
-    let mut vec_matches = if let Some(h) = &maybe_hnsw {
+    let vec_matches = if let Some(h) = &maybe_hnsw {
         VectorSearcher::knn_ids(h, &repo, &qvec, &[], &opts)
     } else { Vec::new() };
 
-    // Combine with simple weighted sum (0.5 / 0.5)
-    let w_text = 0.5f32;
-    let w_vec = 0.5f32;
-
-    let mut score_map: HashMap<String, f32> = HashMap::new();
-    for m in text_matches.drain(..) {
-        let e = score_map.entry(m.chunk_id.0).or_insert(0.0);
-        *e += w_text * m.score;
-    }
-    for m in vec_matches.drain(..) {
-        let e = score_map.entry(m.chunk_id.0).or_insert(0.0);
-        *e += w_vec * m.score;
+    if vec_matches.is_empty() {
+        println!("No vector hits (is the HNSW snapshot initialized?)");
+        return Ok(());
     }
 
-    // Sort by combined score
-    let mut items: Vec<(String, f32)> = score_map.into_iter().collect();
-    items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    if items.len() > k { items.truncate(k); }
-
-    let ids: Vec<ChunkId> = items.iter().map(|(cid, _)| ChunkId(cid.clone())).collect();
+    let ids: Vec<ChunkId> = vec_matches.iter().map(|m| m.chunk_id.clone()).collect();
     let recs = repo.get_chunks_by_ids(&ids).map_err(|e| e.to_string())?;
+    let mut score_map: HashMap<String, f32> = HashMap::new();
+    for m in vec_matches {
+        score_map.insert(m.chunk_id.0, m.score);
+    }
 
-    // Build a quick index to map chunk_id -> combined score
-    let mut cscore: HashMap<String, f32> = HashMap::new();
-    for (cid, s) in items { cscore.insert(cid, s); }
-
-    println!("Hybrid hits: {}", recs.len());
+    println!("Vector hits: {}", recs.len());
     for (i, rec) in recs.iter().enumerate() {
-        let score = cscore.get(&rec.chunk_id.0).copied().unwrap_or(0.0);
-        let text = &rec.text;
-        let preview = truncate_chars(text, 60);
+        let preview = truncate_chars(&rec.text, 60);
+        let score = score_map.get(&rec.chunk_id.0).copied().unwrap_or(0.0);
         println!("{:>2}. [{}] score={:.4} {}", i+1, rec.chunk_id.0, score, preview);
     }
 
@@ -267,3 +230,4 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
     let truncated: String = it.by_ref().take(max_chars).collect();
     if it.next().is_some() { format!("{}…", truncated) } else { truncated }
 }
+

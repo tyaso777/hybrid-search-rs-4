@@ -1,6 +1,4 @@
 pub mod sqlite_repo;
-#[cfg(feature = "fts")]
-pub mod fts5_index;
 pub mod tantivy_index;
 pub mod hnsw_index;
 pub mod orchestrator;
@@ -17,7 +15,7 @@ pub trait ChunkPrimaryStore {
     fn delete_by_filter(&mut self, filters: &[FilterClause]) -> Result<usize, StoreError>;
 }
 
-/// Placeholder for text search engines (FTS5/Tantivy, etc.).
+/// Placeholder for text search engines (Tantivy, etc.).
 /// Concrete engines will expose their own constructors; common querying shape is unified via helpers.
 #[derive(Debug, Clone)]
 pub struct SearchHit {

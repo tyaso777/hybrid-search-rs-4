@@ -7,7 +7,7 @@ use rusqlite::{params, Connection, TransactionBehavior};
 
 use crate::{ChunkPrimaryStore, ChunkStoreRead, StoreError, FilterClause, FilterOp};
 
-/// SQLite-backed primary store. FTS5 text search lives in `fts5_index`.
+/// SQLite-backed primary store.
 pub struct SqliteRepo {
     conn: Connection,
 }
@@ -60,28 +60,6 @@ impl SqliteRepo {
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_chunk_id ON chunks(chunk_id);
             CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id);
-
-            -- FTS5 virtual table linked to chunks via content= and rowid
-            CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-                text,
-                content='chunks',
-                content_rowid='rowid',
-                tokenize = 'unicode61'
-            );
-
-            -- Triggers to keep FTS index consistent
-            CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
-                INSERT INTO chunks_fts(rowid, text) VALUES (new.rowid, new.text);
-            END;
-
-            CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
-                INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
-            END;
-
-            CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE OF text ON chunks BEGIN
-                INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
-                INSERT INTO chunks_fts(rowid, text) VALUES (new.rowid, new.text);
-            END;
 
             -- File-level table to persist FileRecord (one row per doc_id)
             CREATE TABLE IF NOT EXISTS files (
@@ -281,32 +259,15 @@ impl SqliteRepo {
         Ok(n)
     }
 
-    /// Ensure FTS content table is populated; rebuild if empty while chunks has rows.
-    pub fn maybe_rebuild_fts(&self) -> rusqlite::Result<()> {
-        let chunks_cnt: i64 = self.conn.query_row("SELECT count(*) FROM chunks", [], |r| r.get(0))?;
-        if chunks_cnt == 0 { return Ok(()); }
-        let fts_cnt: i64 = self.conn.query_row("SELECT count(*) FROM chunks_fts", [], |r| r.get(0)).unwrap_or(0);
-        if fts_cnt == 0 {
-            // Rebuild FTS index from content table
-            let _ = self.conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')", []);
-        }
-        Ok(())
-    }
-
-    /// Return (chunks_count, chunks_fts_count) for debugging.
+    /// Return (chunk_count, file_count) for quick diagnostics.
     pub fn counts(&self) -> rusqlite::Result<(i64, i64)> {
-        let chunks_cnt: i64 = self.conn.query_row("SELECT count(*) FROM chunks", [], |r| r.get(0))?;
-        let fts_cnt: i64 = self.conn.query_row("SELECT count(*) FROM chunks_fts", [], |r| r.get(0)).unwrap_or(0);
-        Ok((chunks_cnt, fts_cnt))
-    }
-
-    /// Return count of rows matching an FTS5 MATCH query (for debugging).
-    pub fn fts_match_count(&self, query: &str) -> rusqlite::Result<i64> {
-        self.conn.query_row(
-            "SELECT count(*) FROM chunks_fts WHERE chunks_fts MATCH ?1",
-            [query],
-            |r| r.get(0),
-        )
+        let chunk_count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))?;
+        let file_count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))?;
+        Ok((chunk_count, file_count))
     }
 
     /// List chunk IDs matching filters with pagination.

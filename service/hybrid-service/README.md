@@ -3,7 +3,8 @@ Hybrid Service
 Overview
 - Provides a cohesive service layer that ties together:
   - Chunking (PDF/DOCX) via `file-chunker`
-  - Primary storage (SQLite + FTS5) via `chunking-store`
+  - Primary storage (SQLite) via `chunking-store`
+  - Optional text index (Tantivy feature) via `chunking-store`
   - Vector index (HNSW) via `chunking-store`
   - Embeddings via `embedding-provider`
 
@@ -22,4 +23,3 @@ Quick Start
 Notes
 - Defaults store data under `target/demo/chunks.db` and `target/demo/chunks.db.hnsw`.
 - The embedder uses `embedding_provider::config::default_stdio_config()`; override in `ServiceConfig` if needed.
-

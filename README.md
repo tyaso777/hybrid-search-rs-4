@@ -23,12 +23,12 @@ Rust workspace for a hybrid search pipeline.
   - Includes a checkbox to preload the model into memory when initializing.
 
 - tools/hybrid-orchestrator
-  - CLI for ingest/search with SQLite + FTS5 + HNSW.
+- CLI for ingest/search with SQLite + HNSW (vector-only search).
   - Status: legacy/optional. For most workflows, prefer the GUI at `tools/hybrid-orchestrator-gui`. You likely don't need this CLI.
   - Docs: see [tools/hybrid-orchestrator/README.md](tools/hybrid-orchestrator/README.md).
 
 - tools/hybrid-orchestrator-gui
-  - Desktop GUI for end-to-end ingest/search (SQLite + FTS5 + Tantivy + HNSW). Also supports the model preload option in the UI.
+- Desktop GUI for end-to-end ingest/search (SQLite + Tantivy + HNSW). Also supports the model preload option in the UI.
   - Docs: see [tools/hybrid-orchestrator-gui/README.md](tools/hybrid-orchestrator-gui/README.md).
 
 - tools/pdf-block-viewer
@@ -134,7 +134,7 @@ cargo build
 
 ## Hybrid Orchestrator GUI
 
-Interactive end-to-end tool to ingest and search with SQLite + FTS5 + Tantivy + HNSW.
+Interactive end-to-end tool to ingest and search with SQLite + Tantivy + HNSW.
 
 - Run
   - `cargo run -p hybrid-orchestrator-gui`
@@ -153,7 +153,6 @@ Interactive end-to-end tool to ingest and search with SQLite + FTS5 + Tantivy + 
 - Results (columns)
   - `#` - row number
   - `Chunk ID` - stored chunk id (click any cell to select the row)
-  - `FTS` - SQLite FTS5 score (~= normalized BM25)
   - `TV` - Tantivy default (QueryParser). A single-string query may behave like a strict phrase
   - `TV(AND)` - Lindera tokens combined with AND (all terms must match; BM25 scoring)
   - `TV(OR)` - Lindera tokens combined with OR (any term may match; BM25 scoring)

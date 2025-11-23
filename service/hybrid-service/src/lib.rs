@@ -4,8 +4,6 @@ use std::sync::{Arc, RwLock, atomic::{AtomicBool, AtomicU64, Ordering}};
 
 use chrono::Utc;
 use chunk_model::{ChunkId, ChunkRecord, DocumentId, FileRecord};
-#[cfg(all(not(feature = "tantivy"), feature = "fts"))]
-use chunking_store::fts5_index::Fts5Index;
 use chunking_store::hnsw_index::HnswIndex;
 use chunking_store::orchestrator::{delete_by_filter_orchestrated, ingest_chunks_orchestrated, DeleteReport};
 use chunking_store::{ChunkStoreRead, FilterClause, SearchHit, SearchOptions, VectorSearcher};
@@ -615,12 +613,7 @@ impl HybridService {
         if records.is_empty() { return Ok(()); }
         let mut repo = self.open_repo()?;
 
-        // Prepare text index maintainers (optional FTS)
-        #[cfg(feature = "fts")]
-        let fts = chunking_store::fts5_index::Fts5Index::new();
-        #[cfg(feature = "fts")]
-        let text_m: [&dyn chunking_store::TextIndexMaintainer; 1] = [&fts];
-        #[cfg(not(feature = "fts"))]
+        // Prepare text index maintainers (none configured)
         let text_m: [&dyn chunking_store::TextIndexMaintainer; 0] = [];
 
         // Prepare/load HNSW
@@ -1047,20 +1040,13 @@ impl HybridService {
         Ok(out)
     }
 
-    /// Fallback text-only search via FTS5 when Tantivy feature is disabled.
-    #[cfg(all(not(feature = "tantivy"), feature = "fts"))]
-    pub fn search_text(&self, query: &str, top_k: usize, filters: &[FilterClause]) -> Result<Vec<SearchHit>, ServiceError> {
-        let fts = chunking_store::fts5_index::Fts5Index::new();
-        let opts = SearchOptions { top_k, fetch_factor: 10 };
-        self.with_repo(|repo| Ok(fts.search(repo, query, filters, &opts)))
-    }
-    /// Fallback when neither Tantivy nor FTS are enabled: return empty.
-    #[cfg(all(not(feature = "tantivy"), not(feature = "fts")))]
+    /// Fallback when Tantivy is disabled: return empty.
+    #[cfg(not(feature = "tantivy"))]
     pub fn search_text(&self, _query: &str, _top_k: usize, _filters: &[FilterClause]) -> Result<Vec<SearchHit>, ServiceError> {
         Ok(Vec::new())
     }
 
-    /// Hybrid search: fuse Text (Tantivy or FTS) and HNSW (vector) with weighted sum.
+    /// Hybrid search: fuse Tantivy (when enabled) and HNSW (vector) with weighted sum.
     pub fn search_hybrid(&self, query: &str, top_k: usize, filters: &[FilterClause], w_text: f32, w_vec: f32) -> Result<Vec<SearchHit>, ServiceError> {
         let opts = SearchOptions { top_k, fetch_factor: 10 };
 
@@ -1070,12 +1056,7 @@ impl HybridService {
             Some(v) => v,
             None => Vec::new(),
         };
-        #[cfg(all(not(feature = "tantivy"), feature = "fts"))]
-        let mut text_matches: Vec<chunking_store::TextMatch> = {
-            let fts = chunking_store::fts5_index::Fts5Index::new();
-            self.with_repo(|repo| Ok(chunking_store::TextSearcher::search_ids(&fts, repo, query, filters, &opts)))?
-        };
-        #[cfg(all(not(feature = "tantivy"), not(feature = "fts")))]
+        #[cfg(not(feature = "tantivy"))]
         let mut text_matches: Vec<chunking_store::TextMatch> = Vec::new();
 
         // Vector matches via HNSW guard (optional)
@@ -1118,11 +1099,6 @@ impl HybridService {
     /// Delete by filters across DB and both indexes.
     pub fn delete_by_filter(&self, filters: &[FilterClause], batch_size: usize) -> Result<DeleteReport, ServiceError> {
         let mut repo = self.open_repo()?;
-        #[cfg(feature = "fts")]
-        let fts = chunking_store::fts5_index::Fts5Index::new();
-        #[cfg(feature = "fts")]
-        let text_m: [&dyn chunking_store::TextIndexMaintainer; 1] = [&fts];
-        #[cfg(not(feature = "fts"))]
         let text_m: [&dyn chunking_store::TextIndexMaintainer; 0] = [];
         // Load HNSW (if exists)
         let hdir = self.hnsw_dir();
@@ -1157,7 +1133,7 @@ impl HybridService {
         Ok(rep)
     }
 
-    /// Quick sanity/check API: counts for chunks and FTS mirror.
+    /// Quick sanity/check API: chunk/file counts for the SQLite store.
     pub fn repo_counts(&self) -> Result<(i64, i64), ServiceError> {
         let repo = self.open_repo()?;
         repo.counts().map_err(|e| ServiceError::Repo(e.to_string()))

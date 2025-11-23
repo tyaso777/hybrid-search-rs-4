@@ -65,8 +65,6 @@ pub fn ingest_chunks_orchestrated(
 ) -> Result<(), OrchestratorError> {
     if records.is_empty() { return Ok(()); }
     repo.upsert_chunks(records.to_vec())?;
-    // Ensure FTS5 is populated in rare cases where triggers lag at first creation
-    let _ = repo.maybe_rebuild_fts();
     for ti in text_indexes {
         ti.upsert(records).map_err(|e| OrchestratorError::Index(format!("{e}")))?;
     }

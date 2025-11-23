@@ -1,7 +1,6 @@
 use std::env;
 use std::path::Path;
 
-use chunking_store::fts5_index::Fts5Index;
 use chunking_store::orchestrator::delete_by_filter_orchestrated;
 use chunking_store::sqlite_repo::SqliteRepo;
 use chunking_store::{FilterClause, FilterKind, FilterOp};
@@ -63,9 +62,7 @@ fn main() {
     if let Some(parent) = Path::new(&db_path).parent() { let _ = std::fs::create_dir_all(parent); }
     let mut repo = SqliteRepo::open(&db_path).expect("open sqlite repo");
 
-    // FTS5 maintainer is no-op (DB triggers keep it in sync), but we pass it to the orchestrator for symmetry.
-    let fts = Fts5Index::new();
-    let text_indexes: [&dyn chunking_store::TextIndexMaintainer; 1] = [&fts];
+    let text_indexes: [&dyn chunking_store::TextIndexMaintainer; 0] = [];
     let mut vector_indexes: [&mut dyn chunking_store::VectorIndexMaintainer; 0] = [];
 
     let report = delete_by_filter_orchestrated(
