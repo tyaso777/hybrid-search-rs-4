@@ -950,7 +950,7 @@ impl HybridService {
                 for b in digest { hex.push_str(&format!("{:02x}", b)); }
                 Some(hex)
             };
-            let mut meta = std::collections::BTreeMap::new();
+            let meta = std::collections::BTreeMap::new();
             let extra = std::collections::BTreeMap::new();
             chunk_model::FileRecord {
                 schema_version: chunk_model::SCHEMA_MAJOR,

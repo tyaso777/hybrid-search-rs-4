@@ -1,9 +1,10 @@
 ﻿use chrono::TimeZone;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc::{self, Receiver, TryRecvError}, Arc};
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
+use sha2::{Digest, Sha256};
 
 fn humanize_bytes(v: u64) -> String {
     const KB: f64 = 1024.0;
@@ -139,6 +140,11 @@ struct AppState {
     embed_initial_batch: String,
     embed_min_batch: String,
     aggressive_warmup: bool,
+    use_local_embeddings: bool,
+    local_cache_dir: String,
+    local_copy_running: bool,
+    local_copy_status: String,
+    local_copy_rx: Option<Receiver<Result<usize, String>>>,
 
     // Store/index config (root -> derive artifacts)
     store_root: String,
@@ -381,9 +387,21 @@ struct ModelCfg {
     embed_min_batch: usize,
     #[serde(default = "default_true")]
     aggressive_warmup: bool,
+    #[serde(default = "default_true")]
+    use_local_embeddings: bool,
+    #[serde(default)]
+    local_cache_dir: Option<String>,
 }
 
 fn default_true() -> bool { true }
+
+fn default_local_cache_dir() -> String {
+    if let Ok(base) = std::env::var("LOCALAPPDATA") {
+        format!(r"{}\HybridSearch", base)
+    } else {
+        String::from("HybridSearchCache")
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct PromptCfg {
@@ -402,6 +420,30 @@ struct PromptTemplate {
     items: usize,
     prev: usize,
     next: usize,
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct LocalCopyManifest {
+    #[serde(default)]
+    entries: Vec<LocalCopyEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LocalCopyEntry {
+    source_path: String,
+    local_path: String,
+    size: u64,
+    #[serde(default)]
+    modified_epoch_secs: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CacheStatus {
+    Busy,
+    Missing,
+    Outdated,
+    UpToDate,
 }
 
 // Backward-compatible (flat) config format used previously
@@ -996,6 +1038,38 @@ impl AppState {
                 ui.add(TextEdit::singleline(&mut self.runtime_path).desired_width(400.0));
                 if ui.button("Browse").clicked() { if let Some(p) = FileDialog::new().pick_file() { self.runtime_path = p.display().to_string(); } }
             });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.use_local_embeddings, "Use local cached files when available");
+                let status = self.cache_status();
+                let can_copy = !self.local_copy_running && !matches!(status, CacheStatus::UpToDate);
+                let copy_btn = ui.add_enabled(can_copy, Button::new("Copy files to cache"));
+                if copy_btn.clicked() {
+                    self.start_local_copy_task();
+                }
+                match status {
+                    CacheStatus::Busy => {}
+                    CacheStatus::UpToDate => { ui.label("Local cache up to date"); }
+                    CacheStatus::Outdated => { ui.label("Some files not cached"); }
+                    CacheStatus::Missing => { ui.label("No local cache found"); }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Cache Dir");
+                ui.add(TextEdit::singleline(&mut self.local_cache_dir).desired_width(300.0));
+                if ui.button("Browse").clicked() {
+                    if let Some(p) = FileDialog::new().pick_folder() {
+                        self.local_cache_dir = p.display().to_string();
+                    }
+                }
+            });
+            if self.local_copy_running {
+                ui.horizontal(|ui| {
+                    ui.add(Spinner::new());
+                    ui.label("Copying files to local cache...");
+                });
+            } else if !self.local_copy_status.is_empty() {
+                ui.label(&self.local_copy_status);
+            }
             let msg = "After the first Init, the Runtime DLL cannot be changed within this session. Restart the app to apply a different DLL.";
             ui.label(egui::RichText::new(msg).color(ui.visuals().warn_fg_color));
             ui.horizontal(|ui| {
@@ -1044,6 +1118,11 @@ impl AppState {
                 embed_initial_batch: self.embed_initial_batch.trim().parse().unwrap_or(128),
                 embed_min_batch: self.embed_min_batch.trim().parse().unwrap_or(8),
                 aggressive_warmup: self.aggressive_warmup,
+                use_local_embeddings: self.use_local_embeddings,
+                local_cache_dir: {
+                    let dir = self.local_cache_dir.trim();
+                    if dir.is_empty() { None } else { Some(dir.to_string()) }
+                },
             },
             prompt: Some(PromptCfg {
                 templates: self.prompt_templates.clone(),
@@ -1081,6 +1160,8 @@ impl AppState {
         self.embed_initial_batch = cfg.model.embed_initial_batch.to_string();
         self.embed_min_batch = cfg.model.embed_min_batch.to_string();
         self.aggressive_warmup = cfg.model.aggressive_warmup;
+        self.use_local_embeddings = cfg.model.use_local_embeddings;
+        self.local_cache_dir = cfg.model.local_cache_dir.unwrap_or_else(default_local_cache_dir);
         // Prompt templates
         if let Some(p) = cfg.prompt {
             self.prompt_templates = p.templates;
@@ -1120,6 +1201,8 @@ impl AppState {
         self.embed_initial_batch = cfg.embed_initial_batch.to_string();
         self.embed_min_batch = cfg.embed_min_batch.to_string();
         self.aggressive_warmup = cfg.aggressive_warmup;
+        self.use_local_embeddings = true;
+        self.local_cache_dir = default_local_cache_dir();
     }
 
     fn load_config_via_dialog(&mut self) {
@@ -1360,6 +1443,105 @@ impl AppState {
             );
         }
     }
+
+    fn manifest_path(&self) -> PathBuf {
+        let base = self.local_cache_dir.trim();
+        PathBuf::from(if base.is_empty() { default_local_cache_dir() } else { base.to_string() }).join("manifest.json")
+    }
+
+    fn start_local_copy_task(&mut self) {
+        if self.local_copy_running { return; }
+        let cache_dir = self.local_cache_dir.trim().to_string();
+        if cache_dir.is_empty() {
+            self.local_copy_status = "Set a local cache directory first".into();
+            return;
+        }
+        let model = self.model_path.trim().to_string();
+        let tokenizer = self.tokenizer_path.trim().to_string();
+        let runtime = self.runtime_path.trim().to_string();
+        let (tx, rx) = mpsc::channel();
+        self.local_copy_running = true;
+        self.local_copy_status = "Copying files to local cache...".into();
+        self.local_copy_rx = Some(rx);
+        std::thread::spawn(move || {
+            let res = copy_embeddings_to_cache(model, tokenizer, runtime, cache_dir);
+            let _ = tx.send(res);
+        });
+    }
+
+    fn poll_local_copy_task(&mut self) {
+        if let Some(rx) = &self.local_copy_rx {
+            match rx.try_recv() {
+                Ok(Ok(count)) => {
+                    self.local_copy_status = format!("Copied {} file(s) to local cache", count);
+                    self.local_copy_running = false;
+                    self.local_copy_rx = None;
+                }
+                Ok(Err(err)) => {
+                    self.local_copy_status = format!("Copy failed: {err}");
+                    self.local_copy_running = false;
+                    self.local_copy_rx = None;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    self.local_copy_status = "Copy failed: worker disconnected".into();
+                    self.local_copy_running = false;
+                    self.local_copy_rx = None;
+                }
+            }
+        }
+    }
+
+    fn cache_status(&self) -> CacheStatus {
+        if self.local_copy_running {
+            return CacheStatus::Busy;
+        }
+        let manifest_path = self.manifest_path();
+        if !manifest_path.exists() {
+            return CacheStatus::Missing;
+        }
+        let manifest = read_manifest(&manifest_path);
+        let required = [
+            self.model_path.trim(),
+            self.tokenizer_path.trim(),
+            self.runtime_path.trim(),
+        ];
+        let mut all_cached = true;
+        for req in required {
+            if req.is_empty() { continue; }
+            let target = normalize_path(req);
+            let found = manifest.entries.iter().any(|entry| normalize_path(entry.source_path.as_str()) == target && entry_metadata_matches(entry, req));
+            if !found {
+                all_cached = false;
+                break;
+            }
+        }
+        if all_cached { CacheStatus::UpToDate } else { CacheStatus::Outdated }
+    }
+
+    fn resolve_embedding_path(&self, original: &str) -> String {
+        if self.use_local_embeddings {
+            if let Some(local) = self.lookup_local_copy(original) {
+                return local;
+            }
+        }
+        original.to_string()
+    }
+
+    fn lookup_local_copy(&self, original: &str) -> Option<String> {
+        let trimmed = original.trim();
+        if trimmed.is_empty() { return None; }
+        let manifest_path = self.manifest_path();
+        if !manifest_path.exists() {
+            return None;
+        }
+        let manifest = read_manifest(&manifest_path);
+        let target = normalize_path(trimmed);
+        manifest.entries.iter()
+            .find(|entry| normalize_path(entry.source_path.as_str()) == target && entry_metadata_matches(entry, trimmed))
+            .map(|entry| entry.local_path.clone())
+    }
+
     fn new(cc: &CreationContext<'_>) -> Self {
         install_japanese_fallback_fonts(&cc.egui_ctx);
         let store_default = String::from("target/demo/store");
@@ -1374,6 +1556,11 @@ impl AppState {
             embed_initial_batch: String::from("128"),
             embed_min_batch: String::from("8"),
             aggressive_warmup: true,
+            use_local_embeddings: true,
+            local_cache_dir: default_local_cache_dir(),
+            local_copy_running: false,
+            local_copy_status: String::new(),
+            local_copy_rx: None,
 
             store_root: store_default.clone(),
             db_path: derive_db_path(&store_default),
@@ -1607,9 +1794,12 @@ impl AppState {
         let mut cfg = ServiceConfig::default();
         cfg.db_path = PathBuf::from(db);
         cfg.hnsw_dir = Some(PathBuf::from(hnsw));
-        cfg.embedder.model_path = PathBuf::from(self.model_path.trim());
-        cfg.embedder.tokenizer_path = PathBuf::from(self.tokenizer_path.trim());
-        cfg.embedder.runtime_library_path = PathBuf::from(self.runtime_path.trim());
+        let model_path = self.resolve_embedding_path(self.model_path.trim());
+        let tokenizer_path = self.resolve_embedding_path(self.tokenizer_path.trim());
+        let runtime_path = self.resolve_embedding_path(self.runtime_path.trim());
+        cfg.embedder.model_path = PathBuf::from(model_path);
+        cfg.embedder.tokenizer_path = PathBuf::from(tokenizer_path);
+        cfg.embedder.runtime_library_path = PathBuf::from(runtime_path);
         cfg.embedder.dimension = dim_ui;
         cfg.embedder.max_input_length = self.max_tokens.trim().parse().unwrap_or(ONNX_STDIO_DEFAULTS.max_input_tokens);
         cfg.aggressive_warmup = self.aggressive_warmup;
@@ -1711,6 +1901,7 @@ impl App for AppState {
         self.poll_delete_task();
         self.poll_preview_task();
         self.poll_preview_chunks_task();
+        self.poll_local_copy_task();
         self.poll_search_task();
         self.poll_context_task();
         self.poll_scan_task();
@@ -1838,6 +2029,110 @@ impl App for AppState {
         // Popups (render after main UI so they appear above)
         self.ui_preview_window(ctx);
         self.ui_prompt_window(ctx);
+    }
+}
+
+fn copy_embeddings_to_cache(model_path: String, tokenizer_path: String, runtime_path: String, cache_dir: String) -> Result<usize, String> {
+    let cache_dir = cache_dir.trim().to_string();
+    if cache_dir.is_empty() {
+        return Err("Cache directory is empty".into());
+    }
+    let base = PathBuf::from(&cache_dir);
+    fs::create_dir_all(&base).map_err(|e| format!("create cache directory failed: {}", e))?;
+    let mut entries: Vec<LocalCopyEntry> = Vec::new();
+    if let Some(entry) = copy_single_file(&model_path, &base, "model")? {
+        entries.push(entry);
+    }
+    if let Some(entry) = copy_single_file(&tokenizer_path, &base, "tokenizer")? {
+        entries.push(entry);
+    }
+    if let Some(entry) = copy_single_file(&runtime_path, &base, "runtime")? {
+        entries.push(entry);
+    }
+    if entries.is_empty() {
+        return Err("No files copied (empty source paths)".into());
+    }
+    let manifest_path = base.join("manifest.json");
+    let mut manifest = read_manifest(&manifest_path);
+    for entry in entries {
+        let target_key = normalize_path(entry.source_path.as_str());
+        manifest.entries.retain(|existing| normalize_path(existing.source_path.as_str()) != target_key);
+        manifest.entries.push(entry);
+    }
+    write_manifest(&manifest_path, &manifest)?;
+    Ok(manifest.entries.len())
+}
+
+fn copy_single_file(source: &str, base: &Path, subdir: &str) -> Result<Option<LocalCopyEntry>, String> {
+    let trimmed = source.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let src_path = PathBuf::from(trimmed);
+    let meta = fs::metadata(&src_path).map_err(|e| format!("{}: {}", trimmed, e))?;
+    let hash = hash_source_identifier(trimmed);
+    let short = &hash[..std::cmp::min(16, hash.len())];
+    let target_dir = base.join(subdir).join(short);
+    fs::create_dir_all(&target_dir).map_err(|e| format!("{}: {}", target_dir.display(), e))?;
+    let file_name = src_path.file_name().ok_or_else(|| format!("{}: invalid file name", trimmed))?;
+    let dest_path = target_dir.join(file_name);
+    fs::copy(&src_path, &dest_path).map_err(|e| format!("Copy {} -> {} failed: {}", src_path.display(), dest_path.display(), e))?;
+    let modified = meta.modified().ok()
+        .and_then(|m| m.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
+    Ok(Some(LocalCopyEntry {
+        source_path: trimmed.to_string(),
+        local_path: dest_path.to_string_lossy().into_owned(),
+        size: meta.len(),
+        modified_epoch_secs: modified,
+    }))
+}
+
+fn read_manifest(path: &Path) -> LocalCopyManifest {
+    if let Ok(body) = fs::read_to_string(path) {
+        serde_json::from_str(&body).unwrap_or_default()
+    } else {
+        LocalCopyManifest::default()
+    }
+}
+
+fn write_manifest(path: &Path, manifest: &LocalCopyManifest) -> Result<(), String> {
+    let body = serde_json::to_string_pretty(manifest).map_err(|e| format!("serialize manifest failed: {}", e))?;
+    fs::write(path, body).map_err(|e| format!("write manifest failed: {}", e))
+}
+
+fn normalize_path(path: &str) -> String {
+    path.trim().replace('/', "\\").to_lowercase()
+}
+
+fn hash_source_identifier(path: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(normalize_path(path));
+    format!("{:x}", hasher.finalize())
+}
+
+fn snapshot_metadata(path: &Path) -> Option<(u64, Option<i64>)> {
+    let meta = fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()
+        .and_then(|m| m.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
+    Some((meta.len(), modified))
+}
+
+fn entry_metadata_matches(entry: &LocalCopyEntry, source_path: &str) -> bool {
+    let src_meta = snapshot_metadata(Path::new(source_path));
+    let local_meta = snapshot_metadata(Path::new(entry.local_path.as_str()));
+    match (src_meta, local_meta) {
+        (Some((src_size, src_mod)), Some((local_size, _))) => {
+            if src_size != entry.size { return false; }
+            match (entry.modified_epoch_secs, src_mod) {
+                (Some(expected), Some(actual)) if expected != actual => return false,
+                (Some(_), None) => return false,
+                _ => {}
+            }
+            local_size == entry.size
+        }
+        _ => false,
     }
 }
 
