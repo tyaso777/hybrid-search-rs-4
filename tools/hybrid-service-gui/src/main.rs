@@ -860,11 +860,8 @@ impl AppState {
                         self.files_del_rx = None;
                         self.status = format!("Deleted {} records", deleted);
                         // Clear selections
-                        self.files_selected_set.clear();
+                        self.reset_files_selection();
                         self.files_delete_pending = None;
-                        self.files_selected_doc = None;
-                        self.files_selected_display.clear();
-                        self.files_selected_detail.clear();
                         // Refresh list
                         self.refresh_files();
                         break;
@@ -920,8 +917,16 @@ impl AppState {
         if self.svc.is_some() {
             self.files_page = 0;
             self.files.clear();
+            self.reset_files_selection();
             self.refresh_files();
         }
+    }
+
+    fn reset_files_selection(&mut self) {
+        self.files_selected_set.clear();
+        self.files_selected_doc = None;
+        self.files_selected_display.clear();
+        self.files_selected_detail.clear();
     }
     fn ui_config(&mut self, ui: &mut egui::Ui) {
         ui.heading("Model / Store Config");
@@ -1678,6 +1683,7 @@ impl AppState {
                     // Auto-refresh Files after Init completion (Store Root may have changed via config)
                     self.files_page = 0;
                     self.files.clear();
+                    self.reset_files_selection();
                     self.refresh_files();
                     self.svc_task = None;
                 }
